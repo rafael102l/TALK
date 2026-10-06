@@ -1,0 +1,391 @@
+{
+  "items": [
+    {
+      "id": "he-ru-01",
+      "source": "he",
+      "target": "ru",
+      "text": "נועם, תגיד לי איפה אתה",
+      "keep": ["Ноам"],
+      "negation": false,
+      "reference": "Ноам, скажи мне, где ты"
+    },
+    {
+      "id": "he-ru-02",
+      "source": "he",
+      "target": "ru",
+      "text": "בוריס, אני לא שומע אותך",
+      "keep": ["Борис"],
+      "negation": true,
+      "reference": "Борис, я тебя не слышу"
+    },
+    {
+      "id": "he-ru-03",
+      "source": "he",
+      "target": "ru",
+      "text": "מה קורה אחי",
+      "keep": [],
+      "negation": false,
+      "reference": "Что происходит, брат"
+    },
+    {
+      "id": "he-ru-04",
+      "source": "he",
+      "target": "ru",
+      "text": "תחכה שתי דקות",
+      "keep": ["две"],
+      "negation": false,
+      "reference": "Подожди две минуты"
+    },
+    {
+      "id": "he-ru-05",
+      "source": "he",
+      "target": "ru",
+      "text": "יש לי שלוש הודעות",
+      "keep": ["три"],
+      "negation": false,
+      "reference": "У меня три сообщения"
+    },
+    {
+      "id": "he-ru-06",
+      "source": "he",
+      "target": "ru",
+      "text": "אל תזוז",
+      "keep": [],
+      "negation": true,
+      "reference": "Не двигайся"
+    },
+    {
+      "id": "he-ru-07",
+      "source": "he",
+      "target": "ru",
+      "text": "תגיד לבוריס שאני בדרך",
+      "keep": ["Борис"],
+      "negation": false,
+      "reference": "Скажи Борису, что я в пути"
+    },
+    {
+      "id": "he-ru-08",
+      "source": "he",
+      "target": "ru",
+      "text": "המנהל מבקש אותך",
+      "keep": [],
+      "negation": false,
+      "reference": "Менеджер просит тебя"
+    },
+    {
+      "id": "he-ru-09",
+      "source": "he",
+      "target": "ru",
+      "text": "אני במשרד",
+      "keep": [],
+      "negation": false,
+      "reference": "Я в офисе"
+    },
+    {
+      "id": "he-ru-10",
+      "source": "he",
+      "target": "ru",
+      "text": "אין לי סוללה",
+      "keep": [],
+      "negation": true,
+      "reference": "У меня нет батареи"
+    },
+    {
+      "id": "he-ru-11",
+      "source": "he",
+      "target": "ru",
+      "text": "נועם",
+      "keep": ["Ноам"],
+      "negation": false,
+      "reference": "Ноам"
+    },
+    {
+      "id": "he-ru-12",
+      "source": "he",
+      "target": "ru",
+      "text": "תבוא בעוד 5 דקות",
+      "keep": ["5"],
+      "negation": false,
+      "reference": "Приходи через 5 минут"
+    },
+    {
+      "id": "he-ru-13",
+      "source": "he",
+      "target": "ru",
+      "text": "רפאל מחכה למטה",
+      "keep": ["Рафаэль"],
+      "negation": false,
+      "reference": "Рафаэль ждёт внизу"
+    },
+    {
+      "id": "he-ru-14",
+      "source": "he",
+      "target": "ru",
+      "text": "לא עכשיו",
+      "keep": [],
+      "negation": true,
+      "reference": "Не сейчас"
+    },
+    {
+      "id": "he-ru-15",
+      "source": "he",
+      "target": "ru",
+      "text": "תביא 10 כיסאות",
+      "keep": ["10"],
+      "negation": false,
+      "reference": "Принеси 10 стульев"
+    },
+    {
+      "id": "he-ru-16",
+      "source": "he",
+      "target": "ru",
+      "text": "אני לא במקום",
+      "keep": [],
+      "negation": true,
+      "reference": "Меня нет на месте"
+    },
+    {
+      "id": "he-ru-17",
+      "source": "he",
+      "target": "ru",
+      "text": "בוריס, תתקשר לנועם",
+      "keep": ["Борис", "Ноам"],
+      "negation": false,
+      "reference": "Борис, позвони Ноаму"
+    },
+    {
+      "id": "he-ru-18",
+      "source": "he",
+      "target": "ru",
+      "text": "חכה בקומה 2",
+      "keep": ["2"],
+      "negation": false,
+      "reference": "Жди на этаже 2"
+    },
+    {
+      "id": "he-ru-19",
+      "source": "he",
+      "target": "ru",
+      "text": "תענה לי כן או לא",
+      "keep": [],
+      "negation": true,
+      "reference": "Ответь мне да или нет"
+    },
+    {
+      "id": "he-ru-20",
+      "source": "he",
+      "target": "ru",
+      "text": "אני שומע אותך טוב",
+      "keep": [],
+      "negation": false,
+      "reference": "Я хорошо тебя слышу"
+    },
+    {
+      "id": "ru-he-01",
+      "source": "ru",
+      "target": "he",
+      "text": "Ноам, скажи мне, где ты",
+      "keep": ["נועם"],
+      "negation": false,
+      "reference": "נועם, תגיד לי איפה אתה"
+    },
+    {
+      "id": "ru-he-02",
+      "source": "ru",
+      "target": "he",
+      "text": "Борис, я тебя не слышу",
+      "keep": ["בוריס"],
+      "negation": true,
+      "reference": "בוריס, אני לא שומע אותך"
+    },
+    {
+      "id": "ru-he-03",
+      "source": "ru",
+      "target": "he",
+      "text": "Что происходит, брат",
+      "keep": [],
+      "negation": false,
+      "reference": "מה קורה אחי"
+    },
+    {
+      "id": "ru-he-04",
+      "source": "ru",
+      "target": "he",
+      "text": "Подожди две минуты",
+      "keep": ["שתי"],
+      "negation": false,
+      "reference": "תחכה שתי דקות"
+    },
+    {
+      "id": "ru-he-05",
+      "source": "ru",
+      "target": "he",
+      "text": "У меня три сообщения",
+      "keep": ["שלוש"],
+      "negation": false,
+      "reference": "יש לי שלוש הודעות"
+    },
+    {
+      "id": "ru-he-06",
+      "source": "ru",
+      "target": "he",
+      "text": "Не двигайся",
+      "keep": [],
+      "negation": true,
+      "reference": "אל תזוז"
+    },
+    {
+      "id": "ru-he-07",
+      "source": "ru",
+      "target": "he",
+      "text": "Скажи Борису, что я в пути",
+      "keep": ["בוריס"],
+      "negation": false,
+      "reference": "תגיד לבוריס שאני בדרך"
+    },
+    {
+      "id": "ru-he-08",
+      "source": "ru",
+      "target": "he",
+      "text": "Менеджер просит тебя",
+      "keep": ["מנהל"],
+      "negation": false,
+      "reference": "המנהל מבקש אותך"
+    },
+    {
+      "id": "ru-he-09",
+      "source": "ru",
+      "target": "he",
+      "text": "Я в офисе",
+      "keep": [],
+      "negation": false,
+      "reference": "אני במשרד"
+    },
+    {
+      "id": "ru-he-10",
+      "source": "ru",
+      "target": "he",
+      "text": "У меня нет батареи",
+      "keep": [],
+      "negation": true,
+      "reference": "אין לי סוללה"
+    },
+    {
+      "id": "ru-he-11",
+      "source": "ru",
+      "target": "he",
+      "text": "Ноам",
+      "keep": ["נועם"],
+      "negation": false,
+      "reference": "נועם"
+    },
+    {
+      "id": "ru-he-12",
+      "source": "ru",
+      "target": "he",
+      "text": "Приходи через 5 минут",
+      "keep": ["5"],
+      "negation": false,
+      "reference": "תבוא בעוד 5 דקות"
+    },
+    {
+      "id": "ru-he-13",
+      "source": "ru",
+      "target": "he",
+      "text": "Рафаэль ждёт внизу",
+      "keep": ["רפאל"],
+      "negation": false,
+      "reference": "רפאל מחכה למטה"
+    },
+    {
+      "id": "ru-he-14",
+      "source": "ru",
+      "target": "he",
+      "text": "Не сейчас",
+      "keep": [],
+      "negation": true,
+      "reference": "לא עכשיו"
+    },
+    {
+      "id": "ru-he-15",
+      "source": "ru",
+      "target": "he",
+      "text": "Принеси 10 стульев",
+      "keep": ["10"],
+      "negation": false,
+      "reference": "תביא 10 כיסאות"
+    },
+    {
+      "id": "ru-he-16",
+      "source": "ru",
+      "target": "he",
+      "text": "Меня нет на месте",
+      "keep": [],
+      "negation": true,
+      "reference": "אני לא במקום"
+    },
+    {
+      "id": "ru-he-17",
+      "source": "ru",
+      "target": "he",
+      "text": "Борис, позвони Ноаму",
+      "keep": ["בוריס", "נועם"],
+      "negation": false,
+      "reference": "בוריס, תתקשר לנועם"
+    },
+    {
+      "id": "ru-he-18",
+      "source": "ru",
+      "target": "he",
+      "text": "Жди на этаже 2",
+      "keep": ["2"],
+      "negation": false,
+      "reference": "חכה בקומה 2"
+    },
+    {
+      "id": "ru-he-19",
+      "source": "ru",
+      "target": "he",
+      "text": "Ответь мне да или нет",
+      "keep": ["לא"],
+      "negation": true,
+      "reference": "תענה לי כן או לא"
+    },
+    {
+      "id": "ru-he-20",
+      "source": "ru",
+      "target": "he",
+      "text": "Я хорошо тебя слышу",
+      "keep": [],
+      "negation": false,
+      "reference": "אני שומע אותך טוב"
+    },
+    {
+      "id": "he-en-crazy",
+      "source": "he",
+      "target": "en",
+      "text": "מה אתה משוגע",
+      "keep": ["crazy"],
+      "negation": false,
+      "reference": "Are you crazy"
+    },
+    {
+      "id": "he-en-ganuv",
+      "source": "he",
+      "target": "en",
+      "text": "אתה גנוב, תשלם כסף",
+      "keep": ["crazy"],
+      "negation": false,
+      "reference": "Are you crazy, pay money"
+    },
+    {
+      "id": "en-he-yo",
+      "source": "en",
+      "target": "he",
+      "text": "Yo",
+      "keep": [],
+      "negation": false,
+      "reference": "יו"
+    }
+  ]
+}

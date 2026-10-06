@@ -1,0 +1,16 @@
+{
+  "rules": {
+    "talk": {
+      "meta": {
+        ".read": true,
+        ".write": true
+      },
+      "history": {
+        "$uid": {
+          ".read": true,
+          ".write": true
+        }
+      }
+    }
+  }
+}

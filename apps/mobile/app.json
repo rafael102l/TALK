@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "TALK",
+    "slug": "talk",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "talk",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "app.talk.ptt",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "TALK צריך מיקרופון כדי לשדר אוקי-טוקי.",
+        "NSSpeechRecognitionUsageDescription": "TALK מתמלל שידורים במכשיר כדי לתרגם בחינם.",
+        "NSContactsUsageDescription": "TALK משתמש באנשי הקשר כדי למצוא מי כבר באפליקציה.",
+        "NSPhotoLibraryUsageDescription": "TALK צריך תמונה כדי להציג אותך לחברים.",
+        "UIBackgroundModes": ["audio", "remote-notification"]
+      }
+    },
+    "android": {
+      "package": "app.talk.ptt",
+      "usesCleartextTraffic": true,
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_CONTACTS",
+        "android.permission.VIBRATE",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+        "android.permission.READ_MEDIA_IMAGES"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-dev-client",
+      "expo-secure-store",
+      "expo-av",
+      "expo-contacts",
+      "expo-notifications",
+      "expo-speech",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "TALK צריך תמונה כדי להציג אותך לחברים."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "TALK צריך מיקרופון כדי לתמלל שידורים במכשיר.",
+          "speechRecognitionPermission": "TALK מתמלל שידורים במכשיר כדי לתרגם בחינם."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "apiUrl": "http://10.100.102.10:3000"
+    }
+  }
+}

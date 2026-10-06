@@ -1,0 +1,9 @@
+.env
+.env.local
+serviceAccountKey.json
+serviceAccountKey.json.json
+storage
+prisma/dev.db
+dist
+firebase-adminsdk*.json
+*-firebase-adminsdk-*.json

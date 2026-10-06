@@ -1,0 +1,107 @@
+{
+  "items": [
+    {
+      "id": "he-en-morning",
+      "source": "he",
+      "target": "en",
+      "text": "בוקר טוב מה שלומך היום. האם אתה מגיע בשעה 10 כמו שקבענו?",
+      "keep": ["morning", "10"],
+      "keepAny": ["coming", "arrive", "coming at"],
+      "forbid": ["interesting question", "i have a question"],
+      "negation": false,
+      "reference": "Good morning. How are you today? Are you coming at 10:00, as we arranged?"
+    },
+    {
+      "id": "he-en-feeling",
+      "source": "he",
+      "target": "en",
+      "text": "בוקר טוב איך אתה מרגיש",
+      "keep": ["morning"],
+      "keepAny": ["feeling", "how are you"],
+      "forbid": ["interesting question", "i have a question"],
+      "negation": false,
+      "reference": "Good morning, how are you feeling?"
+    },
+    {
+      "id": "he-en-apple",
+      "source": "he",
+      "target": "en",
+      "text": "תאכל את התפוח",
+      "keep": ["eat", "apple"],
+      "forbid": ["fruit"],
+      "negation": false,
+      "reference": "Eat the apple"
+    },
+    {
+      "id": "en-he-legs",
+      "source": "en",
+      "target": "he",
+      "text": "Lift your legs up",
+      "keep": ["תרים", "רגליים", "למעלה"],
+      "forbid": [],
+      "negation": false,
+      "reference": "תרים את הרגליים למעלה"
+    },
+    {
+      "id": "he-en-name",
+      "source": "he",
+      "target": "en",
+      "text": "נועם, תחכה שתי דקות",
+      "keep": ["two"],
+      "keepAny": ["נועם", "Noam"],
+      "forbid": [],
+      "negation": false,
+      "reference": "נועם, wait two minutes"
+    },
+    {
+      "id": "en-he-name",
+      "source": "en",
+      "target": "he",
+      "text": "Raphael, stay here",
+      "keep": ["Raphael"],
+      "forbid": [],
+      "negation": false,
+      "reference": "Raphael, תשאר כאן"
+    },
+    {
+      "id": "he-en-negation",
+      "source": "he",
+      "target": "en",
+      "text": "אל תאכל את התפוח",
+      "keep": ["apple"],
+      "forbid": ["fruit"],
+      "negation": true,
+      "reference": "Don't eat the apple"
+    },
+    {
+      "id": "en-he-negation",
+      "source": "en",
+      "target": "he",
+      "text": "Do not lift your legs",
+      "keep": ["רגליים"],
+      "forbid": [],
+      "negation": true,
+      "reference": "אל תרים את הרגליים"
+    },
+    {
+      "id": "he-en-man",
+      "source": "he",
+      "target": "en",
+      "text": "גבר מה קורה",
+      "keep": [],
+      "forbid": ["dude"],
+      "negation": false,
+      "reference": "Man what's going on"
+    },
+    {
+      "id": "en-he-swear",
+      "source": "en",
+      "target": "he",
+      "text": "Don't go there",
+      "keep": [],
+      "forbid": [],
+      "negation": true,
+      "reference": "אל תלך לשם"
+    }
+  ]
+}

@@ -1,0 +1,158 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum VoiceCloneStatus {
+  NONE
+  PENDING
+  READY
+  FAILED
+}
+
+enum AccountPlan {
+  FREE
+  PLUS
+}
+
+enum ChannelType {
+  DIRECT
+  GROUP
+  BROADCAST
+}
+
+enum ContactStatus {
+  PENDING
+  ACCEPTED
+  BLOCKED
+}
+
+enum TransmissionStatus {
+  UPLOADING
+  PROCESSING
+  READY
+  FAILED
+}
+
+model User {
+  id               String           @id @default(cuid())
+  phoneE164        String           @unique
+  phoneHash        String           @unique
+  displayName      String           @default("")
+  avatarUrl        String?
+  speakLang        String           @default("he")
+  listenLang       String           @default("he")
+  voiceGender      String           @default("male")
+  elevenVoiceId    String?
+  voiceCloneStatus VoiceCloneStatus @default(NONE)
+  plan             AccountPlan      @default(FREE)
+  expoPushToken    String?
+  /** Bumped on each successful login; JWT must carry matching sv (single active device). */
+  sessionVersion   Int              @default(0)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  contactsOwned       Contact[]            @relation("OwnerContacts")
+  matchedAs           Contact[]            @relation("MatchedUser")
+  channelMembers      ChannelMember[]
+  transmissionsSent   Transmission[]
+  transmissionTargets TransmissionTarget[]
+  otpCodes            OtpCode[]
+}
+
+model OtpCode {
+  id        String   @id @default(cuid())
+  userId    String?
+  phoneE164 String
+  codeHash  String
+  expiresAt DateTime
+  consumed  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([phoneE164])
+}
+
+model Contact {
+  id            String        @id @default(cuid())
+  ownerId       String
+  phoneE164     String?
+  phoneHash     String
+  displayName   String
+  matchedUserId String?
+  status        ContactStatus @default(ACCEPTED)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  owner         User     @relation("OwnerContacts", fields: [ownerId], references: [id], onDelete: Cascade)
+  matchedUser   User?    @relation("MatchedUser", fields: [matchedUserId], references: [id])
+
+  @@unique([ownerId, phoneHash])
+  @@index([phoneHash])
+}
+
+model Channel {
+  id            String          @id @default(cuid())
+  type          ChannelType
+  name          String?
+  ownerId       String?
+  createdAt     DateTime        @default(now())
+  members       ChannelMember[]
+  transmissions Transmission[]
+}
+
+model ChannelMember {
+  id        String   @id @default(cuid())
+  channelId String
+  userId    String
+  createdAt DateTime @default(now())
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+}
+
+model Transmission {
+  id               String               @id @default(cuid())
+  senderId         String
+  channelId        String
+  originalAudioUrl String
+  originalText     String?
+  durationMs       Int?
+  kind             String               @default("walkie")
+  viewOnce         Boolean              @default(false)
+  status           TransmissionStatus   @default(PROCESSING)
+  createdAt        DateTime             @default(now())
+  sender           User                 @relation(fields: [senderId], references: [id])
+  channel          Channel              @relation(fields: [channelId], references: [id])
+  renders          TransmissionRender[]
+  targets          TransmissionTarget[]
+}
+
+model TransmissionRender {
+  id             String       @id @default(cuid())
+  transmissionId String
+  language       String
+  audioUrl       String
+  translatedText String?
+  createdAt      DateTime     @default(now())
+  transmission   Transmission @relation(fields: [transmissionId], references: [id], onDelete: Cascade)
+
+  @@unique([transmissionId, language])
+}
+
+model TransmissionTarget {
+  id             String       @id @default(cuid())
+  transmissionId String
+  userId         String
+  language       String
+  deliveredAt    DateTime?
+  playedAt       DateTime?
+  transmission   Transmission @relation(fields: [transmissionId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id])
+
+  @@unique([transmissionId, userId])
+}

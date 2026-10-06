@@ -1,0 +1,1 @@
+export { MicIcon } from "./MirsIcons";

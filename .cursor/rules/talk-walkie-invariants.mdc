@@ -1,0 +1,45 @@
+---
+description: Locked TALK walkie behavior — never regress these without explicit user approval
+alwaysApply: true
+---
+
+# TALK walkie invariants (LOCKED)
+
+Do **not** change these behaviors unless the user explicitly asks to change that specific rule.
+
+## Devices are independent
+
+- Each phone is fully independent. One user holding PTT must **never** disable, dim, block, or steal the mic/audio mode on another phone.
+- Two users may record **at the same time**, including to each other.
+- Remote `PTT_SPEAKING` / floor / busy UI is visual only — never gate `begin()` / recording.
+- While `talkingRef` is true locally: queue incoming walkie — do **not** call playback / `ensureAudioMode(false)` / `playWalkieExclusive`.
+- `ensureAudioMode(false)` and playback must no-op if a local recording is active.
+
+## Incoming play rules (badge until tap)
+
+- When a walkie arrives: **always** put the sender on the home roster and show a **pending badge** with the count (1, 2, 3…).
+- **Do not play** until the user **taps** that avatar. No auto-play for first or later messages.
+- Multiple senders / multiple clips: each keeps their own badge count; play only the tapped person's queue.
+- Never hide `pendingCount` behind `openTalk` / session unlock.
+- Do **not** unlock a peer just because we sent PTT to them (`begin` must not set `sessionUnlocked`).
+- `queueWaiting` must call `select` + set pending state so the avatar appears even if they were not selected.
+- Never silent-drop a payload.
+
+## Send path
+
+- Do not reintroduce a `peakDb` “too short” reject for walkie (Android metering is unreliable).
+- Prefer press-hold duration if `durationMillis` is 0 after stop.
+- Keep LAN `apiBaseUrl` current; do not hardcode a dead old Wi‑Fi IP.
+- Uploads must still run after PTT release (`holdDiscovery(false)` before upload; refresh allowed).
+- **RN FormData uploads:** use a plain `Record<string,string>` for headers; never pass a `Headers` object; never set `Content-Type` on multipart. Prefer `XMLHttpRequest` for multipart file uploads on Android.
+- **PTT touch:** `SelectedRoster` must use `pointerEvents="box-none"` and stay under the mic (`zIndex` lower than PTT). PTT must own the responder (`onResponderTerminationRequest={() => false}`) so the roster cannot steal pressIn/pressOut.
+
+## Performance (keep)
+
+- No subnet scan on every home open (`ensureApiBase` = saved only; `refreshApiBase` on failure).
+- No home contact/unread polling loops, no 12s online poll, no 20s heartbeat spam.
+- Animations only for send / receive / talk.
+
+## When editing home / audio / realtime / transmissions
+
+Re-read this rule first. If a change would violate it, stop and ask the user.
