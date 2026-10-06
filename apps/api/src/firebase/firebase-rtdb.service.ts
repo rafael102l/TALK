@@ -111,14 +111,33 @@ export class FirebaseRtdbService implements OnModuleInit {
 }
 
 function loadServiceAccount() {
-  const inline = process.env.FIREBASE_SERVICE_ACCOUNT?.trim();
+  const fromBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64?.trim();
+  if (fromBase64) {
+    const json = Buffer.from(fromBase64, "base64").toString("utf8");
+    return JSON.parse(json) as Record<string, string>;
+  }
+
+  let inline = process.env.FIREBASE_SERVICE_ACCOUNT?.trim() || "";
   if (inline) {
+    // Render / UI sometimes wraps the whole JSON in quotes.
+    if (
+      (inline.startsWith("'") && inline.endsWith("'")) ||
+      (inline.startsWith('"') && inline.endsWith('"') && !inline.startsWith('{"'))
+    ) {
+      inline = inline.slice(1, -1);
+    }
     return JSON.parse(inline) as Record<string, string>;
   }
+
   const configured = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "./serviceAccountKey.json";
   const credPath = isAbsolute(configured) ? configured : resolve(process.cwd(), configured);
   if (!existsSync(credPath)) {
-    throw new Error(`Missing Firebase service account (set FIREBASE_SERVICE_ACCOUNT or file at ${credPath})`);
+    const flags = [
+      `FIREBASE_SERVICE_ACCOUNT=${Boolean(process.env.FIREBASE_SERVICE_ACCOUNT)}`,
+      `FIREBASE_SERVICE_ACCOUNT_BASE64=${Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64)}`,
+      `cwd=${process.cwd()}`,
+    ].join(" ");
+    throw new Error(`Missing Firebase service account (${flags}). Set FIREBASE_SERVICE_ACCOUNT_BASE64 or FIREBASE_SERVICE_ACCOUNT.`);
   }
   return credPath;
 }
