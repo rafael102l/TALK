@@ -3,6 +3,7 @@
 serviceAccountKey.json
 serviceAccountKey.json.json
 /storage
+/data
 prisma/dev.db
 dist
 firebase-adminsdk*.json

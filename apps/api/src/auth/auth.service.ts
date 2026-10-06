@@ -26,26 +26,32 @@ export class AuthService {
     const phoneE164 = this.normalizePhone(phone);
     const code = this.generateCode();
     const codeHash = await bcrypt.hash(code, 10);
-    await this.prisma.otpCode.updateMany({
-      where: { phoneE164, consumed: false },
-      data: { consumed: true },
-    });
-    await this.prisma.otpCode.create({
-      data: {
-        phoneE164,
-        codeHash,
-        expiresAt: new Date(Date.now() + OTP_TTL_MS),
-      },
-    });
+    try {
+      await this.prisma.otpCode.updateMany({
+        where: { phoneE164, consumed: false },
+        data: { consumed: true },
+      });
+      await this.prisma.otpCode.create({
+        data: {
+          phoneE164,
+          codeHash,
+          expiresAt: new Date(Date.now() + OTP_TTL_MS),
+        },
+      });
+    } catch (error) {
+      console.error("[TALK OTP] database error", (error as Error).message);
+      throw error;
+    }
     await this.sendSms(
       phoneE164,
       `קוד הכניסה ל-TALK: ${code}. הקוד תקף ל-5 דקות.`,
     );
-    const dev = process.env.NODE_ENV !== "production";
-    if (dev) {
-      console.log(`[TALK OTP] ${phoneE164} → ${code} (dev also accepts ${process.env.OTP_DEV_CODE ?? "000000"})`);
+    const showDev =
+      process.env.NODE_ENV !== "production" || process.env.OTP_ALLOW_DEV_BYPASS === "true";
+    if (showDev) {
+      console.log(`[TALK OTP] ${phoneE164} → ${code} (also accepts ${process.env.OTP_DEV_CODE ?? "000000"})`);
     }
-    return { ok: true, phoneE164, devCode: dev ? code : undefined };
+    return { ok: true, phoneE164, devCode: showDev ? code : undefined };
   }
 
   async verifyOtp(phone: string, code: string) {
@@ -55,7 +61,9 @@ export class AuthService {
       orderBy: { createdAt: "desc" },
     });
     const devCode = process.env.OTP_DEV_CODE ?? "000000";
-    const isDevBypass = process.env.NODE_ENV !== "production" && code === devCode;
+    const allowDevBypass =
+      process.env.NODE_ENV !== "production" || process.env.OTP_ALLOW_DEV_BYPASS === "true";
+    const isDevBypass = allowDevBypass && code === devCode;
     if (!latest && !isDevBypass) throw new UnauthorizedException("קוד לא תקין או שפג תוקפו");
     if (latest && latest.expiresAt < new Date() && !isDevBypass) {
       throw new UnauthorizedException("קוד לא תקין או שפג תוקפו");
