@@ -3,6 +3,9 @@ import * as SecureStore from "expo-secure-store";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "./api";
 import { ensureApiBase } from "./discover";
+import { clearHistoryCache } from "./historyCache";
+import { clearRecents } from "./recents";
+import { clearTalkContactsCache } from "./syncContacts";
 import { AppState } from "react-native";
 import { connectSocket, disconnectSocket, ensureSocket, getSocket } from "./socket";
 
@@ -107,6 +110,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       setUser,
       async login(nextToken, nextUser) {
+        // Drop peer IDs/history from a previous server (e.g. LAN → Render).
+        clearHistoryCache();
+        clearTalkContactsCache();
+        await clearRecents().catch(() => undefined);
         await SecureStore.setItemAsync(TOKEN_KEY, nextToken);
         await SecureStore.setItemAsync(USER_KEY, JSON.stringify(nextUser));
         setToken(nextToken);

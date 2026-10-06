@@ -15,6 +15,12 @@ export function cachedTalkContacts() {
   return cached;
 }
 
+export function clearTalkContactsCache() {
+  cached = [];
+  lastSyncAt = 0;
+  inflight = null;
+}
+
 export async function fetchTalkContacts(token: string): Promise<MatchedContact[]> {
   const list = onlyTalk(await api<MatchedContact[]>("/contacts", { token, timeoutMs: 5000 }));
   cached = list;

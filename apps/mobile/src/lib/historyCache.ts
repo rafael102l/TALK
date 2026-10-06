@@ -5,6 +5,12 @@ let cache: HistoryItem[] = [];
 let fetchedAt = 0;
 let inflight: Promise<HistoryItem[]> | null = null;
 
+export function clearHistoryCache() {
+  cache = [];
+  fetchedAt = 0;
+  inflight = null;
+}
+
 export function peekHistoryCache() {
   return cache;
 }

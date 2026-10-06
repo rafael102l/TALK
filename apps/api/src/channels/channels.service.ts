@@ -26,7 +26,11 @@ export class ChannelsService {
   async getOrCreateDirect(user: User, otherUserId: string) {
     if (otherUserId === user.id) throw new BadRequestException("אי אפשר לפתוח ערוץ לעצמך");
     const other = await this.prisma.user.findUnique({ where: { id: otherUserId } });
-    if (!other) throw new BadRequestException("משתמש לא נמצא");
+    if (!other) {
+      throw new BadRequestException(
+        "המשתמש לא רשום בשרת הנוכחי. שני הצדדים צריכים להתחבר מחדש ואז להוסיף אחד את השני דרך חיפוש מספר.",
+      );
+    }
 
     const existing = await this.prisma.channel.findFirst({
       where: {

@@ -58,7 +58,11 @@ export class ContactsService {
 
   async accept(owner: User, userId: string) {
     const other = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!other || other.id === owner.id) throw new BadRequestException("משתמש לא נמצא");
+    if (!other || other.id === owner.id) {
+      throw new BadRequestException(
+        "המשתמש לא רשום בשרת הנוכחי. בקשו ממנו להתחבר מחדש ואז חפשו את המספר שלו.",
+      );
+    }
     await this.upsertLink(owner, other, "ACCEPTED");
     await this.upsertLink(other, owner, "ACCEPTED");
     this.realtime.emitToUser(other.id, SOCKET_EVENTS.CONTACT_ACCEPTED, {
@@ -69,7 +73,11 @@ export class ContactsService {
 
   async block(owner: User, userId: string) {
     const other = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!other || other.id === owner.id) throw new BadRequestException("משתמש לא נמצא");
+    if (!other || other.id === owner.id) {
+      throw new BadRequestException(
+        "המשתמש לא רשום בשרת הנוכחי. בקשו ממנו להתחבר מחדש ואז חפשו את המספר שלו.",
+      );
+    }
     await this.upsertLink(owner, other, "BLOCKED");
     return this.list(owner);
   }
