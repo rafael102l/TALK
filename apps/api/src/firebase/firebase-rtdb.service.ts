@@ -69,12 +69,8 @@ export class FirebaseRtdbService implements OnModuleInit {
 
   private initAdmin() {
     if (!getApps().length) {
-      const credPath = resolveServiceAccountPath();
-      if (!existsSync(credPath)) {
-        throw new Error(`Missing Firebase service account at ${credPath}`);
-      }
       initializeApp({
-        credential: cert(credPath),
+        credential: cert(loadServiceAccount()),
         databaseURL: this.base,
       });
     }
@@ -114,9 +110,17 @@ export class FirebaseRtdbService implements OnModuleInit {
   }
 }
 
-function resolveServiceAccountPath() {
+function loadServiceAccount() {
+  const inline = process.env.FIREBASE_SERVICE_ACCOUNT?.trim();
+  if (inline) {
+    return JSON.parse(inline) as Record<string, string>;
+  }
   const configured = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "./serviceAccountKey.json";
-  return isAbsolute(configured) ? configured : resolve(process.cwd(), configured);
+  const credPath = isAbsolute(configured) ? configured : resolve(process.cwd(), configured);
+  if (!existsSync(credPath)) {
+    throw new Error(`Missing Firebase service account (set FIREBASE_SERVICE_ACCOUNT or file at ${credPath})`);
+  }
+  return credPath;
 }
 
 function historyPrefix(ownerId: string) {
