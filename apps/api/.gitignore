@@ -2,7 +2,7 @@
 .env.local
 serviceAccountKey.json
 serviceAccountKey.json.json
-storage
+/storage
 prisma/dev.db
 dist
 firebase-adminsdk*.json
