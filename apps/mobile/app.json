@@ -57,7 +57,7 @@
       "typedRoutes": true
     },
     "extra": {
-      "apiUrl": "http://10.100.102.10:3000"
+      "apiUrl": "https://talk-2-8lqz.onrender.com"
     }
   }
 }

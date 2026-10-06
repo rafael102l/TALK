@@ -112,7 +112,12 @@ export class TransmissionsService {
     }
 
     void this.finish(transmission, sender, sttP, started, { clientRelease });
-    void Promise.all(users.map((target) => this.contacts.ensureIncoming(target, sender)));
+    void Promise.all(
+      users.map(async (target) => {
+        await this.contacts.ensureIncoming(target, sender);
+        await this.contacts.ensureMutualTalk(sender, target);
+      }),
+    );
     return { id: transmission.id, status: "PROCESSING" as const, channelId: channel.id };
   }
 
@@ -159,7 +164,12 @@ export class TransmissionsService {
       Date.now(),
       { textOnly: true },
     );
-    void Promise.all(users.map((target) => this.contacts.ensureIncoming(target, sender)));
+    void Promise.all(
+      users.map(async (target) => {
+        await this.contacts.ensureIncoming(target, sender);
+        await this.contacts.ensureMutualTalk(sender, target);
+      }),
+    );
     return { id: transmission.id, status: "PROCESSING" as const, channelId: channel.id };
   }
 

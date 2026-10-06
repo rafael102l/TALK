@@ -1,5 +1,6 @@
 import * as Network from "expo-network";
 import * as SecureStore from "expo-secure-store";
+import { apiBaseUrl } from "./config";
 
 const SAVED_KEY = "talk.apiBase";
 const PORT = 3000;
@@ -37,8 +38,18 @@ export function clearApiBase() {
 export async function ensureApiBase() {
   if (!loaded) {
     loaded = true;
+    const configured = apiBaseUrl().replace(/\/$/, "");
     const saved = await SecureStore.getItemAsync(SAVED_KEY).catch(() => null);
-    if (saved) base = saved;
+    // Prefer cloud config over a stale LAN IP left from older installs.
+    if (saved && isLanUrl(saved) && !isLanUrl(configured)) {
+      base = configured;
+      await SecureStore.setItemAsync(SAVED_KEY, configured).catch(() => undefined);
+    } else {
+      base = saved || configured;
+      if (!saved && configured) {
+        await SecureStore.setItemAsync(SAVED_KEY, configured).catch(() => undefined);
+      }
+    }
   }
   return base;
 }
@@ -55,6 +66,13 @@ export function refreshApiBase() {
 }
 
 async function findServer() {
+  const configured = apiBaseUrl().replace(/\/$/, "");
+  // Cloud / Render first (free tier cold start can take ~1 minute).
+  if (configured && (await ping(configured, 55000))) {
+    adopt(configured);
+    await SecureStore.setItemAsync(SAVED_KEY, configured).catch(() => undefined);
+    return configured;
+  }
   const phoneIp = await Network.getIpAddressAsync().catch(() => "");
   const prefix = subnetOf(phoneIp);
   if (base && (await ping(base, 800))) return base;
@@ -64,11 +82,11 @@ async function findServer() {
     adopt(saved);
     return saved;
   }
-  if (hold || !prefix) return base;
+  if (hold || !prefix) return base || configured || null;
   const own = hostOf(`http://${phoneIp}`);
   const hosts = Array.from({ length: 254 }, (_, index) => `${prefix}.${index + 1}`).filter((host) => host !== own);
   const found = await scan(hosts);
-  if (!found || hold) return base;
+  if (!found || hold) return base || configured || null;
   adopt(found);
   await SecureStore.setItemAsync(SAVED_KEY, found).catch(() => undefined);
   return found;
@@ -123,6 +141,10 @@ function subnetOf(ip: string) {
 
 function hostOf(url: string) {
   return url.replace(/^https?:\/\//, "").split(":")[0].split("/")[0];
+}
+
+function isLanUrl(url: string) {
+  return /^https?:\/\/(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.|localhost|127\.0\.0\.1)/i.test(url);
 }
 
 export function anchorMedia(url: string) {

@@ -24,7 +24,7 @@ import { registerPushToken, attachNotificationListeners, takeLastNotification } 
 import { playReceived } from "../../src/lib/receive";
 import { stopRobot } from "../../src/lib/onDeviceAi";
 import { SOCKET_EVENTS, ensureSocket, getSocket } from "../../src/lib/socket";
-import { cachedTalkContacts, fetchTalkContacts } from "../../src/lib/syncContacts";
+import { autoSyncContacts, cachedTalkContacts, fetchTalkContacts } from "../../src/lib/syncContacts";
 import { useTargets } from "../../src/lib/targets";
 import { colors } from "../../src/lib/theme";
 import { fetchUnread, isInboxMessage, markPeerTextRead } from "../../src/lib/unread";
@@ -175,7 +175,11 @@ export default function HomeScreen() {
     useCallback(() => {
       const cached = cachedTalkContacts();
       if (cached.length) setContacts(cached);
-    }, [setContacts]),
+      if (!token) return;
+      void autoSyncContacts(token, true, (list) => setContacts(list.filter((c) => c.matchedUser)), true).catch(
+        () => undefined,
+      );
+    }, [setContacts, token]),
   );
 
   useEffect(() => {
@@ -233,6 +237,14 @@ export default function HomeScreen() {
         return;
       }
       if (isInboxMessage(payload)) {
+        // Put sender on the home board so Redmi/Galaxy both see each other after a text.
+        select(payload.senderId, {
+          id: payload.senderId,
+          name: payload.senderName || payload.senderPhone || "",
+          photo: payload.senderAvatarUrl,
+          gender: payload.voiceGender ?? "male",
+        });
+        pinSender(payload);
         const viewing = path.includes(`/conversation/`) && path.includes(payload.senderId);
         if (viewing && tok) {
           void markPeerTextRead(tok, payload.senderId)
@@ -246,6 +258,7 @@ export default function HomeScreen() {
             void fetchUnread(tok)
               .then((info) => setUnreadTotal((n) => Math.max(n, info.total)))
               .catch(() => undefined);
+            void prefetchHistory(tok);
           }
         }
         return;
@@ -327,9 +340,23 @@ export default function HomeScreen() {
       if (!talkingRef.current && !sendingIds.current.length) return;
       setStatus(playCtx.current.t("translating"));
     };
-    const onContactChange = () => {
+    const onContactChange = (payload?: { user?: { id?: string; displayName?: string; avatarUrl?: string | null; voiceGender?: "male" | "female" | "child"; phoneE164?: string } }) => {
       const tok = playCtx.current.token;
-      if (tok) void fetchTalkContacts(tok).then(setContacts).catch(() => undefined);
+      const peer = payload?.user;
+      if (peer?.id) {
+        select(peer.id, {
+          id: peer.id,
+          name: peer.displayName || peer.phoneE164 || "",
+          photo: peer.avatarUrl,
+          gender: peer.voiceGender ?? "male",
+        });
+      }
+      if (tok) {
+        void autoSyncContacts(tok, true, (list) => setContacts(list.filter((c) => c.matchedUser)), true).catch(
+          () => undefined,
+        );
+        void fetchTalkContacts(tok).then(setContacts).catch(() => undefined);
+      }
     };
     socket.on(SOCKET_EVENTS.PTT_SPEAKING, onSpeaking);
     socket.on(SOCKET_EVENTS.PTT_RELEASED, onReleased);

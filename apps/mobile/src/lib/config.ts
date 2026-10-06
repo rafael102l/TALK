@@ -1,5 +1,5 @@
 export function apiBaseUrl() {
-  return "http://10.100.102.10:3000";
+  return "https://talk-2-8lqz.onrender.com";
 }
 
 export const MAX_PTT_MS = 30_000;
