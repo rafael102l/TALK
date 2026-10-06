@@ -11,6 +11,7 @@
     "build": "npm run build --workspace=@talk/shared && npm run prisma:generate --workspace=@talk/api && npm run build --workspace=@talk/api",
     "start": "npm run start:prod --workspace=@talk/api",
     "start:prod": "npm run start:prod --workspace=@talk/api",
+    "render:build": "npm install --workspace=@talk/api --workspace=@talk/shared --include-workspace-root && npm run build",
     "dev:api": "npm run start:dev --workspace=@talk/api",
     "dev:mobile": "npm run start --workspace=@talk/mobile",
     "db:up": "docker compose up -d",

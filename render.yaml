@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: talk-api
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm run render:build
+    startCommand: npm run start
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: NODE_ENV
+        value: production
