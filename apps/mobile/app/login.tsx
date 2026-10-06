@@ -31,7 +31,10 @@ export default function LoginScreen() {
 
   function mapError(err: unknown) {
     const raw = err instanceof Error ? err.message : "";
-    if (/network|failed|fetch|timeout|אינטרנט|נטוורק|בקשה נכשלה|חיבור לשרת/i.test(raw)) {
+    if (/unauthorized|session replaced|401/i.test(raw)) {
+      return "יש להתחבר מחדש (הסשן פג או הוחלף). הזינו קוד 000000.";
+    }
+    if (/network|failed|fetch|timeout|abort|אינטרנט|נטוורק|בקשה נכשלה|חיבור לשרת|התעורר/i.test(raw)) {
       return t("network");
     }
     return raw || t("error");

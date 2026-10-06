@@ -32,26 +32,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         SecureStore.getItemAsync(TOKEN_KEY),
         SecureStore.getItemAsync(USER_KEY),
       ]);
-      if (stored && rawUser) {
-        try {
-          const cached = JSON.parse(rawUser) as PublicUser;
-          if (cached?.id) {
-            setToken(stored);
-            setUser(cached);
-            setReady(true);
-            void ensureApiBase().then(() => connectSocket(stored));
-            void api<PublicUser>("/users/me", { token: stored })
-              .then((me) => {
-                setUser(me);
-                void SecureStore.setItemAsync(USER_KEY, JSON.stringify(me));
-              })
-              .catch(() => undefined);
-            return;
-          }
-        } catch {
-          /* saved profile was unreadable — ask the server */
-        }
-      }
       if (!stored) {
         setReady(true);
         return;
@@ -65,9 +45,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         connectSocket(stored);
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
-        if (!message.includes("אין חיבור")) {
+        const offline = message.includes("אין חיבור");
+        // Stale JWT after Render DB reset / session replace — force clean login.
+        if (!offline) {
+          disconnectSocket();
           await SecureStore.deleteItemAsync(TOKEN_KEY);
           await SecureStore.deleteItemAsync(USER_KEY);
+          setToken(null);
+          setUser(null);
+        } else if (rawUser) {
+          try {
+            const cached = JSON.parse(rawUser) as PublicUser;
+            if (cached?.id) {
+              setToken(stored);
+              setUser(cached);
+            }
+          } catch {
+            /* ignore bad cache */
+          }
         }
       } finally {
         setReady(true);

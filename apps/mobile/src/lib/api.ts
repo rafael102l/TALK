@@ -15,22 +15,49 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
   if (!form) headers["Content-Type"] = "application/json";
   if (options.token) headers.Authorization = `Bearer ${options.token}`;
 
-  const timeoutMs = options.timeoutMs ?? (form ? 45000 : 8000);
-  const base = (await ensureApiBase()) || getApiBase();
+  const base = ((await ensureApiBase()) || getApiBase()).replace(/\/$/, "");
+  const cloud = isCloudBase(base);
+  const timeoutMs = options.timeoutMs ?? (form ? 60000 : cloud ? 45000 : 8000);
+
   try {
     return await requestOnce<T>(base, path, options, headers, timeoutMs);
   } catch (error) {
     const message = (error as Error).message || "";
-    if (message.startsWith("שגיאת שרת") || message.includes("מספר")) throw error;
+    if (isAuthError(message) || message.startsWith("שגיאת שרת") || message.includes("מספר")) {
+      throw error;
+    }
     if (discoveryHeld()) {
-      throw new Error("אין חיבור לשרת. בדקו שהפלאפון והמחשב באותו Wi‑Fi ושהשרת רץ.");
+      throw new Error(offlineMessage());
     }
+
+    // Render free tier often needs a second wake-up attempt on the same URL.
+    if (cloud) {
+      try {
+        return await requestOnce<T>(base, path, options, headers, Math.max(timeoutMs, 60000));
+      } catch (retryError) {
+        const retryMessage = (retryError as Error).message || "";
+        if (isAuthError(retryMessage) || retryMessage.startsWith("שגיאת שרת")) throw retryError;
+        /* fall through to discovery */
+      }
+    }
+
     const next = await refreshApiBase();
-    if (!next || next === base) {
-      throw new Error("אין חיבור לשרת. בדקו שהפלאפון והמחשב באותו Wi‑Fi ושהשרת רץ.");
-    }
-    return requestOnce<T>(next, path, options, headers, timeoutMs);
+    const retryBase = (next || base).replace(/\/$/, "");
+    if (!retryBase) throw new Error(offlineMessage());
+    return requestOnce<T>(retryBase, path, options, headers, Math.max(timeoutMs, cloud || isCloudBase(retryBase) ? 60000 : 8000));
   }
+}
+
+function isAuthError(message: string) {
+  return /unauthorized|session replaced|לא מורשה|401/i.test(message);
+}
+
+function offlineMessage() {
+  return "אין חיבור לשרת. בדקו אינטרנט — השרת בענן (Render) עלול להתעורר עד דקה.";
+}
+
+function isCloudBase(url: string) {
+  return /^https:\/\//i.test(url) || /\.onrender\.com/i.test(url);
 }
 
 async function requestOnce<T>(
@@ -42,7 +69,13 @@ async function requestOnce<T>(
 ): Promise<T> {
   const res = await fetchWithTimeout(`${base}${path}`, { ...options, headers }, timeoutMs);
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: any = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    if (!res.ok) throw new Error(`שגיאת שרת (${res.status})`);
+    throw new Error("תשובת שרת לא תקינה");
+  }
   if (!res.ok) {
     const message = data?.message ?? data?.error ?? `שגיאת שרת (${res.status})`;
     throw new Error(Array.isArray(message) ? message.join(", ") : message);
