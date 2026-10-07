@@ -3,7 +3,9 @@ import { LANGUAGES, isLanguageCode } from "@talk/shared";
 import { extname } from "path";
 import { readFile } from "fs/promises";
 
-const GEMINI_HEAR_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"];
+// Prefer non-thinking / lite first. 2.5-flash thinks by default and used to eat the
+// tiny maxOutputTokens budget → truncated mid-word transcripts.
+const GEMINI_HEAR_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
 const LANG_LIST = LANGUAGES.map((language) => language.code).join(", ");
 
 const HEBREW = /[\u0590-\u05FF]/;
@@ -55,14 +57,14 @@ export class SttService {
     let engine = raw.text ? "gemini" : "";
     let text = usableSpeech(raw.text);
     if (!text) {
-      raw = await this.viaOpenAi(audio, ext, mime, 8000, "");
+      raw = await this.viaOpenAi(audio, ext, mime, 20000, "");
       engine = raw.text ? "openai" : "none";
       text = usableSpeech(raw.text);
     }
     let lang = text ? spokenLang(text, raw.lang || hint, hint) : "";
 
     if (engine !== "gemini" && text && hint && !matchesLang(text, hint)) {
-      const retry = await this.viaOpenAi(audio, ext, mime, 8000, "");
+      const retry = await this.viaOpenAi(audio, ext, mime, 20000, "");
       const retryText = usableSpeech(retry.text);
       if (
         retryText &&
@@ -87,6 +89,7 @@ export class SttService {
     const prompt = [
       "You are the hearing step of a walkie-talkie.",
       "Listen to the recording and write only the words that were spoken.",
+      "Transcribe the COMPLETE utterance — do not cut words or stop mid-sentence.",
       "Keep the original language and its usual script. Do not translate.",
       "Do not add greetings, explanations, or words that were not said.",
       `language must be exactly one of: ${LANG_LIST}.`,
@@ -95,12 +98,22 @@ export class SttService {
     const models = GEMINI_HEAR_MODELS.filter((model) => !this.deadGemini.has(model));
     for (const model of models) {
       try {
+        const generationConfig: Record<string, unknown> = {
+          temperature: 0,
+          // Enough room for a full walkie sentence (Hebrew/Arabic tokens are dense).
+          maxOutputTokens: 2048,
+          responseMimeType: "application/json",
+        };
+        // Gemini 2.5 thinking tokens share the output budget — disable or transcripts truncate.
+        if (model.includes("2.5")) {
+          generationConfig.thinkingConfig = { thinkingBudget: 0 };
+        }
         const res = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            signal: AbortSignal.timeout(8000),
+            signal: AbortSignal.timeout(15000),
             body: JSON.stringify({
               contents: [
                 {
@@ -111,23 +124,33 @@ export class SttService {
                   ],
                 },
               ],
-              generationConfig: { temperature: 0, maxOutputTokens: 300 },
+              generationConfig,
             }),
           },
         );
         if (!res.ok) {
           this.logger.warn(`Gemini hear ${model} failed: ${res.status}`);
-          if (res.status === 404 || res.status === 400) this.deadGemini.add(model);
+          if (res.status === 404) this.deadGemini.add(model);
           continue;
         }
         const data = (await res.json()) as {
-          candidates?: { content?: { parts?: { text?: string }[] } }[];
+          candidates?: {
+            finishReason?: string;
+            content?: { parts?: { text?: string }[] };
+          }[];
         };
+        const candidate = data.candidates?.[0];
+        const finish = String(candidate?.finishReason || "").toUpperCase();
         const raw =
-          data.candidates?.[0]?.content?.parts
+          candidate?.content?.parts
             ?.map((part) => part.text || "")
             .join("")
             .trim() ?? "";
+        // Token-budget cuts produce mid-word / mid-sentence transcripts — skip them.
+        if (finish === "MAX_TOKENS") {
+          this.logger.warn(`Gemini hear ${model} truncated (MAX_TOKENS) — retry next`);
+          continue;
+        }
         const heard = parseHeard(raw);
         if (heard.text) return heard;
       } catch (error) {

@@ -96,7 +96,7 @@ export class TranslateService {
         names,
         written,
         "gpt-4o",
-        written ? 6000 : 4500,
+        written ? 10000 : 10000,
       ).catch(() => "");
       const held = strict ? await this.holdToWords(text, strict, source, target, geminiKey || "").catch(() => strict) : "";
       const checked = acceptedTranslation(text, held || strict, target, written);
@@ -122,7 +122,7 @@ export class TranslateService {
   ) {
     const known = names.filter(Boolean).slice(0, 12);
     const prompt = understandPrompt(source, target, known, written);
-    const timeoutMs = written ? 5000 : 3500;
+    const timeoutMs = written ? 8000 : 8000;
     const models = [
       this.preferred && !this.dead.has(this.preferred) ? this.preferred : "",
       ...GEMINI_MODELS,
@@ -130,6 +130,13 @@ export class TranslateService {
 
     for (const model of models) {
       try {
+        const generationConfig: Record<string, unknown> = {
+          temperature: 0,
+          maxOutputTokens: written ? 1024 : 1024,
+        };
+        if (model.includes("2.5")) {
+          generationConfig.thinkingConfig = { thinkingBudget: 0 };
+        }
         const res = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
           {
@@ -138,23 +145,29 @@ export class TranslateService {
             signal: AbortSignal.timeout(timeoutMs),
             body: JSON.stringify({
               contents: [{ role: "user", parts: [{ text: `${prompt}\n\n${text}` }] }],
-              generationConfig: {
-                temperature: 0,
-                maxOutputTokens: written ? 500 : 220,
-              },
+              generationConfig,
             }),
           },
         );
         if (!res.ok) {
           this.logger.warn(`Gemini ${model} failed: ${res.status}`);
-          if (res.status === 404 || res.status === 400) this.dead.add(model);
+          if (res.status === 404) this.dead.add(model);
           continue;
         }
         const data = (await res.json()) as {
-          candidates?: { content?: { parts?: { text?: string }[] } }[];
+          candidates?: {
+            finishReason?: string;
+            content?: { parts?: { text?: string }[] };
+          }[];
         };
+        const candidate = data.candidates?.[0];
+        const finish = String(candidate?.finishReason || "").toUpperCase();
+        if (finish === "MAX_TOKENS") {
+          this.logger.warn(`Gemini translate ${model} truncated (MAX_TOKENS)`);
+          continue;
+        }
         const raw =
-          data.candidates?.[0]?.content?.parts
+          candidate?.content?.parts
             ?.map((part) => part.text || "")
             .join("")
             .trim() ?? "";
@@ -196,19 +209,28 @@ export class TranslateService {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(2500),
+          signal: AbortSignal.timeout(5000),
           body: JSON.stringify({
             contents: [{ role: "user", parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0, maxOutputTokens: 220 },
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens: 1024,
+              ...(model.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+            },
           }),
         },
       );
       if (!res.ok) return draft;
       const data = (await res.json()) as {
-        candidates?: { content?: { parts?: { text?: string }[] } }[];
+        candidates?: {
+          finishReason?: string;
+          content?: { parts?: { text?: string }[] };
+        }[];
       };
+      const candidate = data.candidates?.[0];
+      if (String(candidate?.finishReason || "").toUpperCase() === "MAX_TOKENS") return draft;
       const clean =
-        data.candidates?.[0]?.content?.parts
+        candidate?.content?.parts
           ?.map((part) => part.text || "")
           .join("")
           .trim()
@@ -247,14 +269,21 @@ export class TranslateService {
           { role: "user", content: text },
         ],
         temperature: 0,
-        max_tokens: written ? 500 : 220,
+        max_tokens: written ? 1024 : 1024,
       }),
     });
     if (!res.ok) throw new Error(String(res.status));
     const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: {
+        finish_reason?: string;
+        message?: { content?: string };
+      }[];
     };
-    return data.choices?.[0]?.message?.content?.trim().replace(/^["']|["']$/g, "") ?? "";
+    const choice = data.choices?.[0];
+    if (String(choice?.finish_reason || "").toLowerCase() === "length") {
+      throw new Error("truncated");
+    }
+    return choice?.message?.content?.trim().replace(/^["']|["']$/g, "") ?? "";
   }
 }
 
