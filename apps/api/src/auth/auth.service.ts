@@ -42,16 +42,21 @@ export class AuthService {
       console.error("[TALK OTP] database error", (error as Error).message);
       throw error;
     }
-    await this.sendSms(
+    const smsOk = await this.sendSms(
       phoneE164,
       `קוד הכניסה ל-TALK: ${code}. הקוד תקף ל-5 דקות.`,
     );
     const showDev =
       process.env.NODE_ENV !== "production" || process.env.OTP_ALLOW_DEV_BYPASS === "true";
+    if (!smsOk) {
+      console.warn(`[TALK OTP] SMS not sent to ${phoneE164} — check TWILIO_* env and trial verified numbers`);
+    } else {
+      console.log(`[TALK OTP] SMS queued to ${phoneE164}`);
+    }
     if (showDev) {
       console.log(`[TALK OTP] ${phoneE164} → ${code} (also accepts ${process.env.OTP_DEV_CODE ?? "000000"})`);
     }
-    return { ok: true, phoneE164, devCode: showDev ? code : undefined };
+    return { ok: true, phoneE164, smsSent: smsOk, devCode: showDev ? code : undefined };
   }
 
   async verifyOtp(phone: string, code: string) {
