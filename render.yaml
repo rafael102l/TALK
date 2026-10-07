@@ -1,3 +1,9 @@
+databases:
+  - name: talk-db
+    plan: free
+    region: frankfurt
+    postgresMajorVersion: "16"
+
 services:
   - type: web
     name: talk-api
@@ -11,3 +17,8 @@ services:
         value: "true"
       - key: NODE_ENV
         value: production
+      # Survives deploys/restarts — not wiped like local SQLite on free web disk.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: talk-db
+          property: connectionString

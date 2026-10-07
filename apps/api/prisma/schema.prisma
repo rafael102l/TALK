@@ -3,7 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  // Postgres persists across Render deploys (SQLite on free web disk does not).
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
