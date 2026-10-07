@@ -1,12 +1,12 @@
 import { PublicUser, SOCKET_EVENTS } from "@talk/shared";
 import * as SecureStore from "expo-secure-store";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { api } from "./api";
+import { AppState } from "react-native";
+import { api, isAuthFailure } from "./api";
 import { ensureApiBase } from "./discover";
 import { clearHistoryCache } from "./historyCache";
 import { clearRecents } from "./recents";
 import { clearTalkContactsCache } from "./syncContacts";
-import { AppState } from "react-native";
 import { connectSocket, disconnectSocket, ensureSocket, getSocket } from "./socket";
 
 const TOKEN_KEY = "talk.jwt";
@@ -24,6 +24,12 @@ type AuthState = {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+async function clearLocalSession() {
+  disconnectSocket();
+  await SecureStore.deleteItemAsync(TOKEN_KEY);
+  await SecureStore.deleteItemAsync(USER_KEY);
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [token, setToken] = useState<string | null>(null);
@@ -39,6 +45,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setReady(true);
         return;
       }
+
+      // Optimistic restore — stay signed in across app restarts without re-OTP.
+      let cached: PublicUser | null = null;
+      if (rawUser) {
+        try {
+          cached = JSON.parse(rawUser) as PublicUser;
+          if (cached?.id) {
+            setToken(stored);
+            setUser(cached);
+          }
+        } catch {
+          cached = null;
+        }
+      } else {
+        setToken(stored);
+      }
+
       try {
         await ensureApiBase();
         const me = await api<PublicUser>("/users/me", { token: stored });
@@ -49,23 +72,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         const offline = message.includes("אין חיבור");
-        // Stale JWT after Render DB reset / session replace — force clean login.
-        if (!offline) {
-          disconnectSocket();
-          await SecureStore.deleteItemAsync(TOKEN_KEY);
-          await SecureStore.deleteItemAsync(USER_KEY);
+        // Only wipe local session when the server explicitly replaced/invalidated it.
+        // Network blips keep you signed in (WhatsApp-style).
+        if (!offline && isAuthFailure(message)) {
+          await clearLocalSession();
           setToken(null);
           setUser(null);
-        } else if (rawUser) {
-          try {
-            const cached = JSON.parse(rawUser) as PublicUser;
-            if (cached?.id) {
-              setToken(stored);
-              setUser(cached);
-            }
-          } catch {
-            /* ignore bad cache */
-          }
+        } else if (cached?.id) {
+          setToken(stored);
+          setUser(cached);
+          void ensureApiBase().then(() => connectSocket(stored)).catch(() => undefined);
         }
       } finally {
         setReady(true);
@@ -90,9 +106,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const sock = ensureSocket(token);
     const onReplaced = () => {
       void (async () => {
-        disconnectSocket();
-        await SecureStore.deleteItemAsync(TOKEN_KEY);
-        await SecureStore.deleteItemAsync(USER_KEY);
+        await clearLocalSession();
         setToken(null);
         setUser(null);
       })();
@@ -110,7 +124,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       setUser,
       async login(nextToken, nextUser) {
-        // Drop peer IDs/history from a previous server (e.g. LAN → Render).
         clearHistoryCache();
         clearTalkContactsCache();
         await clearRecents().catch(() => undefined);
@@ -128,9 +141,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         void SecureStore.setItemAsync(USER_KEY, JSON.stringify(me));
       },
       async logout() {
-        disconnectSocket();
-        await SecureStore.deleteItemAsync(TOKEN_KEY);
-        await SecureStore.deleteItemAsync(USER_KEY);
+        const current = token;
+        try {
+          if (current) {
+            await api("/auth/logout", { method: "POST", token: current });
+          }
+        } catch {
+          // Still clear locally even if the server call fails.
+        }
+        await clearLocalSession();
         setToken(null);
         setUser(null);
       },

@@ -19,6 +19,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (typeof payload.sv !== "number" || payload.sv !== user.sessionVersion) {
       throw new UnauthorizedException("session replaced");
     }
+    // Heal sessions created before sessionActive existed — a valid JWT means signed in.
+    if (!user.sessionActive) {
+      return this.prisma.user.update({
+        where: { id: user.id },
+        data: { sessionActive: true },
+      });
+    }
     return user;
   }
 }

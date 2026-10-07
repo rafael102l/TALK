@@ -10,6 +10,7 @@ export type VoiceGender = "male" | "female" | "child";
 export type PublicUser = {
   id: string;
   phoneE164: string;
+  email?: string | null;
   displayName: string;
   avatarUrl: string | null;
   speakLang: LanguageCode;
@@ -18,6 +19,15 @@ export type PublicUser = {
   voiceCloneStatus: VoiceCloneStatus;
   plan: AccountPlan;
   createdAt: string;
+};
+
+/** Returned when phone OTP succeeds but the account is already active on another device. */
+export type DeviceTransferChallenge = {
+  requiresDeviceTransfer: true;
+  challengeToken: string;
+  phoneE164: string;
+  emailMasked: string | null;
+  hasEmail: boolean;
 };
 
 export type ContactStatus = "PENDING" | "ACCEPTED" | "BLOCKED";

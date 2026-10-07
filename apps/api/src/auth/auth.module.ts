@@ -12,7 +12,8 @@ import { JwtStrategy } from "./jwt.strategy";
     RealtimeModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET ?? "talk-dev-jwt-secret-change-in-production",
-      signOptions: { expiresIn: "30d" },
+      // Stay signed in across app restarts; only logout / new-device transfer clears it.
+      signOptions: { expiresIn: "365d" },
     }),
   ],
   controllers: [AuthController],

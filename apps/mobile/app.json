@@ -11,11 +11,14 @@
       "supportsTablet": false,
       "bundleIdentifier": "app.talk.ptt",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "TALK צריך מיקרופון כדי לשדר אוקי-טוקי.",
+        "NSMicrophoneUsageDescription": "TALK צריך מיקרופון כדי לתמלל שידורים במכשיר.",
         "NSSpeechRecognitionUsageDescription": "TALK מתמלל שידורים במכשיר כדי לתרגם בחינם.",
         "NSContactsUsageDescription": "TALK משתמש באנשי הקשר כדי למצוא מי כבר באפליקציה.",
         "NSPhotoLibraryUsageDescription": "TALK צריך תמונה כדי להציג אותך לחברים.",
-        "UIBackgroundModes": ["audio", "remote-notification"]
+        "UIBackgroundModes": [
+          "audio",
+          "remote-notification"
+        ]
       }
     },
     "android": {
@@ -28,7 +31,9 @@
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_MICROPHONE",
-        "android.permission.READ_MEDIA_IMAGES"
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.WRITE_CONTACTS"
       ]
     },
     "plugins": [
@@ -38,7 +43,6 @@
       "expo-av",
       "expo-contacts",
       "expo-notifications",
-      "expo-speech",
       [
         "expo-image-picker",
         {
@@ -57,7 +61,12 @@
       "typedRoutes": true
     },
     "extra": {
-      "apiUrl": "https://talk-2-8lqz.onrender.com"
-    }
+      "apiUrl": "https://talk-2-8lqz.onrender.com",
+      "router": {},
+      "eas": {
+        "projectId": "fb8dfb56-86af-45c1-aa8b-8f2106d26e51"
+      }
+    },
+    "owner": "refael33"
   }
 }

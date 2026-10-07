@@ -21,6 +21,7 @@ export class UsersService {
     user: User,
     data: {
       displayName?: string;
+      email?: string;
       speakLang?: string;
       listenLang?: string;
       voiceGender?: "male" | "female" | "child";
@@ -28,10 +29,17 @@ export class UsersService {
     },
   ) {
     const lang = data.speakLang || data.listenLang;
+    const email = data.email?.trim().toLowerCase();
+    if (email !== undefined && email.length > 0 && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new BadRequestException("כתובת אימייל לא תקינה");
+    }
     const updated = await this.prisma.user.update({
       where: { id: user.id },
       data: {
-        ...data,
+        ...(data.displayName !== undefined ? { displayName: data.displayName } : {}),
+        ...(email !== undefined ? { email: email || null } : {}),
+        ...(data.voiceGender !== undefined ? { voiceGender: data.voiceGender } : {}),
+        ...(data.plan !== undefined ? { plan: data.plan } : {}),
         ...(lang ? { speakLang: lang, listenLang: lang } : {}),
       },
     });

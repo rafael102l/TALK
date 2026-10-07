@@ -1,6 +1,7 @@
 import { AccountPlan, LanguageCode, VoiceGender } from "@talk/shared";
 import { useRouter } from "expo-router";
-import { Alert, Pressable, StyleSheet, Text } from "react-native";
+import { useState } from "react";
+import { Alert, Pressable, StyleSheet, Text, TextInput } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar } from "../../src/components/Avatar";
 import { BackBar } from "../../src/components/BackBar";
@@ -16,8 +17,10 @@ export default function SettingsScreen() {
   const router = useRouter();
   const { user, token, setUser, logout } = useAuth();
   const { t, align } = useI18n();
+  const [email, setEmail] = useState(user?.email ?? "");
 
   async function save(partial: {
+    email?: string;
     speakLang?: LanguageCode;
     listenLang?: LanguageCode;
     voiceGender?: VoiceGender;
@@ -31,6 +34,16 @@ export default function SettingsScreen() {
       body: JSON.stringify(lang ? { ...partial, speakLang: lang, listenLang: lang } : partial),
     });
     if (updated) setUser(updated);
+  }
+
+  async function saveEmail() {
+    const trimmed = email.trim();
+    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      Alert.alert("TALK", "אימייל לא תקין");
+      return;
+    }
+    await save({ email: trimmed });
+    Alert.alert("TALK", "האימייל נשמר");
   }
 
   async function changePhoto() {
@@ -75,6 +88,22 @@ export default function SettingsScreen() {
       </Pressable>
       <Text style={[styles.name, { textAlign: align }]}>{user?.displayName}</Text>
       <Text style={[styles.meta, { textAlign: align }]}>{user?.phoneE164}</Text>
+      <Text style={[styles.label, { textAlign: align }]}>אימייל לשחזור</Text>
+      <TextInput
+        style={styles.input}
+        value={email}
+        onChangeText={setEmail}
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholder="name@email.com"
+        placeholderTextColor={colors.muted}
+        textAlign={align}
+        onEndEditing={() => void saveEmail()}
+      />
+      <Pressable onPress={() => void saveEmail()}>
+        <Text style={[styles.saveEmail, { textAlign: align }]}>שמירת אימייל</Text>
+      </Pressable>
       <Text style={[styles.label, { textAlign: align }]}>{t("myLanguage")}</Text>
       <LanguagePicker
         value={user?.speakLang ?? user?.listenLang ?? "he"}
@@ -108,6 +137,16 @@ const styles = StyleSheet.create({
   name: { color: colors.amber, fontSize: 20 },
   meta: { color: colors.muted },
   label: { color: colors.amber, marginTop: 10 },
+  input: {
+    backgroundColor: colors.panel,
+    borderColor: colors.line,
+    borderWidth: 1,
+    borderRadius: 12,
+    color: colors.text,
+    padding: 12,
+    fontSize: 16,
+  },
+  saveEmail: { color: colors.amber, fontWeight: "700", marginBottom: 4 },
   logout: { marginTop: 12, alignItems: "center" },
   logoutText: { color: colors.red, fontSize: 16, fontWeight: "700" },
   deleteText: { color: colors.muted, fontSize: 15, fontWeight: "700" },

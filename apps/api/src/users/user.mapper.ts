@@ -12,6 +12,7 @@ export function toPublicUser(user: User): PublicUser {
   return {
     id: user.id,
     phoneE164: user.phoneE164,
+    email: user.email ?? null,
     displayName: user.displayName,
     avatarUrl: mediaUrl(user.avatarUrl),
     speakLang: isLanguageCode(user.speakLang) ? user.speakLang : "he",

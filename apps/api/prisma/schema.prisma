@@ -51,7 +51,11 @@ model User {
   voiceCloneStatus VoiceCloneStatus @default(NONE)
   plan             AccountPlan      @default(FREE)
   expoPushToken    String?
-  /** Bumped on each successful login; JWT must carry matching sv (single active device). */
+  /** Optional recovery email — required when moving the account to a new device. */
+  email            String?
+  /** False after explicit logout; true while a device holds a valid session. */
+  sessionActive    Boolean          @default(false)
+  /** Bumped on each successful login / logout; JWT must carry matching sv (single active device). */
   sessionVersion   Int              @default(0)
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
@@ -65,16 +69,20 @@ model User {
 }
 
 model OtpCode {
-  id        String   @id @default(cuid())
-  userId    String?
-  phoneE164 String
-  codeHash  String
-  expiresAt DateTime
-  consumed  Boolean  @default(false)
-  createdAt DateTime @default(now())
-  user      User?    @relation(fields: [userId], references: [id])
+  id          String   @id @default(cuid())
+  userId      String?
+  phoneE164   String
+  codeHash    String
+  expiresAt   DateTime
+  consumed    Boolean  @default(false)
+  /** login | transfer_sms | transfer_email */
+  purpose     String   @default("login")
+  destination String?
+  createdAt   DateTime @default(now())
+  user        User?    @relation(fields: [userId], references: [id])
 
   @@index([phoneE164])
+  @@index([purpose, phoneE164])
 }
 
 model Contact {

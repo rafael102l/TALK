@@ -48,8 +48,12 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
   }
 }
 
+export function isAuthFailure(message: string) {
+  return /unauthorized|session replaced|לא מורשה|401|session expired|session invalidated/i.test(message);
+}
+
 function isAuthError(message: string) {
-  return /unauthorized|session replaced|לא מורשה|401/i.test(message);
+  return isAuthFailure(message);
 }
 
 function offlineMessage() {

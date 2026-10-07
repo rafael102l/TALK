@@ -16,6 +16,7 @@ export default function ProfileOnboarding() {
   const router = useRouter();
   const { token, user, setUser } = useAuth();
   const [name, setName] = useState(user?.displayName ?? "");
+  const [email, setEmail] = useState(user?.email ?? "");
   const [photo, setPhoto] = useState(user?.avatarUrl ?? "");
   const [lang, setLang] = useState<LanguageCode>(user?.speakLang ?? user?.listenLang ?? "he");
   const [voiceGender, setVoiceGender] = useState<VoiceGender>(user?.voiceGender ?? "male");
@@ -42,6 +43,10 @@ export default function ProfileOnboarding() {
       setError(t("needName"));
       return;
     }
+    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setError("יש להזין אימייל תקין לשחזור חשבון");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -50,6 +55,7 @@ export default function ProfileOnboarding() {
         token,
         body: JSON.stringify({
           displayName: name.trim(),
+          email: email.trim(),
           speakLang: lang,
           listenLang: lang,
           voiceGender,
@@ -79,6 +85,17 @@ export default function ProfileOnboarding() {
         value={name}
         onChangeText={setName}
         placeholder={t("namePlaceholder")}
+        placeholderTextColor={colors.muted}
+        textAlign={align}
+      />
+      <TextInput
+        style={styles.input}
+        value={email}
+        onChangeText={setEmail}
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoCorrect={false}
+        placeholder="אימייל לשחזור / מכשיר חדש"
         placeholderTextColor={colors.muted}
         textAlign={align}
       />

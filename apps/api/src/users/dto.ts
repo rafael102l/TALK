@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
+import { IsEmail, IsIn, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
 import { LANGUAGES } from "@talk/shared";
 
 const codes = LANGUAGES.map((l) => l.code);
@@ -9,6 +9,10 @@ export class UpdateProfileDto {
   @MinLength(1)
   @MaxLength(40)
   displayName?: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
 
   @IsOptional()
   @IsIn(codes)
