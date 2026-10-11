@@ -24,7 +24,8 @@ export class StorageService {
     await mkdir(dir, { recursive: true });
     const name = `${randomUUID()}.${ext.replace(/^\./, "")}`;
     await writeFile(join(dir, name), buffer);
-    if (folder === "audio") await this.rememberAudio(name, buffer, mimeFor(name));
+    // The other phone is told as soon as the file is on disk. The database copy must not hold that up.
+    if (folder === "audio") void this.rememberAudio(name, buffer, mimeFor(name));
     return `/media/${folder}/${name}`;
   }
 

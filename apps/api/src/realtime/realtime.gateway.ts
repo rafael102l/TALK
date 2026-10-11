@@ -73,7 +73,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       void this.sendUnplayedWalkies(userId).catch((error: Error) => {
         this.logger.warn(`Walkie replay failed: ${error.message}`);
       });
-    }, 1200);
+    }, 200);
   }
 
   private async sendUnplayedWalkies(userId: string) {
@@ -167,29 +167,40 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage(SOCKET_EVENTS.PTT_START)
   async pttStart(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { channelId?: string; targetUserIds?: string[]; everyone?: boolean },
+    @MessageBody()
+    body: {
+      channelId?: string;
+      targetUserIds?: string[];
+      everyone?: boolean;
+      speakerName?: string;
+      speakerAvatarUrl?: string | null;
+      voiceGender?: "male" | "female" | "child";
+    },
   ) {
     if (!client.userId) return;
-    if (!(await this.sessionStillValid(client))) {
-      client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
-      client.disconnect(true);
-      return { ok: false };
-    }
-    const room = await this.floorRoom(client.userId, body);
+    // Named targets are already on the phone. Tell the other phone immediately — do not wait for the database.
+    const named = [...new Set((body.targetUserIds ?? []).filter((id) => id && id !== client.userId))];
+    const room = named.length
+      ? { key: `targets:${[client.userId, ...named].sort().join(",")}`, listenerIds: named }
+      : await this.floorRoom(client.userId, body);
     if (!room) return { ok: false };
-    const speaker = await this.prisma.user.findUnique({ where: { id: client.userId } });
-    const pub = speaker ? toPublicUser(speaker) : null;
+    const gender = body.voiceGender === "female" || body.voiceGender === "child" ? body.voiceGender : "male";
     const payload: PttSpeakingPayload = {
       channelId: room.key,
       speakerId: client.userId,
-      speakerName: pub?.displayName || client.displayName || "דובר",
-      speakerAvatarUrl: pub?.avatarUrl ?? null,
-      voiceGender: pub?.voiceGender ?? "male",
+      speakerName: body.speakerName || client.displayName || "דובר",
+      speakerAvatarUrl: body.speakerAvatarUrl ?? null,
+      voiceGender: gender,
     };
     for (const userId of room.listenerIds) {
       if (userId === client.userId) continue;
       this.emitToUser(userId, SOCKET_EVENTS.PTT_SPEAKING, payload);
     }
+    void this.sessionStillValid(client).then((ok) => {
+      if (ok) return;
+      client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
+      client.disconnect(true);
+    });
     return { ok: true, floorKey: room.key };
   }
 

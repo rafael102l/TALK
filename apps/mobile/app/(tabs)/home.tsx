@@ -625,6 +625,12 @@ export default function HomeScreen() {
       setTalking(true);
       setStatus(t("tx"));
       clockRef.current = { press: Date.now() };
+      getSocket()?.emit(SOCKET_EVENTS.PTT_START, {
+        targetUserIds: ids,
+        speakerName: user?.displayName || "",
+        speakerAvatarUrl: user?.avatarUrl ?? null,
+        voiceGender: user?.voiceGender ?? "male",
+      });
       await startRecording();
       if (wantEndRef.current) {
         await end();
