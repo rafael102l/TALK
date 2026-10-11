@@ -86,7 +86,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   private async sendUnplayedWalkies(userId: string) {
-    const since = new Date(Date.now() - 15 * 1000);
+    const since = new Date(Date.now() - 2 * 60 * 1000);
     const rows = await this.prisma.transmissionTarget.findMany({
       where: {
         userId,
@@ -100,14 +100,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       },
       include: { transmission: { include: { sender: true } } },
       orderBy: { transmission: { createdAt: "asc" } },
-      take: 1,
+      take: 3,
     });
     if (!rows.length) return;
     for (const row of rows) {
       const tx = row.transmission;
       const sender = toPublicUser(tx.sender);
       const lang = row.language || sender.speakLang || "he";
-      const delivered = this.emitToUser(userId, SOCKET_EVENTS.TRANSMISSION_READY, {
+      this.emitToUser(userId, SOCKET_EVENTS.TRANSMISSION_READY, {
         transmissionId: tx.id,
         channelId: tx.channelId,
         senderId: tx.senderId,
@@ -130,12 +130,6 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         readyAt: tx.createdAt.getTime(),
         releasedAt: tx.createdAt.getTime(),
       }, false);
-      if (delivered) {
-        void this.prisma.transmissionTarget.update({
-          where: { id: row.id },
-          data: { playedAt: new Date(), deliveredAt: new Date() },
-        });
-      }
     }
     this.logger.log(`Walkie replay user=${userId} count=${rows.length}`);
   }
@@ -290,7 +284,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (!n) {
       this.logger.warn(`No live socket for ${event} user=${userId}`);
       if (retry && event === SOCKET_EVENTS.TRANSMISSION_READY) {
-        setTimeout(() => this.emitToUser(userId, event, payload, false), 1000);
+        setTimeout(() => this.emitToUser(userId, event, payload, false), 2000);
+        setTimeout(() => this.emitToUser(userId, event, payload, false), 8000);
       }
       return false;
     }

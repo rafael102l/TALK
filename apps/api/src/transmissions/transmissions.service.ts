@@ -212,10 +212,10 @@ export class TransmissionsService {
       readyAt: Date.now(),
     };
     for (const target of transmission.targets) {
-      const heard = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+      this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
       void this.prisma.transmissionTarget.update({
         where: { id: target.id },
-        data: { deliveredAt: new Date(), ...(heard ? { playedAt: new Date() } : {}) },
+        data: { deliveredAt: new Date() },
       });
     }
     this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, payload);

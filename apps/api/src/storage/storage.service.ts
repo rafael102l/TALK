@@ -24,9 +24,11 @@ export class StorageService {
     await mkdir(dir, { recursive: true });
     const name = `${randomUUID()}.${ext.replace(/^\./, "")}`;
     await writeFile(join(dir, name), buffer);
-    // The other phone fetches this URL immediately. The database copy has to exist first,
-    // because the request can land on a different server than the one that saved the disk file.
-    if (folder === "audio") await this.rememberAudio(name, buffer, mimeFor(name));
+    if (folder === "audio") {
+      void this.rememberAudio(name, buffer, mimeFor(name)).catch((error: Error) => {
+        console.error(`[audio] store failed: ${error.message}`);
+      });
+    }
     return `/media/${folder}/${name}`;
   }
 
