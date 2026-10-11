@@ -307,18 +307,10 @@ export class TransmissionsService {
         });
         return;
       }
-      // Audio present but STT heard nothing — do not emit silent walkie to the other side.
+      // No words heard — still deliver the recording as it sounded (noise included).
       if (!originalText && !textOnly) {
-        gate("speech");
-        await this.prisma.transmission.update({
-          where: { id: transmission.id },
-          data: { status: "FAILED", originalText: null },
-        });
-        this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_FAILED, {
-          transmissionId: transmission.id,
-          senderId: sender.id,
-        });
-        return;
+        originalText = "";
+        sourceLang = speakerLang;
       }
       this.logger.log(`Source ${transmission.id} spoke=${sourceLang} profile=${speakerLang}`);
       const keepNames = textOnly

@@ -662,14 +662,7 @@ export default function HomeScreen() {
       setStatus(t("txFail"));
       return;
     }
-    if ((recorded.durationMs ?? 0) < 500) {
-      setStatus(t("tooShort"));
-      return;
-    }
-    if (typeof recorded.peakDb === "number" && recorded.peakDb > -159 && recorded.peakDb < -45) {
-      setStatus(t("tooShort"));
-      return;
-    }
+    if (!recorded.durationMs && holdMs > 0) recorded.durationMs = holdMs;
     void sendWalkie(recorded, ids, release);
   }
 

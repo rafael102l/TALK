@@ -358,10 +358,6 @@ export default function ConversationScreen() {
     setPaused(false);
     const recorded = await stopRecording();
     if (!recorded?.uri || !token || !userId) return;
-    if ((recorded.durationMs ?? 0) < 400) {
-      setError(t("tooShort"));
-      return;
-    }
     setError("");
     const optimistic: HistoryItem = {
       id: `local-${Date.now()}`,
@@ -446,10 +442,6 @@ export default function ConversationScreen() {
     }
     const holdMs = walkiePressRef.current ? release - walkiePressRef.current : 0;
     const durationMs = recorded.durationMs || holdMs;
-    if (durationMs < 500) {
-      setError(t("tooShort"));
-      return;
-    }
     setError("");
     const optimistic: HistoryItem = {
       id: `local-${Date.now()}`,
