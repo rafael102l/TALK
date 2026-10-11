@@ -66,20 +66,26 @@ export class TransmissionsService {
     const kind = input.kind === "voice" ? "voice" : "walkie";
 
     const speakerLang = sender.speakLang || sender.listenLang;
-    const hint = collapseRepeats(input.originalText?.trim() || "");
-    const skipStt = Boolean(hint && !isHallucination(hint) && matchesLang(hint, speakerLang));
-    const sttEarly: Promise<SttResult> = skipStt
-      ? Promise.resolve({ text: hint, lang: detectLang(hint) || speakerLang })
-      : this.stt.transcribeBytes(file.buffer, "", mime, ext);
-
     const targetIds = await this.resolveTargets(sender, input);
     if (!targetIds.length) throw new BadRequestException("לא נבחרו נמענים");
 
+    const users = await this.prisma.user.findMany({ where: { id: { in: targetIds } } });
+    const sameLanguage =
+      users.length > 0 &&
+      users.every((user) => (user.listenLang || user.speakLang) === speakerLang);
+    const hint = collapseRepeats(input.originalText?.trim() || "");
+    const hasHint = Boolean(hint && !isHallucination(hint) && matchesLang(hint, speakerLang));
+    // Same language on both phones: send the recording as-is. Do not wait on speech-to-text.
+    const sttEarly: Promise<SttResult> =
+      sameLanguage || hasHint
+        ? Promise.resolve({ text: sameLanguage ? "" : hint, lang: detectLang(hint) || speakerLang })
+        : this.stt.transcribeBytes(file.buffer, "", mime, ext);
+    if (sameLanguage) {
+      this.logger.log(`Same language ${speakerLang} — skip STT`);
+    }
+
     const channel = await this.ensureChannel(sender, input.channelId, targetIds);
-    const [audioUrl, users] = await Promise.all([
-      this.storage.save(file.buffer, ext, "audio"),
-      this.prisma.user.findMany({ where: { id: { in: targetIds } } }),
-    ]);
+    const audioUrl = await this.storage.save(file.buffer, ext, "audio");
     const sttP = sttEarly;
 
     const transmission = await this.prisma.transmission.create({
@@ -111,7 +117,7 @@ export class TransmissionsService {
       });
     }
 
-    void this.finish(transmission, sender, sttP, started, { clientRelease });
+    void this.finish(transmission, sender, sttP, started, { clientRelease, sameLanguage });
     void Promise.all(
       users.map(async (target) => {
         await this.contacts.ensureIncoming(target, sender);
@@ -187,7 +193,7 @@ export class TransmissionsService {
     sender: User,
     sttP: Promise<SttResult>,
     started: number,
-    opts: { textOnly?: boolean; clientRelease?: number } = {},
+    opts: { textOnly?: boolean; clientRelease?: number; sameLanguage?: boolean } = {},
   ) {
     const textOnly = Boolean(opts.textOnly || !transmission.originalAudioUrl);
     const clientRelease = opts.clientRelease ?? started;
@@ -287,7 +293,7 @@ export class TransmissionsService {
         }
       };
 
-      if (!textOnly && !originalText) await retranscribeOnce();
+      if (!textOnly && !originalText && !opts.sameLanguage) await retranscribeOnce();
 
       const needTranslate = [
         ...new Set(

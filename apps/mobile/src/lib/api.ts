@@ -28,6 +28,11 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
     return await requestOnce<T>(base, path, options, headers, timeoutMs);
   } catch (error) {
     const message = (error as Error).message || "";
+    // 502/503/504 come from Render's proxy when the free server (or its database) is still waking.
+    // One more try on the same URL. Other server errors stay final.
+    if (isGatewayTimeout(message) && cloud && !options.once) {
+      return await requestOnce<T>(base, path, options, headers, Math.max(timeoutMs, 60000));
+    }
     if (options.once || isAuthError(message) || message.startsWith("שגיאת שרת") || message.includes("מספר")) {
       throw error;
     }
@@ -59,6 +64,10 @@ export function isAuthFailure(message: string) {
 
 function isAuthError(message: string) {
   return isAuthFailure(message);
+}
+
+function isGatewayTimeout(message: string) {
+  return /שגיאת שרת \((502|503|504)\)/.test(message);
 }
 
 function offlineMessage() {
