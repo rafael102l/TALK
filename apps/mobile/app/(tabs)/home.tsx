@@ -615,10 +615,6 @@ export default function HomeScreen() {
         await end();
         return;
       }
-      const unlocked = { ...sessionUnlockedRef.current };
-      for (const id of sendingIds.current) unlocked[id] = true;
-      sessionUnlockedRef.current = unlocked;
-      setSessionUnlocked(unlocked);
       getSocket()?.emit(SOCKET_EVENTS.PTT_START, { targetUserIds: sendingIds.current });
       timer.current = setTimeout(() => void end(), MAX_PTT_MS);
     } catch (e) {
@@ -805,7 +801,7 @@ export default function HomeScreen() {
                 })
                 .catch(() => undefined);
             }
-            if (!openTalk(id) && pendingBySenderRef.current[id]?.length) {
+            if (pendingBySenderRef.current[id]?.length) {
               void hearPendingQueue(id);
               return;
             }

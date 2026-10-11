@@ -70,6 +70,9 @@ export class TransmissionsService {
     if (!targetIds.length) throw new BadRequestException("לא נבחרו נמענים");
 
     const users = await this.prisma.user.findMany({ where: { id: { in: targetIds } } });
+    if (kind === "walkie") {
+      return this.relayWalkie(sender, file, input, users, targetIds, clientRelease);
+    }
     const sameLanguage =
       users.length > 0 &&
       users.every((user) => (user.listenLang || user.speakLang) === speakerLang);
@@ -125,6 +128,81 @@ export class TransmissionsService {
       }),
     );
     return { id: transmission.id, status: "PROCESSING" as const, channelId: channel.id };
+  }
+
+  /** Walkie is the recording itself. Translation stays in the codebase and is not on this path. */
+  private async relayWalkie(
+    sender: User,
+    file: Express.Multer.File,
+    input: { channelId?: string; durationMs?: number },
+    users: User[],
+    targetIds: string[],
+    clientRelease: number,
+  ) {
+    const channel = await this.ensureChannel(sender, input.channelId, targetIds);
+    const audioUrl = await this.storage.save(file.buffer, extFrom(file), "audio");
+    const lang = sender.speakLang || sender.listenLang || "he";
+    const transmission = await this.prisma.transmission.create({
+      data: {
+        senderId: sender.id,
+        channelId: channel.id,
+        originalAudioUrl: audioUrl,
+        originalText: null,
+        durationMs: input.durationMs ?? null,
+        kind: "walkie",
+        viewOnce: false,
+        status: "READY",
+        targets: {
+          create: users.map((user) => ({
+            userId: user.id,
+            language: lang,
+          })),
+        },
+      },
+      include: { targets: true },
+    });
+    const senderPublic = toPublicUser(sender);
+    const voiceGender =
+      sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male";
+    const payload: TransmissionReadyPayload = {
+      transmissionId: transmission.id,
+      channelId: transmission.channelId,
+      senderId: sender.id,
+      senderName: sender.displayName || sender.phoneE164,
+      language: lang,
+      speakLang: lang,
+      mode: sender.plan === "PLUS" ? "plus" : "free",
+      audioUrl: this.storage.publicUrl(audioUrl),
+      originalText: "",
+      translatedText: "",
+      durationMs: transmission.durationMs,
+      usedOriginalVoice: true,
+      needsAccept: false,
+      live: false,
+      senderPhone: sender.phoneE164,
+      senderAvatarUrl: senderPublic.avatarUrl,
+      voiceGender,
+      kind: "walkie",
+      viewOnce: false,
+      releasedAt: clientRelease,
+      readyAt: Date.now(),
+    };
+    for (const target of transmission.targets) {
+      this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+      void this.prisma.transmissionTarget.update({
+        where: { id: target.id },
+        data: { deliveredAt: new Date() },
+      });
+    }
+    this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+    this.logger.log(`Walkie relay ${transmission.id} targets=${transmission.targets.length}`);
+    void Promise.all(
+      users.map(async (target) => {
+        await this.contacts.ensureIncoming(target, sender);
+        await this.contacts.ensureMutualTalk(sender, target);
+      }),
+    );
+    return { id: transmission.id, status: "READY" as const, channelId: channel.id };
   }
 
   async createText(
