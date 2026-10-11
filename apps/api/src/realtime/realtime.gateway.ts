@@ -40,30 +40,39 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     try {
       const token = this.readToken(client);
       const payload = await this.jwt.verifyAsync<JwtPayload>(token);
-      const user = await loadUser(this.prisma, payload.sub);
-      if (!user) throw new Error("no user");
-      if (typeof payload.sv !== "number" || payload.sv !== user.sessionVersion) {
-        throw new Error("session replaced");
-      }
-      client.userId = user.id;
-      client.displayName = user.displayName;
-      client.sessionVersion = user.sessionVersion;
-      // Join first so a forced disconnect of older sockets won't clear presence.
-      client.join(`user:${user.id}`);
-      // A reconnect opens a second socket for the same login. Drop the old one quietly.
-      this.revokeUserSessions(user.id, client.id, false);
-      await this.presence.setOnline(user.id, client.id);
-      const channelIds = await loadChannelIds(this.prisma, user.id);
-      for (const channelId of channelIds) client.join(`channel:${channelId}`);
-      const roomSize = this.server.sockets.adapter.rooms.get(`user:${user.id}`)?.size ?? 1;
-      this.logger.log(
-        `Socket online user=${user.displayName || user.id} room=user:${user.id} sockets=${roomSize}`,
-      );
-      this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: user.id, online: true });
-      this.replayWalkies(user.id);
+      // Join before any database call. A slow database was dropping the phone,
+      // so the recording was saved with nobody there to receive it.
+      client.userId = payload.sub;
+      client.displayName = payload.phone;
+      client.sessionVersion = payload.sv;
+      client.join(`user:${payload.sub}`);
+      this.revokeUserSessions(payload.sub, client.id, false);
+      const roomSize = this.server.sockets.adapter.rooms.get(`user:${payload.sub}`)?.size ?? 1;
+      this.logger.log(`Socket online user=${payload.sub} room=user:${payload.sub} sockets=${roomSize}`);
+      this.replayWalkies(payload.sub);
+      void this.finishConnection(client, payload);
     } catch (error) {
       this.logger.warn(`Socket rejected: ${(error as Error).message}`);
       client.disconnect(true);
+    }
+  }
+
+  private async finishConnection(client: AuthedSocket, payload: JwtPayload) {
+    try {
+      const user = await loadUser(this.prisma, payload.sub);
+      if (!user || payload.sv !== user.sessionVersion) {
+        client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
+        client.disconnect(true);
+        return;
+      }
+      client.displayName = user.displayName;
+      client.sessionVersion = user.sessionVersion;
+      await this.presence.setOnline(user.id, client.id);
+      const channelIds = await loadChannelIds(this.prisma, user.id);
+      for (const channelId of channelIds) client.join(`channel:${channelId}`);
+      this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: user.id, online: true });
+    } catch (error) {
+      this.logger.warn(`Socket profile delayed: ${(error as Error).message}`);
     }
   }
 
@@ -265,7 +274,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.in(`user:${userId}`).socketsJoin(`channel:${channelId}`);
   }
 
-  emitToUser(userId: string, event: string, payload: unknown) {
+  emitToUser(userId: string, event: string, payload: unknown, retry = true) {
     const room = `user:${userId}`;
     if (!this.server?.sockets) {
       this.logger.warn(`Socket server not ready for ${event} user=${userId}`);
@@ -274,6 +283,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const n = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
     if (!n) {
       this.logger.warn(`No live socket for ${event} user=${userId}`);
+      if (retry && event === SOCKET_EVENTS.TRANSMISSION_READY) {
+        setTimeout(() => this.emitToUser(userId, event, payload, false), 1000);
+      }
       return;
     }
     if (n > 1) {
