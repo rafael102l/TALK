@@ -140,13 +140,15 @@ export class ContactsService {
     });
     const byHash = new Map(existingUsers.map((u) => [u.phoneHash, u]));
     const byPhone = new Map(existingUsers.map((u) => [u.phoneE164, u]));
+    const existingContacts = await this.prisma.contact.findMany({
+      where: { ownerId: owner.id, phoneHash: { in: hashes } },
+    });
+    const currentByHash = new Map(existingContacts.map((row) => [row.phoneHash, row]));
 
     for (const contact of normalized) {
       const matched = byHash.get(contact.phoneHash) ?? byPhone.get(contact.phoneE164);
       const displayName = matched?.displayName?.trim() || contact.displayName || contact.phoneE164;
-      const current = await this.prisma.contact.findUnique({
-        where: { ownerId_phoneHash: { ownerId: owner.id, phoneHash: contact.phoneHash } },
-      });
+      const current = currentByHash.get(contact.phoneHash);
       if (current?.status === "BLOCKED") continue;
       if (
         current &&
