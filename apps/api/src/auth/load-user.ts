@@ -13,15 +13,22 @@ function poolFull(error: unknown) {
 export async function loadUser(prisma: PrismaService, id: string): Promise<User | null> {
   const hit = users.get(id);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.user;
-  try {
-    const user = await prisma.user.findUnique({ where: { id } });
-    if (user) users.set(id, { user, at: Date.now() });
-    else users.delete(id);
-    return user;
-  } catch (error) {
-    if (poolFull(error) && hit) return hit.user;
-    throw error;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const user = await prisma.user.findUnique({ where: { id } });
+      if (user) users.set(id, { user, at: Date.now() });
+      else users.delete(id);
+      return user;
+    } catch (error) {
+      if (poolFull(error) && hit) return hit.user;
+      if (poolFull(error) && attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+      throw error;
+    }
   }
+  return hit?.user ?? null;
 }
 
 export async function loadChannelIds(prisma: PrismaService, userId: string): Promise<string[]> {

@@ -9,6 +9,7 @@ function pooledDatabaseUrl(raw: string | undefined) {
   const kept = query
     .split("&")
     .filter((part) => part && !/^(connection_limit|pool_timeout|connect_timeout|socket_timeout)=/.test(part));
+  if (!kept.some((part) => part.startsWith("sslmode="))) kept.push("sslmode=require");
   kept.push("connection_limit=10", "pool_timeout=20");
   return `${base}?${kept.join("&")}`;
 }

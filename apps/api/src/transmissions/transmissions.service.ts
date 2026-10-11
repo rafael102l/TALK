@@ -6,7 +6,7 @@ import {
   InternalServerErrorException,
   Logger,
 } from "@nestjs/common";
-import { User } from "@prisma/client";
+import { Prisma, User } from "@prisma/client";
 import { HistoryItem, SOCKET_EVENTS, TransmissionReadyPayload } from "@talk/shared";
 import { readFile } from "fs/promises";
 import {
@@ -140,6 +140,14 @@ export class TransmissionsService {
     try {
       return await this.relayWalkieNow(sender, file, input, users, targetIds, clientRelease);
     } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2024") {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        try {
+          return await this.relayWalkieNow(sender, file, input, users, targetIds, clientRelease);
+        } catch (retryError) {
+          error = retryError;
+        }
+      }
       if (error instanceof HttpException) throw error;
       const message = error instanceof Error ? error.message : "Internal server error";
       this.logger.error(`Walkie relay failed: ${message}`);
