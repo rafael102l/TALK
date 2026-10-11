@@ -73,10 +73,23 @@ export class AuthService {
 
   async requestOtp(phone: string) {
     const phoneE164 = this.normalizePhone(phone);
+    const recent = await this.prisma.otpCode.findFirst({
+      where: {
+        phoneE164,
+        purpose: "login",
+        consumed: false,
+        expiresAt: { gt: new Date() },
+        createdAt: { gt: new Date(Date.now() - 60_000) },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    if (recent) {
+      return { ok: true, phoneE164, smsSent: true, reused: true };
+    }
+
     const code = this.generateCode();
     const codeHash = await bcrypt.hash(code, 10);
     try {
-      // Keep the previous SMS valid. A retry must not invalidate the code already on the phone.
       await this.prisma.otpCode.create({
         data: {
           phoneE164,
@@ -89,6 +102,7 @@ export class AuthService {
       console.error("[TALK OTP] database error", (error as Error).message);
       throw error;
     }
+
     const smsOk = await this.sendSms(
       phoneE164,
       `קוד הכניסה ל-TALK: ${code}. הקוד תקף ל-5 דקות.`,
@@ -135,11 +149,7 @@ export class AuthService {
       return { ...session, isNew: true };
     }
 
-    // Account already signed in elsewhere → WhatsApp-style device transfer.
-    if (user.sessionActive) {
-      return this.beginDeviceTransfer(user);
-    }
-
+    // One SMS is enough. Signing in here replaces the other device.
     const session = await this.issueSession(user);
     return { ...session, isNew: false };
   }
@@ -309,7 +319,7 @@ export class AuthService {
     const rows = await this.prisma.otpCode.findMany({
       where: {
         phoneE164: opts.phoneE164,
-        purpose: opts.purpose,
+        purpose: opts.purpose === "login" ? { in: ["login", "transfer_sms"] } : opts.purpose,
         createdAt: { gt: since },
         ...(opts.destination ? { destination: opts.destination } : {}),
       },
