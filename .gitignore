@@ -7,6 +7,7 @@ dist
 .env.local
 apps/api/storage
 apps/api/prisma/dev.db
+apps/api/prisma/schema.runtime.prisma
 apps/api/serviceAccountKey.json
 apps/api/serviceAccountKey.json.json
 
