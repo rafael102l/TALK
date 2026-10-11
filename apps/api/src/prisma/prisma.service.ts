@@ -1,13 +1,16 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
 import { PrismaClient } from "@prisma/client";
 
-/** Two phones were opening a connection on every retry until none were left. */
+/** Keep enough connections for a recording. A short socket timeout was cutting SSL and Postgres logged "unexpected eof". */
 function pooledDatabaseUrl(raw: string | undefined) {
   const url = raw?.trim() ?? "";
   if (!url.startsWith("postgres")) return url;
-  if (/[?&]connection_limit=/.test(url)) return url;
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}connection_limit=2&pool_timeout=10&connect_timeout=10&socket_timeout=15`;
+  const [base, query = ""] = url.split("?");
+  const kept = query
+    .split("&")
+    .filter((part) => part && !/^(connection_limit|pool_timeout|connect_timeout|socket_timeout)=/.test(part));
+  kept.push("connection_limit=10", "pool_timeout=20");
+  return `${base}?${kept.join("&")}`;
 }
 
 @Injectable()

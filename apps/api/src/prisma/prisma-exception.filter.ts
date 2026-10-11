@@ -20,9 +20,7 @@ export class PrismaExceptionFilter implements ExceptionFilter {
     } else {
       console.error("[api]", exception);
     }
-    // The phone treats this wording as final and does not retry the request.
-    response.status(poolFull ? 503 : 500).json({
-      message: poolFull ? "שגיאת שרת (503)" : "שגיאת שרת (500)",
-    });
+    // 503 makes the phone retry and grab another connection. A pool timeout must stay final.
+    response.status(500).json({ message: "שגיאת שרת (500)" });
   }
 }
