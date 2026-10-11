@@ -131,14 +131,18 @@ export class ContactsService {
       })
       .filter((item): item is NonNullable<typeof item> => Boolean(item));
 
+    if (!normalized.length) return this.list(owner);
+
     const hashes = [...new Set(normalized.map((c) => c.phoneHash))];
+    const phones = [...new Set(normalized.map((c) => c.phoneE164))];
     const existingUsers = await this.prisma.user.findMany({
-      where: { phoneHash: { in: hashes } },
+      where: { OR: [{ phoneHash: { in: hashes } }, { phoneE164: { in: phones } }] },
     });
     const byHash = new Map(existingUsers.map((u) => [u.phoneHash, u]));
+    const byPhone = new Map(existingUsers.map((u) => [u.phoneE164, u]));
 
     for (const contact of normalized) {
-      const matched = byHash.get(contact.phoneHash);
+      const matched = byHash.get(contact.phoneHash) ?? byPhone.get(contact.phoneE164);
       const displayName = matched?.displayName?.trim() || contact.displayName || contact.phoneE164;
       const current = await this.prisma.contact.findUnique({
         where: { ownerId_phoneHash: { ownerId: owner.id, phoneHash: contact.phoneHash } },

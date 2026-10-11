@@ -1,7 +1,12 @@
 import { apiBaseUrl } from "./config";
 import { anchorMedia, currentApiBase, discoveryHeld, ensureApiBase, refreshApiBase } from "./discover";
 
-type Options = RequestInit & { token?: string | null; timeoutMs?: number };
+type Options = RequestInit & {
+  token?: string | null;
+  timeoutMs?: number;
+  /** One attempt. Do not wait out a cold server or scan the LAN. */
+  once?: boolean;
+};
 
 export function getApiBase() {
   return currentApiBase() ?? apiBaseUrl();
@@ -23,7 +28,7 @@ export async function api<T>(path: string, options: Options = {}): Promise<T> {
     return await requestOnce<T>(base, path, options, headers, timeoutMs);
   } catch (error) {
     const message = (error as Error).message || "";
-    if (isAuthError(message) || message.startsWith("שגיאת שרת") || message.includes("מספר")) {
+    if (options.once || isAuthError(message) || message.startsWith("שגיאת שרת") || message.includes("מספר")) {
       throw error;
     }
     if (discoveryHeld()) {

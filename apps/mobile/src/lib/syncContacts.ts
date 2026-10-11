@@ -22,7 +22,9 @@ export function clearTalkContactsCache() {
 }
 
 export async function fetchTalkContacts(token: string): Promise<MatchedContact[]> {
-  const list = onlyTalk(await api<MatchedContact[]>("/contacts", { token, timeoutMs: 5000 }));
+  const list = onlyTalk(
+    await api<MatchedContact[]>("/contacts", { token, timeoutMs: 12000, once: true }),
+  );
   cached = list;
   return list;
 }
@@ -30,7 +32,7 @@ export async function fetchTalkContacts(token: string): Promise<MatchedContact[]
 async function runPhonebookSync(token: string, force: boolean): Promise<MatchedContact[] | null> {
   if (!force && Date.now() - lastSyncAt < MIN_INTERVAL_MS) return null;
   await new Promise((resolve) => setTimeout(resolve, 0));
-  const device = await loadDeviceContacts({ request: false });
+  const device = await loadDeviceContacts({ request: true });
   if (!device.length) {
     lastSyncAt = Date.now();
     return null;
@@ -42,6 +44,7 @@ async function runPhonebookSync(token: string, force: boolean): Promise<MatchedC
       method: "POST",
       token,
       timeoutMs: 20000,
+      once: true,
       body: JSON.stringify({ contacts: device.slice(i, i + 400) }),
     });
   }
@@ -62,13 +65,11 @@ export async function autoSyncContacts(
   onUpdated?.(list);
 
   if (phonebook && !inflight) {
-    inflight = new Promise((resolve) => setTimeout(resolve, 600)).then(() =>
-      runPhonebookSync(token, force)
-        .catch(() => null)
-        .finally(() => {
-          inflight = null;
-        }),
-    );
+    inflight = runPhonebookSync(token, force)
+      .catch(() => null)
+      .finally(() => {
+        inflight = null;
+      });
     void inflight.then((next) => {
       if (next) onUpdated?.(next);
     });

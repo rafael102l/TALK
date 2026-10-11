@@ -74,6 +74,8 @@ export default function LoginScreen() {
     try {
       await api("/auth/otp/request", {
         method: "POST",
+        once: true,
+        timeoutMs: 90000,
         body: JSON.stringify({ phone }),
       });
       setSent(true);
@@ -96,7 +98,9 @@ export default function LoginScreen() {
     try {
       const result = await api<VerifyResult>("/auth/otp/verify", {
         method: "POST",
-        body: JSON.stringify({ phone, code }),
+        once: true,
+        timeoutMs: 90000,
+        body: JSON.stringify({ phone, code: code.replace(/\D/g, "") }),
       });
       if (isTransfer(result)) {
         setTransfer(result);

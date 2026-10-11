@@ -5,12 +5,27 @@ export { isSupportedCountry, type CountryCode };
 
 export const DEFAULT_COUNTRY: CountryCode = "IL";
 
+function phoneCandidates(input: string, defaultCountry: CountryCode) {
+  const trimmed = input.trim().replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, "");
+  if (!trimmed) return [];
+  const compact = trimmed.replace(/[^\d+]/g, "");
+  const candidates = [trimmed];
+  if (compact.startsWith("+")) candidates.unshift(compact);
+  if (compact.startsWith("00")) candidates.unshift(`+${compact.slice(2)}`);
+  // 9725... without a plus, and local 054... / 54..., all become the same +972 number.
+  if (!compact.startsWith("+") && compact.startsWith("972")) candidates.unshift(`+${compact}`);
+  if (defaultCountry === "IL" && /^5\d{8}$/.test(compact)) candidates.unshift(`0${compact}`);
+  return [...new Set(candidates.filter(Boolean))];
+}
+
 export function toE164(input: string, defaultCountry: CountryCode = DEFAULT_COUNTRY): string | null {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-  const parsed = parsePhoneNumberFromString(trimmed, defaultCountry);
-  if (!parsed || !parsed.isValid()) return null;
-  return parsed.number;
+  for (const candidate of phoneCandidates(input, defaultCountry)) {
+    const parsed = candidate.startsWith("+")
+      ? parsePhoneNumberFromString(candidate)
+      : parsePhoneNumberFromString(candidate, defaultCountry);
+    if (parsed?.isValid()) return parsed.number;
+  }
+  return null;
 }
 
 export function guessE164(input: string): string | null {

@@ -76,10 +76,7 @@ export class AuthService {
     const code = this.generateCode();
     const codeHash = await bcrypt.hash(code, 10);
     try {
-      await this.prisma.otpCode.updateMany({
-        where: { phoneE164, consumed: false, purpose: "login" },
-        data: { consumed: true },
-      });
+      // Keep the previous SMS valid. A retry must not invalidate the code already on the phone.
       await this.prisma.otpCode.create({
         data: {
           phoneE164,
@@ -113,7 +110,7 @@ export class AuthService {
     await this.consumeOtp({
       phoneE164,
       purpose: "login",
-      code,
+      code: code.replace(/\D/g, ""),
       destination: null,
     });
 
@@ -307,25 +304,33 @@ export class AuthService {
     code: string;
     destination: string | null;
   }) {
-    const latest = await this.prisma.otpCode.findFirst({
+    const code = opts.code.replace(/\D/g, "");
+    const since = new Date(Date.now() - OTP_TTL_MS);
+    const rows = await this.prisma.otpCode.findMany({
       where: {
         phoneE164: opts.phoneE164,
         purpose: opts.purpose,
-        consumed: false,
+        createdAt: { gt: since },
         ...(opts.destination ? { destination: opts.destination } : {}),
       },
       orderBy: { createdAt: "desc" },
+      take: 5,
     });
     const devCode = process.env.OTP_DEV_CODE ?? "000000";
-    const isDevBypass = this.allowDevBypass() && opts.code === devCode;
-    if (!latest && !isDevBypass) throw new UnauthorizedException("קוד לא תקין או שפג תוקפו");
-    if (latest && latest.expiresAt < new Date() && !isDevBypass) {
+    const isDevBypass = this.allowDevBypass() && code === devCode;
+    let matched: (typeof rows)[number] | null = null;
+    for (const row of rows) {
+      if (await bcrypt.compare(code, row.codeHash)) {
+        matched = row;
+        break;
+      }
+    }
+    if (!matched && !isDevBypass) throw new UnauthorizedException("קוד לא תקין או שפג תוקפו");
+    if (matched && matched.expiresAt < new Date() && !isDevBypass) {
       throw new UnauthorizedException("קוד לא תקין או שפג תוקפו");
     }
-    const matches = latest ? await bcrypt.compare(opts.code, latest.codeHash) : false;
-    if (!matches && !isDevBypass) throw new UnauthorizedException("קוד שגוי");
-    if (latest) {
-      await this.prisma.otpCode.update({ where: { id: latest.id }, data: { consumed: true } });
+    if (matched && !matched.consumed) {
+      await this.prisma.otpCode.update({ where: { id: matched.id }, data: { consumed: true } });
     }
   }
 

@@ -41,7 +41,7 @@ export function TargetsProvider({ children }: { children: ReactNode }) {
   const [contacts, setContactsState] = useState<MatchedContact[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [snapshots, setSnapshots] = useState<Record<string, SelectedPerson>>({});
-  const [everyone, setEveryone] = useState(false);
+  const [everyone, setEveryone] = useState(true);
 
   useEffect(() => {
     void SecureStore.deleteItemAsync(ROSTER_KEY).catch(() => undefined);

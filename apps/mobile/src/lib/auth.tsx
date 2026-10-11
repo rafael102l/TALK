@@ -46,48 +46,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // Optimistic restore — stay signed in across app restarts without re-OTP.
       let cached: PublicUser | null = null;
       if (rawUser) {
         try {
-          cached = JSON.parse(rawUser) as PublicUser;
-          if (cached?.id) {
-            setToken(stored);
-            setUser(cached);
-          }
+          const parsed = JSON.parse(rawUser) as PublicUser;
+          if (parsed?.id) cached = parsed;
         } catch {
           cached = null;
         }
-      } else {
-        setToken(stored);
       }
 
+      // Open from the phone immediately. A sleeping server must not hold the blue screen.
+      if (cached) {
+        setToken(stored);
+        setUser(cached);
+        setReady(true);
+        void ensureApiBase()
+          .then(() => connectSocket(stored))
+          .catch(() => undefined);
+        void refreshSession(stored);
+        return;
+      }
+
+      setToken(stored);
       try {
         await ensureApiBase();
-        const me = await api<PublicUser>("/users/me", { token: stored });
-        setToken(stored);
+        const me = await api<PublicUser>("/users/me", { token: stored, timeoutMs: 8000, once: true });
         setUser(me);
         void SecureStore.setItemAsync(USER_KEY, JSON.stringify(me));
         connectSocket(stored);
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
-        const offline = message.includes("אין חיבור");
-        // Only wipe local session when the server explicitly replaced/invalidated it.
-        // Network blips keep you signed in (WhatsApp-style).
-        if (!offline && isAuthFailure(message)) {
+        if (isAuthFailure(message)) {
           await clearLocalSession();
           setToken(null);
           setUser(null);
-        } else if (cached?.id) {
-          setToken(stored);
-          setUser(cached);
-          void ensureApiBase().then(() => connectSocket(stored)).catch(() => undefined);
         }
       } finally {
         setReady(true);
       }
     })();
   }, []);
+
+  async function refreshSession(stored: string) {
+    try {
+      const me = await api<PublicUser>("/users/me", { token: stored, timeoutMs: 20000, once: true });
+      setUser(me);
+      void SecureStore.setItemAsync(USER_KEY, JSON.stringify(me));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (!isAuthFailure(message)) return;
+      await clearLocalSession();
+      setToken(null);
+      setUser(null);
+    }
+  }
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
