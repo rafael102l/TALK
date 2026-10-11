@@ -30,17 +30,26 @@ const prismaCli = [
   resolve(cwd, "../../node_modules/prisma/build/index.js"),
 ].find((file) => existsSync(file));
 if (!prismaCli) {
-  console.error("[ensure-db] prisma CLI not found");
-  process.exit(1);
+  // Missing CLI must not kill the web process. Start uses the client from the build.
+  console.error("[ensure-db] prisma CLI not found — skipping schema sync");
+  process.exit(0);
 }
 function prisma(args) {
-  // Call node directly. `npx prisma` exits 127 on Render when npx is not on PATH.
-  execFileSync(process.execPath, [prismaCli, ...args], {
-    stdio: "inherit",
-    env: process.env,
-    cwd,
-  });
+  // Call node directly. A missing `npx` or engine binary exits 127 and must not stop the API.
+  try {
+    execFileSync(process.execPath, [prismaCli, ...args], {
+      stdio: "inherit",
+      env: process.env,
+      cwd,
+    });
+    return true;
+  } catch (error) {
+    const status = error && error.status != null ? error.status : "?";
+    console.error(`[ensure-db] prisma ${args[0]} failed status=${status}`);
+    return false;
+  }
 }
-prisma(["generate", "--schema", "prisma/schema.runtime.prisma"]);
-prisma(["db", "push", "--skip-generate", "--schema", "prisma/schema.runtime.prisma"]);
-console.log("[ensure-db] schema ready");
+const generated = prisma(["generate", "--schema", "prisma/schema.runtime.prisma"]);
+if (generated) prisma(["db", "push", "--skip-generate", "--schema", "prisma/schema.runtime.prisma"]);
+console.log("[ensure-db] schema step finished");
+process.exit(0);
