@@ -23,6 +23,36 @@ export class ChannelsService {
     return Promise.all(memberships.map((m) => this.toSummary(m.channel)));
   }
 
+  /** Channel id only — no presence lookup. Used when a walkie must go out immediately. */
+  async directChannelId(user: User, otherUserId: string) {
+    if (otherUserId === user.id) throw new BadRequestException("אי אפשר לפתוח ערוץ לעצמך");
+    const existing = await this.prisma.channel.findFirst({
+      where: {
+        type: "DIRECT",
+        AND: [
+          { members: { some: { userId: user.id } } },
+          { members: { some: { userId: otherUserId } } },
+        ],
+      },
+      select: { id: true, _count: { select: { members: true } } },
+    });
+    if (existing && existing._count.members === 2) return existing.id;
+    const other = await this.prisma.user.findUnique({ where: { id: otherUserId }, select: { id: true } });
+    if (!other) {
+      throw new BadRequestException(
+        "המשתמש לא רשום בשרת הנוכחי. שני הצדדים צריכים להתחבר מחדש ואז להוסיף אחד את השני דרך חיפוש מספר.",
+      );
+    }
+    const channel = await this.prisma.channel.create({
+      data: {
+        type: "DIRECT",
+        members: { create: [{ userId: user.id }, { userId: otherUserId }] },
+      },
+      select: { id: true },
+    });
+    return channel.id;
+  }
+
   async getOrCreateDirect(user: User, otherUserId: string) {
     if (otherUserId === user.id) throw new BadRequestException("אי אפשר לפתוח ערוץ לעצמך");
     const other = await this.prisma.user.findUnique({ where: { id: otherUserId } });

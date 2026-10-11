@@ -156,7 +156,8 @@ export class ContactsService {
 
     for (const contact of normalized) {
       const matched = byHash.get(contact.phoneHash) ?? byPhone.get(contact.phoneE164);
-      const displayName = matched?.displayName?.trim() || contact.displayName || contact.phoneE164;
+      if (!matched) continue;
+      const displayName = matched.displayName?.trim() || contact.displayName || contact.phoneE164;
       const current = currentByHash.get(contact.phoneHash);
       if (current?.status === "BLOCKED") continue;
       if (
@@ -210,7 +211,7 @@ export class ContactsService {
 
   async list(owner: User) {
     const rows = await this.prisma.contact.findMany({
-      where: { ownerId: owner.id, NOT: { status: "BLOCKED" } },
+      where: { ownerId: owner.id, matchedUserId: { not: null }, NOT: { status: "BLOCKED" } },
       include: { matchedUser: true },
       orderBy: { displayName: "asc" },
     });

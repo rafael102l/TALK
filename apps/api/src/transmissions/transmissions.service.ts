@@ -1087,15 +1087,10 @@ export class TransmissionsService {
       return channel;
     }
     if (targetIds.length === 1) {
-      const summary = await this.channels.getOrCreateDirect(sender, targetIds[0]);
-      const channel = await this.prisma.channel.findUnique({
-        where: { id: summary.id },
-        include: { members: { include: { user: true } } },
-      });
-      if (!channel) throw new BadRequestException("ערוץ לא נמצא");
-      this.realtime.joinChannel(sender.id, channel.id);
-      this.realtime.joinChannel(targetIds[0], channel.id);
-      return channel;
+      const id = await this.channels.directChannelId(sender, targetIds[0]);
+      this.realtime.joinChannel(sender.id, id);
+      this.realtime.joinChannel(targetIds[0], id);
+      return { id };
     }
     const summary = await this.channels.createGroup(sender, "שידור", targetIds);
     const channel = await this.prisma.channel.findUnique({
