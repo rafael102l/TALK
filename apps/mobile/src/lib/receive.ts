@@ -72,14 +72,16 @@ export async function playReceived(
     }
 
     const translatedFile = Boolean(payload.audioUrl) && !payload.usedOriginalVoice;
-    // Prefer server-prepared audio for the listener language; never force original when languages differ.
-    if (payload.audioUrl && (translatedFile || sameLang)) {
+    const walkieFile = payload.kind !== "text" && payload.kind !== "voice" && Boolean(payload.audioUrl);
+    // A walkie tap plays the recording that was sent. Language tags must not skip it.
+    if (payload.audioUrl && (walkieFile || translatedFile || sameLang)) {
       await stopRobot();
       await stopPlayback();
       try {
         await playUri(payload.audioUrl);
         return { translatedText: caption };
-      } catch {
+      } catch (error) {
+        if (walkieFile) throw error;
         /* fall through to spoken text */
       }
     }

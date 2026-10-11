@@ -15,7 +15,7 @@ import {
 import { PttButton } from "../../src/components/PttButton";
 import { useI18n } from "../../src/i18n";
 import { api } from "../../src/lib/api";
-import { startRecording, stopPlayback, stopRecording, setLoudSpeaker } from "../../src/lib/audio";
+import { isMicRecording, startRecording, stopPlayback, stopRecording, setLoudSpeaker } from "../../src/lib/audio";
 import { useAuth } from "../../src/lib/auth";
 import { clockLog } from "../../src/lib/clock";
 import { holdDiscovery } from "../../src/lib/discover";
@@ -536,17 +536,18 @@ export default function HomeScreen() {
     const queue = pendingBySenderRef.current[senderId] ?? [];
     const payload = queue[0];
     if (!payload) return;
+    const played = await playOne(payload);
+    if (!played) return;
     const rest = queue.slice(1);
     const stored = { ...pendingBySenderRef.current };
     if (rest.length) stored[senderId] = rest;
     else delete stored[senderId];
     pendingBySenderRef.current = stored;
     setPendingBySender(stored);
-    await playOne(payload);
   }
 
-  async function playOne(payload: TransmissionReadyPayload) {
-    if (payload.transmissionId) heardIdsRef.current.add(payload.transmissionId);
+  async function playOne(payload: TransmissionReadyPayload): Promise<boolean> {
+    if (isMicRecording()) return false;
     const { token: tok, user: me, t: tr } = playCtx.current;
     sessionUnlockedRef.current = { ...sessionUnlockedRef.current, [payload.senderId]: true };
     setSessionUnlocked((current) => ({ ...current, [payload.senderId]: true }));
@@ -569,6 +570,7 @@ export default function HomeScreen() {
     const line = (payload.translatedText || payload.originalText || "").trim();
     if (line) setWritten(line);
     setStatus("");
+    let ok = false;
     try {
       await playWalkieExclusive(async (cancelled) => {
         if (cancelled()) return;
@@ -577,17 +579,20 @@ export default function HomeScreen() {
         if (tok && payload.transmissionId) {
           void api(`/transmissions/${payload.transmissionId}/played`, { method: "POST", token: tok });
         }
+        if (payload.transmissionId) heardIdsRef.current.add(payload.transmissionId);
       });
+      ok = true;
+      return true;
     } catch {
       setStatus(tr("playFail"));
+      return false;
     } finally {
       setSpeakingId(null);
-      // Keep remaining queued clips + badge count (hearPendingQueue already removed the one played).
       const left = pendingBySenderRef.current[payload.senderId]?.length ?? 0;
       setLiveSpeaker((current) =>
         current?.id === payload.senderId ? { ...current, pendingCount: left } : current,
       );
-      if (left > 0) setStatus(tr("voicesWaiting", { count: String(left) }));
+      if (ok && left > 0) setStatus(tr("voicesWaiting", { count: String(left) }));
     }
   }
 

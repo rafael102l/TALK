@@ -46,7 +46,17 @@ export class StorageService {
   }
 
   async readAudio(name: string): Promise<{ body: Buffer; mime: string } | null> {
-    if (!/^[\w.-]+$/.test(name)) return null;
+    const clean = name.split("/").pop() ?? name;
+    if (!/^[\w.-]+$/.test(clean)) return null;
+    const names = clean.includes(".") ? [clean] : [clean, `${clean}.m4a`, `${clean}.mp3`, `${clean}.wav`];
+    for (const candidate of names) {
+      const found = await this.readNamedAudio(candidate);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  private async readNamedAudio(name: string): Promise<{ body: Buffer; mime: string } | null> {
     const diskPath = join(this.root, "audio", name);
     try {
       const body = await readFile(diskPath);

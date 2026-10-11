@@ -10,36 +10,40 @@ export class MediaController {
   async audio(@Param("name") name: string, @Req() req: Request, @Res() res: Response) {
     const file = await this.storage.readAudio(name);
     if (!file) {
+      console.warn(`[audio] missing ${name}`);
       res.status(404).json({ message: "missing" });
       return;
     }
+    console.log(`[audio] play ${name} bytes=${file.body.length}`);
     sendAudio(req, res, file.body, file.mime);
   }
 }
 
 function sendAudio(req: Request, res: Response, body: Buffer, mime: string) {
-  res.setHeader("Accept-Ranges", "bytes");
-  res.setHeader("Content-Type", mime);
-  res.setHeader("Cache-Control", "private, max-age=86400");
+  const total = body.length;
   const range = req.headers.range;
-  if (!range) {
-    res.status(200);
-    res.setHeader("Content-Length", String(body.length));
-    res.end(body);
-    return;
+  const match = range ? /^bytes=(\d*)-(\d*)$/.exec(range) : null;
+  if (match && (match[1] || match[2])) {
+    const start = match[1] ? Number(match[1]) : Math.max(0, total - Number(match[2] || 0));
+    const end = match[2] && match[1] ? Math.min(Number(match[2]), total - 1) : total - 1;
+    if (start < total && start <= end) {
+      const chunk = Buffer.from(body.subarray(start, end + 1));
+      res.writeHead(206, {
+        "Content-Type": mime,
+        "Content-Length": chunk.length,
+        "Content-Range": `bytes ${start}-${end}/${total}`,
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "no-transform",
+      });
+      res.end(chunk);
+      return;
+    }
   }
-  const match = /^bytes=(\d+)-(\d*)$/.exec(range);
-  const start = match ? Number(match[1]) : 0;
-  const end = match && match[2] ? Math.min(Number(match[2]), body.length - 1) : body.length - 1;
-  if (!match || start >= body.length || start > end) {
-    res.status(416);
-    res.setHeader("Content-Range", `bytes */${body.length}`);
-    res.end();
-    return;
-  }
-  const chunk = body.subarray(start, end + 1);
-  res.status(206);
-  res.setHeader("Content-Range", `bytes ${start}-${end}/${body.length}`);
-  res.setHeader("Content-Length", String(chunk.length));
-  res.end(chunk);
+  res.writeHead(200, {
+    "Content-Type": mime,
+    "Content-Length": total,
+    "Accept-Ranges": "bytes",
+    "Cache-Control": "no-transform",
+  });
+  res.end(body);
 }
