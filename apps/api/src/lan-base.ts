@@ -1,7 +1,11 @@
 import { networkInterfaces } from "os";
 
-/** Current Wi-Fi address of this computer, so phones on the same network can open media. */
+/** Public address phones use to open a recording. On Render this is the service URL, not the private network. */
 export function currentLanBase() {
+  const configured = (process.env.API_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || "")
+    .trim()
+    .replace(/\/$/, "");
+  if (configured && !/localhost|127\.0\.0\.1/i.test(configured)) return configured;
   const port = process.env.PORT ?? "3000";
   const addresses: string[] = [];
   for (const rows of Object.values(networkInterfaces())) {

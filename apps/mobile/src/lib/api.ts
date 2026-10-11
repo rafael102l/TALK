@@ -85,6 +85,9 @@ async function requestOnce<T>(
   headers: Record<string, string>,
   timeoutMs: number,
 ): Promise<T> {
+  if (isFormBody(options.body)) {
+    return uploadForm<T>(`${base}${path}`, options.body, headers, timeoutMs);
+  }
   const res = await fetchWithTimeout(`${base}${path}`, { ...options, headers }, timeoutMs);
   const text = await res.text();
   let data: any = null;
@@ -114,6 +117,43 @@ function isFormBody(body: RequestInit["body"]) {
   if (!body || typeof body === "string") return false;
   if (typeof FormData !== "undefined" && body instanceof FormData) return true;
   return typeof body === "object" && "_parts" in body;
+}
+
+function uploadForm<T>(
+  url: string,
+  body: RequestInit["body"],
+  headers: Record<string, string>,
+  timeoutMs: number,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.timeout = timeoutMs;
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() === "content-type") continue;
+      xhr.setRequestHeader(key, value);
+    }
+    xhr.onload = () => {
+      const text = xhr.responseText || "";
+      let data: unknown = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        reject(new Error(xhr.status >= 200 && xhr.status < 300 ? "תשובת שרת לא תקינה" : `שגיאת שרת (${xhr.status})`));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const record = data && typeof data === "object" ? (data as { message?: unknown; error?: unknown }) : null;
+        const message = record?.message ?? record?.error ?? `שגיאת שרת (${xhr.status})`;
+        reject(new Error(Array.isArray(message) ? message.join(", ") : String(message)));
+        return;
+      }
+      resolve(retarget(data) as T);
+    };
+    xhr.onerror = () => reject(new Error("Network request failed"));
+    xhr.ontimeout = () => reject(new Error("Network request failed"));
+    xhr.send(body as XMLHttpRequestBodyInit);
+  });
 }
 
 async function fetchWithTimeout(url: string, options: RequestInit, ms: number) {
