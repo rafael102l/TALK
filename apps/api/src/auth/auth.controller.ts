@@ -11,7 +11,7 @@ export class AuthController {
 
   @Post("otp/request")
   requestOtp(@Body() body: RequestOtpDto) {
-    return this.auth.requestOtp(body.phone);
+    return this.auth.requestOtp(body.phone, body.appHash);
   }
 
   @Post("otp/verify")

@@ -4,6 +4,12 @@ export class RequestOtpDto {
   @IsString()
   @MinLength(8)
   phone!: string;
+
+  /** Android SMS Retriever hash so the app can read the code automatically. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(11)
+  appHash?: string;
 }
 
 export class VerifyOtpDto {

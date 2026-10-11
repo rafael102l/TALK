@@ -1,6 +1,6 @@
 import { CountryCode, DeviceTransferChallenge, PublicUser, toE164 } from "@talk/shared";
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Keyboard,
   KeyboardAvoidingView,
@@ -33,6 +33,7 @@ export default function LoginScreen() {
   const [national, setNational] = useState("");
   const [code, setCode] = useState("");
   const [sent, setSent] = useState(false);
+  const appHash = useRef("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -41,6 +42,23 @@ export default function LoginScreen() {
   const [smsCode, setSmsCode] = useState("");
   const [emailCode, setEmailCode] = useState("");
   const [confirmOwnership, setConfirmOwnership] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    let remove = () => undefined;
+    void import("react-native-otp-verify")
+      .then(async (otp) => {
+        const hashes = await otp.getHash().catch(() => [] as string[]);
+        appHash.current = hashes[0] ?? "";
+        otp.startOtpListener((message) => {
+          const match = /(\d{4,8})/.exec(message || "");
+          if (match?.[1]) setCode(match[1].slice(0, 6));
+        });
+        remove = () => otp.removeListener();
+      })
+      .catch(() => undefined);
+    return () => remove();
+  }, []);
 
   function mapError(err: unknown) {
     const raw = err instanceof Error ? err.message : "";
@@ -76,7 +94,7 @@ export default function LoginScreen() {
         method: "POST",
         once: true,
         timeoutMs: 90000,
-        body: JSON.stringify({ phone }),
+        body: JSON.stringify({ phone, appHash: appHash.current || undefined }),
       });
       setSent(true);
     } catch (e) {
@@ -259,15 +277,18 @@ export default function LoginScreen() {
             onNationalChange={setNational}
           />
           {sent ? (
-            <TextInput
+              <TextInput
               style={styles.input}
               keyboardType="number-pad"
               value={code}
               onChangeText={setCode}
-              placeholder={t("codePlaceholder")}
+              placeholder="הכנס את הקוד"
               placeholderTextColor={colors.muted}
               textAlign={align}
               maxLength={6}
+              autoComplete="sms-otp"
+              textContentType="oneTimeCode"
+              importantForAutofill="yes"
             />
           ) : null}
           {error ? <Text style={[styles.error, { textAlign: align }]}>{error}</Text> : null}

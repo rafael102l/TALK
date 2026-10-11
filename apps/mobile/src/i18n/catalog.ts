@@ -282,7 +282,7 @@ const he: Dict = {
   sendCode: "שלחו לי קוד",
   enterApp: "כניסה",
   sending: "שולח...",
-  codePlaceholder: "הכנס את הקוד שקיבלת",
+  codePlaceholder: "הכנס את הקוד",
   network: "אין חיבור לשרת. בדקו אינטרנט — השרת בענן עלול להתעורר עד דקה.",
   error: "שגיאה",
   whoAreYou: "איך יראו אותך?",

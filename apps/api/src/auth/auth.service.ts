@@ -71,7 +71,7 @@ export class AuthService {
     return { token, user: toPublicUser(updated) };
   }
 
-  async requestOtp(phone: string) {
+  async requestOtp(phone: string, appHash?: string) {
     const phoneE164 = this.normalizePhone(phone);
     const recent = await this.prisma.otpCode.findFirst({
       where: {
@@ -103,9 +103,12 @@ export class AuthService {
       throw error;
     }
 
+    const hash = (appHash || "").replace(/[^\w+/=]/g, "").slice(0, 11);
     const smsOk = await this.sendSms(
       phoneE164,
-      `קוד הכניסה ל-TALK: ${code}. הקוד תקף ל-5 דקות.`,
+      hash
+        ? `<#> קוד אימות: ${code}\nהקוד תקף ל-5 דק'.\n${hash}`
+        : `קוד אימות: ${code}\nהקוד תקף ל-5 דק'.`,
     );
     const showDev = this.allowDevBypass();
     if (!smsOk) {
@@ -347,8 +350,18 @@ export class AuthService {
   async sendSms(to: string, body: string): Promise<boolean> {
     const sid = process.env.TWILIO_ACCOUNT_SID;
     const token = process.env.TWILIO_AUTH_TOKEN;
-    const from = process.env.TWILIO_FROM;
-    if (!sid || !token || !from) return false;
+    const fromNumber = process.env.TWILIO_FROM;
+    const senderName = (process.env.TWILIO_SENDER_ID || "TALK").replace(/[^\w]/g, "").slice(0, 11) || "TALK";
+    if (!sid || !token) return false;
+    if (await this.postTwilio(sid, token, to, senderName, body)) return true;
+    if (fromNumber && fromNumber !== senderName) {
+      console.warn(`[TALK SMS] sender ${senderName} rejected, falling back to ${fromNumber}`);
+      return this.postTwilio(sid, token, to, fromNumber, body);
+    }
+    return false;
+  }
+
+  private async postTwilio(sid: string, token: string, to: string, from: string, body: string) {
     const auth = Buffer.from(`${sid}:${token}`).toString("base64");
     const params = new URLSearchParams({ To: to, From: from, Body: body });
     const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
