@@ -144,6 +144,15 @@ export class ContactsService {
       where: { ownerId: owner.id, phoneHash: { in: hashes } },
     });
     const currentByHash = new Map(existingContacts.map((row) => [row.phoneHash, row]));
+    const creates: {
+      ownerId: string;
+      phoneE164: string;
+      phoneHash: string;
+      displayName: string;
+      matchedUserId?: string;
+      status: "ACCEPTED";
+    }[] = [];
+    const updates: { phoneHash: string; phoneE164: string; displayName: string; matchedUserId?: string }[] = [];
 
     for (const contact of normalized) {
       const matched = byHash.get(contact.phoneHash) ?? byPhone.get(contact.phoneE164);
@@ -158,22 +167,42 @@ export class ContactsService {
       ) {
         continue;
       }
-      await this.prisma.contact.upsert({
-        where: { ownerId_phoneHash: { ownerId: owner.id, phoneHash: contact.phoneHash } },
-        create: {
+      if (!current) {
+        creates.push({
           ownerId: owner.id,
           phoneE164: contact.phoneE164,
           phoneHash: contact.phoneHash,
           displayName,
-          matchedUserId: matched?.id,
+          ...(matched?.id ? { matchedUserId: matched.id } : {}),
           status: "ACCEPTED",
-        },
-        update: {
-          phoneE164: contact.phoneE164,
-          displayName,
-          matchedUserId: matched?.id ?? undefined,
-        },
+        });
+        continue;
+      }
+      updates.push({
+        phoneHash: contact.phoneHash,
+        phoneE164: contact.phoneE164,
+        displayName,
+        matchedUserId: matched?.id,
       });
+    }
+
+    if (creates.length) {
+      await this.prisma.contact.createMany({ data: creates, skipDuplicates: true });
+    }
+    for (let i = 0; i < updates.length; i += 40) {
+      const chunk = updates.slice(i, i + 40);
+      await this.prisma.$transaction(
+        chunk.map((row) =>
+          this.prisma.contact.update({
+            where: { ownerId_phoneHash: { ownerId: owner.id, phoneHash: row.phoneHash } },
+            data: {
+              phoneE164: row.phoneE164,
+              displayName: row.displayName,
+              matchedUserId: row.matchedUserId,
+            },
+          }),
+        ),
+      );
     }
 
     return this.list(owner);
