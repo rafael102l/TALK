@@ -10,6 +10,7 @@ import {
   WebSocketServer,
 } from "@nestjs/websockets";
 import { PttSpeakingPayload, SOCKET_EVENTS } from "@talk/shared";
+import { StorageService } from "../storage/storage.service";
 import { toPublicUser } from "../users/user.mapper";
 import { Server, Socket } from "socket.io";
 import { loadChannelIds, loadUser } from "../auth/load-user";
@@ -32,6 +33,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly prisma: PrismaService,
     private readonly presence: PresenceService,
     private readonly floor: FloorService,
+    private readonly storage: StorageService,
   ) {}
 
   async handleConnection(client: AuthedSocket) {
@@ -58,10 +60,69 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         `Socket online user=${user.displayName || user.id} room=user:${user.id} sockets=${roomSize}`,
       );
       this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: user.id, online: true });
+      this.replayWalkies(user.id);
     } catch (error) {
       this.logger.warn(`Socket rejected: ${(error as Error).message}`);
       client.disconnect(true);
     }
+  }
+
+  /** If the clip was saved while this phone was offline, hand it over once the socket is up. */
+  private replayWalkies(userId: string) {
+    setTimeout(() => {
+      void this.sendUnplayedWalkies(userId).catch((error: Error) => {
+        this.logger.warn(`Walkie replay failed: ${error.message}`);
+      });
+    }, 1200);
+  }
+
+  private async sendUnplayedWalkies(userId: string) {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const rows = await this.prisma.transmissionTarget.findMany({
+      where: {
+        userId,
+        playedAt: null,
+        transmission: {
+          senderId: { not: userId },
+          kind: "walkie",
+          status: "READY",
+          createdAt: { gte: since },
+        },
+      },
+      include: { transmission: { include: { sender: true } } },
+      orderBy: { transmission: { createdAt: "asc" } },
+      take: 8,
+    });
+    if (!rows.length) return;
+    for (const row of rows) {
+      const tx = row.transmission;
+      const sender = toPublicUser(tx.sender);
+      const lang = row.language || sender.speakLang || "he";
+      this.emitToUser(userId, SOCKET_EVENTS.TRANSMISSION_READY, {
+        transmissionId: tx.id,
+        channelId: tx.channelId,
+        senderId: tx.senderId,
+        senderName: sender.displayName || tx.sender.phoneE164,
+        language: lang,
+        speakLang: lang,
+        mode: sender.plan === "PLUS" ? "plus" : "free",
+        audioUrl: tx.originalAudioUrl ? this.storage.publicUrl(tx.originalAudioUrl) : null,
+        originalText: "",
+        translatedText: "",
+        durationMs: tx.durationMs,
+        usedOriginalVoice: true,
+        needsAccept: false,
+        live: false,
+        senderPhone: tx.sender.phoneE164,
+        senderAvatarUrl: sender.avatarUrl,
+        voiceGender: sender.voiceGender ?? "male",
+        kind: "walkie",
+        viewOnce: false,
+        readyAt: tx.createdAt.getTime(),
+        releasedAt: tx.createdAt.getTime(),
+      });
+    }
+    this.logger.log(`Walkie replay user=${userId} count=${rows.length}`);
   }
 
   async handleDisconnect(client: AuthedSocket) {

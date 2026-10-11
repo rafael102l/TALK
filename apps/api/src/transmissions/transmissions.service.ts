@@ -219,7 +219,9 @@ export class TransmissionsService {
       });
     }
     this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
-    this.logger.log(`Walkie relay ${transmission.id} targets=${transmission.targets.length}`);
+    this.logger.log(
+      `Walkie relay ${transmission.id} bytes=${file.buffer.length} targets=${transmission.targets.length}`,
+    );
     void Promise.all(
       users.map(async (target) => {
         await this.contacts.ensureIncoming(target, sender);
