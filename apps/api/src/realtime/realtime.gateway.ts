@@ -86,7 +86,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   private async sendUnplayedWalkies(userId: string) {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const since = new Date(Date.now() - 15 * 1000);
     const rows = await this.prisma.transmissionTarget.findMany({
       where: {
         userId,
@@ -100,14 +100,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       },
       include: { transmission: { include: { sender: true } } },
       orderBy: { transmission: { createdAt: "asc" } },
-      take: 8,
+      take: 1,
     });
     if (!rows.length) return;
     for (const row of rows) {
       const tx = row.transmission;
       const sender = toPublicUser(tx.sender);
       const lang = row.language || sender.speakLang || "he";
-      this.emitToUser(userId, SOCKET_EVENTS.TRANSMISSION_READY, {
+      const delivered = this.emitToUser(userId, SOCKET_EVENTS.TRANSMISSION_READY, {
         transmissionId: tx.id,
         channelId: tx.channelId,
         senderId: tx.senderId,
@@ -129,7 +129,13 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         viewOnce: false,
         readyAt: tx.createdAt.getTime(),
         releasedAt: tx.createdAt.getTime(),
-      });
+      }, false);
+      if (delivered) {
+        void this.prisma.transmissionTarget.update({
+          where: { id: row.id },
+          data: { playedAt: new Date(), deliveredAt: new Date() },
+        });
+      }
     }
     this.logger.log(`Walkie replay user=${userId} count=${rows.length}`);
   }
@@ -274,11 +280,11 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.in(`user:${userId}`).socketsJoin(`channel:${channelId}`);
   }
 
-  emitToUser(userId: string, event: string, payload: unknown, retry = true) {
+  emitToUser(userId: string, event: string, payload: unknown, retry = true): boolean {
     const room = `user:${userId}`;
     if (!this.server?.sockets) {
       this.logger.warn(`Socket server not ready for ${event} user=${userId}`);
-      return;
+      return false;
     }
     const n = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
     if (!n) {
@@ -286,7 +292,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       if (retry && event === SOCKET_EVENTS.TRANSMISSION_READY) {
         setTimeout(() => this.emitToUser(userId, event, payload, false), 1000);
       }
-      return;
+      return false;
     }
     if (n > 1) {
       // Should not happen after single-session enforcement — keep only the newest.
@@ -296,6 +302,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.revokeUserSessions(userId, keep, false);
     }
     this.server.to(room).emit(event, payload);
+    return true;
   }
 
   emitToChannel(channelId: string, event: string, payload: unknown) {
