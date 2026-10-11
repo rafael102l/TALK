@@ -24,26 +24,34 @@ export class StorageService {
     await mkdir(dir, { recursive: true });
     const name = `${randomUUID()}.${ext.replace(/^\./, "")}`;
     await writeFile(join(dir, name), buffer);
-    // The other phone is told as soon as the file is on disk. The database copy must not hold that up.
-    if (folder === "audio") void this.rememberAudio(name, buffer, mimeFor(name));
+    // The other phone fetches this URL immediately. The database copy has to exist first,
+    // because the request can land on a different server than the one that saved the disk file.
+    if (folder === "audio") await this.rememberAudio(name, buffer, mimeFor(name));
     return `/media/${folder}/${name}`;
   }
 
   /** Keep the clip in Postgres so either server can play it after a restart. */
   async rememberAudio(name: string, buffer: Buffer, mime: string) {
     if (!buffer.length || buffer.length > 8_000_000) return;
-    try {
-      await this.ensureAudioTable();
-      await this.prisma.$executeRawUnsafe(
-        `INSERT INTO "WalkieAudio" ("name", "b64", "mime") VALUES ($1, $2, $3)
-         ON CONFLICT ("name") DO UPDATE SET "b64" = EXCLUDED."b64", "mime" = EXCLUDED."mime"`,
-        name,
-        buffer.toString("base64"),
-        mime,
-      );
-    } catch (error) {
-      console.error(`[audio] store failed: ${(error as Error).message}`);
+    let last: Error | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await this.ensureAudioTable();
+        await this.prisma.$executeRawUnsafe(
+          `INSERT INTO "WalkieAudio" ("name", "b64", "mime") VALUES ($1, $2, $3)
+           ON CONFLICT ("name") DO UPDATE SET "b64" = EXCLUDED."b64", "mime" = EXCLUDED."mime"`,
+          name,
+          buffer.toString("base64"),
+          mime,
+        );
+        return;
+      } catch (error) {
+        last = error as Error;
+        this.audioTable = null;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
     }
+    throw last ?? new Error("audio store failed");
   }
 
   async readAudio(name: string): Promise<{ body: Buffer; mime: string } | null> {
@@ -62,7 +70,7 @@ export class StorageService {
     try {
       const body = await readFile(diskPath);
       if (body.length) {
-        void this.rememberAudio(name, body, mimeFor(name));
+        void this.rememberAudio(name, body, mimeFor(name)).catch(() => undefined);
         return { body, mime: mimeFor(name) };
       }
     } catch {
@@ -74,7 +82,15 @@ export class StorageService {
         `SELECT "b64", "mime" FROM "WalkieAudio" WHERE "name" = $1 LIMIT 1`,
         name,
       );
-      const row = rows[0];
+      let row = rows[0];
+      if (!row?.b64) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        const again = await this.prisma.$queryRawUnsafe<{ b64: string; mime: string }[]>(
+          `SELECT "b64", "mime" FROM "WalkieAudio" WHERE "name" = $1 LIMIT 1`,
+          name,
+        );
+        row = again[0];
+      }
       if (!row?.b64) return null;
       const body = Buffer.from(row.b64, "base64");
       if (!body.length) return null;
