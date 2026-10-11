@@ -1,4 +1,11 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger } from "@nestjs/common";
+import {
+  BadRequestException,
+  ForbiddenException,
+  HttpException,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+} from "@nestjs/common";
 import { User } from "@prisma/client";
 import { HistoryItem, SOCKET_EVENTS, TransmissionReadyPayload } from "@talk/shared";
 import { readFile } from "fs/promises";
@@ -111,15 +118,6 @@ export class TransmissionsService {
       include: { targets: true },
     });
 
-    if (kind === "walkie") {
-      this.realtime.emitToChannel(channel.id, SOCKET_EVENTS.TRANSMISSION_PROCESSING, {
-        transmissionId: transmission.id,
-        channelId: channel.id,
-        senderId: sender.id,
-        senderName: sender.displayName,
-      });
-    }
-
     void this.finish(transmission, sender, sttP, started, { clientRelease, sameLanguage });
     void Promise.all(
       users.map(async (target) => {
@@ -132,6 +130,24 @@ export class TransmissionsService {
 
   /** Walkie is the recording itself. Translation stays in the codebase and is not on this path. */
   private async relayWalkie(
+    sender: User,
+    file: Express.Multer.File,
+    input: { channelId?: string; durationMs?: number },
+    users: User[],
+    targetIds: string[],
+    clientRelease: number,
+  ) {
+    try {
+      return await this.relayWalkieNow(sender, file, input, users, targetIds, clientRelease);
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      const message = error instanceof Error ? error.message : "Internal server error";
+      this.logger.error(`Walkie relay failed: ${message}`);
+      throw new InternalServerErrorException(message);
+    }
+  }
+
+  private async relayWalkieNow(
     sender: User,
     file: Express.Multer.File,
     input: { channelId?: string; durationMs?: number },
@@ -1083,8 +1099,12 @@ export class TransmissionsService {
 }
 
 function extFrom(file: Express.Multer.File) {
-  const fromName = file.originalname.split(".").pop();
+  const name = file.originalname || "";
+  const fromName = name.includes(".") ? name.split(".").pop() : "";
   if (fromName && fromName.length <= 5) return fromName;
+  const mime = file.mimetype || "";
+  if (mime.includes("wav")) return "wav";
+  if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
   return "m4a";
 }
 

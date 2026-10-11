@@ -27,7 +27,7 @@ import { SOCKET_EVENTS, ensureSocket, getSocket } from "../../src/lib/socket";
 import { autoSyncContacts, cachedTalkContacts, fetchTalkContacts } from "../../src/lib/syncContacts";
 import { useTargets } from "../../src/lib/targets";
 import { colors } from "../../src/lib/theme";
-import { fetchUnread, isInboxMessage, markPeerTextRead } from "../../src/lib/unread";
+import { fetchUnread, fetchWaitingWalkies, isInboxMessage, markPeerTextRead } from "../../src/lib/unread";
 import { enqueueVoice, loadPendingVoice, takePendingVoice } from "../../src/lib/pendingVoice";
 import { isInPhoneCall, subscribePhoneCall } from "../../src/lib/phoneCall";
 import { playWalkieExclusive } from "../../src/lib/walkiePlay";
@@ -179,6 +179,11 @@ export default function HomeScreen() {
       void autoSyncContacts(token, true, (list) => setContacts(list.filter((c) => c.matchedUser)), true).catch(
         () => undefined,
       );
+      void fetchWaitingWalkies(token)
+        .then((rows) => {
+          for (const row of rows) queueWaitingRef.current(row);
+        })
+        .catch(() => undefined);
     }, [setContacts, token]),
   );
 
@@ -411,6 +416,11 @@ export default function HomeScreen() {
       if (!tok) return;
       const sock = ensureSocket(tok);
       if (!sock.connected) sock.connect();
+      void fetchWaitingWalkies(tok)
+        .then((rows) => {
+          for (const row of rows) queueWaitingRef.current(row);
+        })
+        .catch(() => undefined);
     });
     return () => {
       unsubCall();
@@ -640,7 +650,7 @@ export default function HomeScreen() {
     holdDiscovery(false);
     if (timer.current) clearTimeout(timer.current);
     setTalking(false);
-    setStatus(t("sent"));
+    setStatus("");
     const release = Date.now();
     const holdMs = clockRef.current ? release - clockRef.current.press : 0;
     if (clockRef.current) clockRef.current.release = release;
@@ -682,6 +692,7 @@ export default function HomeScreen() {
     try {
       const uploadMark = Date.now();
       await api("/transmissions", { method: "POST", token, body: form });
+      setStatus(t("sent"));
       clockLog("upload", { uploadMs: Date.now() - uploadMark, holdMs });
     } catch (e) {
       setStatus((e as Error).message);

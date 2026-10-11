@@ -35,7 +35,7 @@ export class CreateTransmissionDto {
   @IsOptional()
   @Transform(({ value }) => (value === undefined ? undefined : Number(value)))
   @IsInt()
-  @Min(1)
+  @Min(0)
   durationMs?: number;
 
   @IsOptional()

@@ -46,9 +46,14 @@ export class RedisService implements OnModuleDestroy {
 
   async set(key: string, value: string, ttlSeconds?: number) {
     if (this.client && this.ready) {
-      if (ttlSeconds) await this.client.set(key, value, "EX", ttlSeconds);
-      else await this.client.set(key, value);
-      return;
+      try {
+        if (ttlSeconds) await this.client.set(key, value, "EX", ttlSeconds);
+        else await this.client.set(key, value);
+        return;
+      } catch (error) {
+        this.logger.warn(`Redis set failed, using memory: ${(error as Error).message}`);
+        this.ready = false;
+      }
     }
     this.memory.set(key, {
       value,
@@ -57,7 +62,14 @@ export class RedisService implements OnModuleDestroy {
   }
 
   async get(key: string): Promise<string | null> {
-    if (this.client && this.ready) return this.client.get(key);
+    if (this.client && this.ready) {
+      try {
+        return await this.client.get(key);
+      } catch (error) {
+        this.logger.warn(`Redis get failed, using memory: ${(error as Error).message}`);
+        this.ready = false;
+      }
+    }
     const entry = this.memory.get(key);
     if (!entry) return null;
     if (entry.expiresAt && entry.expiresAt < Date.now()) {
@@ -69,16 +81,26 @@ export class RedisService implements OnModuleDestroy {
 
   async del(key: string) {
     if (this.client && this.ready) {
-      await this.client.del(key);
-      return;
+      try {
+        await this.client.del(key);
+        return;
+      } catch (error) {
+        this.logger.warn(`Redis del failed, using memory: ${(error as Error).message}`);
+        this.ready = false;
+      }
     }
     this.memory.delete(key);
   }
 
   async setNX(key: string, value: string, ttlSeconds: number): Promise<boolean> {
     if (this.client && this.ready) {
-      const result = await this.client.set(key, value, "EX", ttlSeconds, "NX");
-      return result === "OK";
+      try {
+        const result = await this.client.set(key, value, "EX", ttlSeconds, "NX");
+        return result === "OK";
+      } catch (error) {
+        this.logger.warn(`Redis setNX failed, using memory: ${(error as Error).message}`);
+        this.ready = false;
+      }
     }
     const existing = await this.get(key);
     if (existing) return false;

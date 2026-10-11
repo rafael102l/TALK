@@ -191,11 +191,16 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   joinChannel(userId: string, channelId: string) {
+    if (!this.server?.sockets) return;
     this.server.in(`user:${userId}`).socketsJoin(`channel:${channelId}`);
   }
 
   emitToUser(userId: string, event: string, payload: unknown) {
     const room = `user:${userId}`;
+    if (!this.server?.sockets) {
+      this.logger.warn(`Socket server not ready for ${event} user=${userId}`);
+      return;
+    }
     const n = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
     if (!n) {
       this.logger.warn(`No live socket for ${event} user=${userId}`);
