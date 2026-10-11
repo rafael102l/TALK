@@ -12,6 +12,7 @@ import {
 import { PttSpeakingPayload, SOCKET_EVENTS } from "@talk/shared";
 import { toPublicUser } from "../users/user.mapper";
 import { Server, Socket } from "socket.io";
+import { loadChannelIds, loadUser } from "../auth/load-user";
 import { PrismaService } from "../prisma/prisma.service";
 import { JwtPayload } from "../auth/jwt-payload";
 import { FloorService } from "./floor.service";
@@ -37,7 +38,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     try {
       const token = this.readToken(client);
       const payload = await this.jwt.verifyAsync<JwtPayload>(token);
-      const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+      const user = await loadUser(this.prisma, payload.sub);
       if (!user) throw new Error("no user");
       if (typeof payload.sv !== "number" || payload.sv !== user.sessionVersion) {
         throw new Error("session replaced");
@@ -50,11 +51,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       // A reconnect opens a second socket for the same login. Drop the old one quietly.
       this.revokeUserSessions(user.id, client.id, false);
       await this.presence.setOnline(user.id, client.id);
-      const memberships = await this.prisma.channelMember.findMany({
-        where: { userId: user.id },
-        select: { channelId: true },
-      });
-      for (const m of memberships) client.join(`channel:${m.channelId}`);
+      const channelIds = await loadChannelIds(this.prisma, user.id);
+      for (const channelId of channelIds) client.join(`channel:${channelId}`);
       const roomSize = this.server.sockets.adapter.rooms.get(`user:${user.id}`)?.size ?? 1;
       this.logger.log(
         `Socket online user=${user.displayName || user.id} room=user:${user.id} sockets=${roomSize}`,

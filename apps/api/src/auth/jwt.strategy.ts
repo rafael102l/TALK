@@ -2,6 +2,7 @@ import { Injectable, UnauthorizedException } from "@nestjs/common";
 import { PassportStrategy } from "@nestjs/passport";
 import { ExtractJwt, Strategy } from "passport-jwt";
 import { PrismaService } from "../prisma/prisma.service";
+import { loadUser } from "./load-user";
 import { JwtPayload } from "./jwt-payload";
 
 @Injectable()
@@ -14,7 +15,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload) {
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+    const user = await loadUser(this.prisma, payload.sub);
     if (!user) throw new UnauthorizedException("session expired");
     if (typeof payload.sv !== "number" || payload.sv !== user.sessionVersion) {
       throw new UnauthorizedException("session replaced");
