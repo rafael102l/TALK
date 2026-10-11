@@ -47,7 +47,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       client.sessionVersion = user.sessionVersion;
       // Join first so a forced disconnect of older sockets won't clear presence.
       client.join(`user:${user.id}`);
-      this.revokeUserSessions(user.id, client.id);
+      // A reconnect opens a second socket for the same login. Drop the old one quietly.
+      this.revokeUserSessions(user.id, client.id, false);
       await this.presence.setOnline(user.id, client.id);
       const memberships = await this.prisma.channelMember.findMany({
         where: { userId: user.id },
@@ -73,8 +74,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: client.userId, online: false });
   }
 
-  /** Disconnect every live socket for this user (optionally keep one). */
-  revokeUserSessions(userId: string, exceptSocketId?: string) {
+  /**
+   * Disconnect every other live socket for this user.
+   * notify=true only for a real logout or a new sign-in (session version changed).
+   * A plain reconnect must not tell the phone to forget its saved login.
+   */
+  revokeUserSessions(userId: string, exceptSocketId?: string, notify = true) {
     if (!this.server?.sockets) return;
     const room = this.server.sockets.adapter.rooms.get(`user:${userId}`);
     if (!room?.size) return;
@@ -82,7 +87,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       if (exceptSocketId && sid === exceptSocketId) continue;
       const sock = this.server.sockets.sockets.get(sid) as AuthedSocket | undefined;
       if (!sock) continue;
-      sock.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
+      if (notify) sock.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
       sock.disconnect(true);
     }
   }
@@ -198,10 +203,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
     if (n > 1) {
       // Should not happen after single-session enforcement — keep only the newest.
-      this.logger.warn(`Multiple sockets in ${room} (n=${n}) — revoking extras`);
+      this.logger.warn(`Multiple sockets in ${room} (n=${n}) — dropping extras`);
       const ids = [...(this.server.sockets.adapter.rooms.get(room) ?? [])];
       const keep = ids[ids.length - 1];
-      this.revokeUserSessions(userId, keep);
+      this.revokeUserSessions(userId, keep, false);
     }
     this.server.to(room).emit(event, payload);
   }

@@ -7,7 +7,7 @@ import { ensureApiBase } from "./discover";
 import { clearHistoryCache } from "./historyCache";
 import { clearRecents } from "./recents";
 import { clearTalkContactsCache } from "./syncContacts";
-import { connectSocket, disconnectSocket, ensureSocket, getSocket } from "./socket";
+import { connectSocket, disconnectSocket, ensureSocket, getSocket, socketAuthToken } from "./socket";
 
 const TOKEN_KEY = "talk.jwt";
 const USER_KEY = "talk.user";
@@ -24,10 +24,23 @@ type AuthState = {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+let sessionQueue: Promise<void> = Promise.resolve();
+
+function runSession(task: () => Promise<void>) {
+  const run = sessionQueue.then(task, task);
+  sessionQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 async function clearLocalSession() {
-  disconnectSocket();
-  await SecureStore.deleteItemAsync(TOKEN_KEY);
-  await SecureStore.deleteItemAsync(USER_KEY);
+  await runSession(async () => {
+    disconnectSocket();
+    await SecureStore.deleteItemAsync(TOKEN_KEY);
+    await SecureStore.deleteItemAsync(USER_KEY);
+  });
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -118,15 +131,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!token) return;
     const sock = ensureSocket(token);
     const onReplaced = () => {
-      void (async () => {
-        await clearLocalSession();
+      const authedAs = socketAuthToken(sock);
+      void runSession(async () => {
+        if (getSocket() !== sock) return;
+        const current = await SecureStore.getItemAsync(TOKEN_KEY);
+        if (getSocket() !== sock) return;
+        if (!current || (authedAs && current !== authedAs)) return;
+        try {
+          // Same phone reconnecting still has a valid token. Only a real sign-out invalidates it.
+          const me = await api<PublicUser>("/users/me", { token: current, timeoutMs: 15000, once: true });
+          setUser(me);
+          void SecureStore.setItemAsync(USER_KEY, JSON.stringify(me));
+          return;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (!isAuthFailure(message)) return;
+        }
+        if (getSocket() !== sock) return;
+        const still = await SecureStore.getItemAsync(TOKEN_KEY);
+        if (still && still !== current) return;
+        disconnectSocket();
+        await SecureStore.deleteItemAsync(TOKEN_KEY);
+        await SecureStore.deleteItemAsync(USER_KEY);
         setToken(null);
         setUser(null);
-      })();
+      });
     };
     sock.on(SOCKET_EVENTS.SESSION_REPLACED, onReplaced);
     return () => {
-      getSocket()?.off(SOCKET_EVENTS.SESSION_REPLACED, onReplaced);
+      sock.off(SOCKET_EVENTS.SESSION_REPLACED, onReplaced);
     };
   }, [token]);
 
@@ -140,10 +173,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         clearHistoryCache();
         clearTalkContactsCache();
         await clearRecents().catch(() => undefined);
-        await SecureStore.setItemAsync(TOKEN_KEY, nextToken);
-        await SecureStore.setItemAsync(USER_KEY, JSON.stringify(nextUser));
-        setToken(nextToken);
-        setUser(nextUser);
+        await runSession(async () => {
+          await SecureStore.setItemAsync(TOKEN_KEY, nextToken);
+          await SecureStore.setItemAsync(USER_KEY, JSON.stringify(nextUser));
+          setToken(nextToken);
+          setUser(nextUser);
+        });
         await ensureApiBase();
         connectSocket(nextToken);
       },
