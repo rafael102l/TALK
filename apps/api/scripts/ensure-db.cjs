@@ -1,6 +1,6 @@
-const { mkdirSync, readFileSync, writeFileSync } = require("fs");
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require("fs");
 const { dirname, resolve } = require("path");
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 
 if (!process.env.DATABASE_URL) {
   process.env.DATABASE_URL = "file:./data/talk.db";
@@ -25,14 +25,22 @@ writeFileSync(runtimeSchema, schema);
 
 console.log(`[ensure-db] provider=${provider}`);
 const cwd = resolve(__dirname, "..");
-execSync("npx prisma generate --schema prisma/schema.runtime.prisma", {
-  stdio: "inherit",
-  env: process.env,
-  cwd,
-});
-execSync("npx prisma db push --skip-generate --schema prisma/schema.runtime.prisma", {
-  stdio: "inherit",
-  env: process.env,
-  cwd,
-});
+const prismaCli = [
+  resolve(cwd, "node_modules/prisma/build/index.js"),
+  resolve(cwd, "../../node_modules/prisma/build/index.js"),
+].find((file) => existsSync(file));
+if (!prismaCli) {
+  console.error("[ensure-db] prisma CLI not found");
+  process.exit(1);
+}
+function prisma(args) {
+  // Call node directly. `npx prisma` exits 127 on Render when npx is not on PATH.
+  execFileSync(process.execPath, [prismaCli, ...args], {
+    stdio: "inherit",
+    env: process.env,
+    cwd,
+  });
+}
+prisma(["generate", "--schema", "prisma/schema.runtime.prisma"]);
+prisma(["db", "push", "--skip-generate", "--schema", "prisma/schema.runtime.prisma"]);
 console.log("[ensure-db] schema ready");
