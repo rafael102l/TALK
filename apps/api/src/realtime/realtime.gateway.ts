@@ -48,9 +48,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       client.displayName = payload.phone;
       client.sessionVersion = payload.sv;
       client.join(`user:${payload.sub}`);
-      this.revokeUserSessions(payload.sub, client.id, false);
-      const roomSize = this.server.sockets.adapter.rooms.get(`user:${payload.sub}`)?.size ?? 1;
-      this.logger.debug(`Socket online user=${payload.sub} room=user:${payload.sub} sockets=${roomSize}`);
+      const roomSize = this.roomCount(payload.sub);
+      this.logger.log(`socket join user=${payload.sub} sid=${client.id} room=user:${payload.sub} n=${roomSize}`);
       void this.finishConnection(client, payload);
     } catch (error) {
       this.logger.debug(`Socket rejected: ${(error as Error).message}`);
@@ -81,6 +80,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       }
       const user = await loadUser(this.prisma, payload.sub);
       if (!user || !client.connected) return;
+      client.join(`user:${user.id}`);
       client.displayName = user.displayName;
       client.sessionVersion = fresh.sessionVersion;
       await this.presence.setOnline(user.id, client.id);
@@ -217,7 +217,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const room = named.length
       ? { key: `targets:${[client.userId, ...named].sort().join(",")}`, listenerIds: named }
       : await this.floorRoom(client.userId, body);
-    if (!room) return { ok: false };
+    if (!room) return { ok: false, rooms: "" };
+    client.join(`user:${client.userId}`);
     const gender = body.voiceGender === "female" || body.voiceGender === "child" ? body.voiceGender : "male";
     const payload: PttSpeakingPayload = {
       channelId: room.key,
@@ -235,7 +236,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
       this.closeSocket(client);
     });
-    return { ok: true, floorKey: room.key };
+    const peers = room.listenerIds.filter((id) => id !== client.userId);
+    const rooms = peers.map((id) => `${id}:${this.roomCount(id)}`).join(",");
+    return { ok: true, floorKey: room.key, rooms };
   }
 
   @SubscribeMessage(SOCKET_EVENTS.PTT_RELEASED)
@@ -285,22 +288,24 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.warn(`ptt audio drop no-targets user=${client.userId}`);
       return { ok: false };
     }
+    client.join(`user:${client.userId}`);
     const payload = { speakerId: client.userId, pcm: body.pcm, seq: body.seq ?? 0 };
     let forwarded = 0;
     for (const userId of targets) {
       if (this.emitLive(userId, SOCKET_EVENTS.PTT_AUDIO, payload)) forwarded += 1;
       else this.noteAudioDrop(userId);
     }
+    const rooms = targets.map((id) => `${id}:${this.roomCount(id)}`).join(",");
     this.audioIn += 1;
     this.audioFwd += forwarded;
     const now = Date.now();
     if (this.audioIn === 1 || now - this.audioLogAt >= 1000) {
       this.logger.log(
-        `ptt audio in=${this.audioIn} fwd=${this.audioFwd} seq=${body.seq ?? 0} bytes=${body.pcm.length} targets=${targets.length}`,
+        `ptt audio from=${client.userId} in=${this.audioIn} fwd=${this.audioFwd} seq=${body.seq ?? 0} bytes=${body.pcm.length} rooms=${rooms}`,
       );
       this.audioLogAt = now;
     }
-    return { ok: true };
+    return { ok: forwarded > 0, forwarded, rooms };
   }
 
   private async floorRoom(
@@ -347,13 +352,26 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.logger.warn(`ptt audio drop no-socket user=${userId}`);
   }
 
+  private roomCount(userId: string) {
+    return this.server?.sockets?.adapter.rooms.get(`user:${userId}`)?.size ?? 0;
+  }
+
   private emitLive(userId: string, event: string, payload: unknown): boolean {
     const room = `user:${userId}`;
     if (!this.server?.sockets) return false;
-    const n = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
-    if (!n) return false;
-    this.server.to(room).emit(event, payload);
-    return true;
+    if (this.roomCount(userId) > 0) {
+      this.server.to(room).emit(event, payload);
+      return true;
+    }
+    let sent = 0;
+    for (const sock of this.server.sockets.sockets.values()) {
+      const authed = sock as AuthedSocket;
+      if (authed.userId !== userId) continue;
+      authed.join(room);
+      authed.emit(event, payload);
+      sent += 1;
+    }
+    return sent > 0;
   }
 
   emitToUser(userId: string, event: string, payload: unknown, retry = true): boolean {
@@ -370,13 +388,6 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         setTimeout(() => this.emitToUser(userId, event, payload, false), 8000);
       }
       return false;
-    }
-    if (n > 1) {
-      // Should not happen after single-session enforcement — keep only the newest.
-      this.logger.debug(`Multiple sockets in ${room} (n=${n}) — dropping extras`);
-      const ids = [...(this.server.sockets.adapter.rooms.get(room) ?? [])];
-      const keep = ids[ids.length - 1];
-      this.revokeUserSessions(userId, keep, false);
     }
     this.server.to(room).emit(event, payload);
     return true;
