@@ -48,11 +48,11 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       client.join(`user:${payload.sub}`);
       this.revokeUserSessions(payload.sub, client.id, false);
       const roomSize = this.server.sockets.adapter.rooms.get(`user:${payload.sub}`)?.size ?? 1;
-      this.logger.log(`Socket online user=${payload.sub} room=user:${payload.sub} sockets=${roomSize}`);
+      this.logger.debug(`Socket online user=${payload.sub} room=user:${payload.sub} sockets=${roomSize}`);
       this.replayWalkies(payload.sub);
       void this.finishConnection(client, payload);
     } catch (error) {
-      this.logger.warn(`Socket rejected: ${(error as Error).message}`);
+      this.logger.debug(`Socket rejected: ${(error as Error).message}`);
       client.disconnect(true);
     }
   }
@@ -72,7 +72,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       for (const channelId of channelIds) client.join(`channel:${channelId}`);
       this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: user.id, online: true });
     } catch (error) {
-      this.logger.warn(`Socket profile delayed: ${(error as Error).message}`);
+      this.logger.debug(`Socket profile delayed: ${(error as Error).message}`);
     }
   }
 
@@ -131,7 +131,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         releasedAt: tx.createdAt.getTime(),
       }, false);
     }
-    this.logger.log(`Walkie replay user=${userId} count=${rows.length}`);
+    this.logger.debug(`Walkie replay user=${userId} count=${rows.length}`);
   }
 
   async handleDisconnect(client: AuthedSocket) {
@@ -299,12 +299,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   emitToUser(userId: string, event: string, payload: unknown, retry = true): boolean {
     const room = `user:${userId}`;
     if (!this.server?.sockets) {
-      this.logger.warn(`Socket server not ready for ${event} user=${userId}`);
+      this.logger.debug(`Socket server not ready for ${event} user=${userId}`);
       return false;
     }
     const n = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
     if (!n) {
-      this.logger.warn(`No live socket for ${event} user=${userId}`);
+      this.logger.debug(`No live socket for ${event} user=${userId}`);
       if (retry && event === SOCKET_EVENTS.TRANSMISSION_READY) {
         setTimeout(() => this.emitToUser(userId, event, payload, false), 2000);
         setTimeout(() => this.emitToUser(userId, event, payload, false), 8000);
@@ -313,7 +313,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
     if (n > 1) {
       // Should not happen after single-session enforcement — keep only the newest.
-      this.logger.warn(`Multiple sockets in ${room} (n=${n}) — dropping extras`);
+      this.logger.debug(`Multiple sockets in ${room} (n=${n}) — dropping extras`);
       const ids = [...(this.server.sockets.adapter.rooms.get(room) ?? [])];
       const keep = ids[ids.length - 1];
       this.revokeUserSessions(userId, keep, false);
