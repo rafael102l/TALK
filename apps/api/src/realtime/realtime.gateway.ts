@@ -237,17 +237,44 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     return { ok: true };
   }
 
+  private audioIn = 0;
+  private audioFwd = 0;
+  private audioLogAt = 0;
+  private audioDropAt = 0;
+
   @SubscribeMessage(SOCKET_EVENTS.PTT_AUDIO)
   pttAudio(
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody() body: { targetUserIds?: string[]; pcm?: string; seq?: number },
   ) {
-    if (!client.userId || typeof body?.pcm !== "string") return { ok: false };
-    if (body.pcm.length < 8 || body.pcm.length > 16000) return { ok: false };
+    if (!client.userId || typeof body?.pcm !== "string") {
+      this.logger.warn(`ptt audio drop bad-body user=${client.userId ?? "?"} type=${typeof body?.pcm}`);
+      return { ok: false };
+    }
+    if (body.pcm.length < 8 || body.pcm.length > 16000) {
+      this.logger.warn(`ptt audio drop size=${body.pcm.length} user=${client.userId}`);
+      return { ok: false };
+    }
     const targets = [...new Set((body.targetUserIds ?? []).filter((id) => id && id !== client.userId))].slice(0, 32);
-    if (!targets.length) return { ok: false };
+    if (!targets.length) {
+      this.logger.warn(`ptt audio drop no-targets user=${client.userId}`);
+      return { ok: false };
+    }
     const payload = { speakerId: client.userId, pcm: body.pcm, seq: body.seq ?? 0 };
-    for (const userId of targets) this.emitLive(userId, SOCKET_EVENTS.PTT_AUDIO, payload);
+    let forwarded = 0;
+    for (const userId of targets) {
+      if (this.emitLive(userId, SOCKET_EVENTS.PTT_AUDIO, payload)) forwarded += 1;
+      else this.noteAudioDrop(userId);
+    }
+    this.audioIn += 1;
+    this.audioFwd += forwarded;
+    const now = Date.now();
+    if (this.audioIn === 1 || now - this.audioLogAt >= 1000) {
+      this.logger.log(
+        `ptt audio in=${this.audioIn} fwd=${this.audioFwd} seq=${body.seq ?? 0} bytes=${body.pcm.length} targets=${targets.length}`,
+      );
+      this.audioLogAt = now;
+    }
     return { ok: true };
   }
 
@@ -288,12 +315,20 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.in(`user:${userId}`).socketsJoin(`channel:${channelId}`);
   }
 
-  private emitLive(userId: string, event: string, payload: unknown) {
+  private noteAudioDrop(userId: string) {
+    const now = Date.now();
+    if (now - this.audioDropAt < 1000) return;
+    this.audioDropAt = now;
+    this.logger.warn(`ptt audio drop no-socket user=${userId}`);
+  }
+
+  private emitLive(userId: string, event: string, payload: unknown): boolean {
     const room = `user:${userId}`;
-    if (!this.server?.sockets) return;
+    if (!this.server?.sockets) return false;
     const n = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
-    if (!n) return;
+    if (!n) return false;
     this.server.to(room).emit(event, payload);
+    return true;
   }
 
   emitToUser(userId: string, event: string, payload: unknown, retry = true): boolean {
