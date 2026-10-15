@@ -24,6 +24,8 @@ type AuthedSocket = Socket & { userId?: string; displayName?: string; sessionVer
 @WebSocketGateway({ cors: { origin: true } })
 export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(RealtimeGateway.name);
+  /** One replay of missed clips per user. A reconnect loop was re-sending the same three every second. */
+  private readonly lastReplayAt = new Map<string, number>();
 
   @WebSocketServer()
   server: Server;
@@ -49,40 +51,60 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.revokeUserSessions(payload.sub, client.id, false);
       const roomSize = this.server.sockets.adapter.rooms.get(`user:${payload.sub}`)?.size ?? 1;
       this.logger.debug(`Socket online user=${payload.sub} room=user:${payload.sub} sockets=${roomSize}`);
-      this.replayWalkies(payload.sub);
       void this.finishConnection(client, payload);
     } catch (error) {
       this.logger.debug(`Socket rejected: ${(error as Error).message}`);
-      client.disconnect(true);
+      this.closeSocket(client);
     }
+  }
+
+  /**
+   * Namespace disconnect. Closing the TCP socket (`disconnect(true)`) looks like a
+   * dropped cable, so the phone reconnects about once a second and kicks this socket again.
+   */
+  private closeSocket(sock: Socket) {
+    sock.disconnect(false);
   }
 
   private async finishConnection(client: AuthedSocket, payload: JwtPayload) {
     try {
-      const user = await loadUser(this.prisma, payload.sub);
-      if (!user || payload.sv !== user.sessionVersion) {
-        client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
-        client.disconnect(true);
+      const fresh = await this.prisma.user.findUnique({
+        where: { id: payload.sub },
+        select: { sessionVersion: true },
+      });
+      if (!fresh || payload.sv !== fresh.sessionVersion) {
+        if (client.connected) {
+          client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
+          this.closeSocket(client);
+        }
         return;
       }
+      const user = await loadUser(this.prisma, payload.sub);
+      if (!user || !client.connected) return;
       client.displayName = user.displayName;
-      client.sessionVersion = user.sessionVersion;
+      client.sessionVersion = fresh.sessionVersion;
       await this.presence.setOnline(user.id, client.id);
       const channelIds = await loadChannelIds(this.prisma, user.id);
       for (const channelId of channelIds) client.join(`channel:${channelId}`);
       this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: user.id, online: true });
+      this.scheduleReplay(user.id);
     } catch (error) {
       this.logger.debug(`Socket profile delayed: ${(error as Error).message}`);
     }
   }
 
-  /** If the clip was saved while this phone was offline, hand it over once the socket is up. */
-  private replayWalkies(userId: string) {
+  /** If the clip was saved while this phone was offline, hand it over once — not on every reconnect. */
+  private scheduleReplay(userId: string) {
+    const now = Date.now();
+    if (now - (this.lastReplayAt.get(userId) ?? 0) < 60_000) return;
+    this.lastReplayAt.set(userId, now);
     setTimeout(() => {
+      const n = this.server?.sockets?.adapter.rooms.get(`user:${userId}`)?.size ?? 0;
+      if (!n) return;
       void this.sendUnplayedWalkies(userId).catch((error: Error) => {
         this.logger.warn(`Walkie replay failed: ${error.message}`);
       });
-    }, 200);
+    }, 800);
   }
 
   private async sendUnplayedWalkies(userId: string) {
@@ -103,11 +125,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       take: 3,
     });
     if (!rows.length) return;
+    let delivered = 0;
     for (const row of rows) {
       const tx = row.transmission;
       const sender = toPublicUser(tx.sender);
       const lang = row.language || sender.speakLang || "he";
-      this.emitToUser(userId, SOCKET_EVENTS.TRANSMISSION_READY, {
+      const payload = {
         transmissionId: tx.id,
         channelId: tx.channelId,
         senderId: tx.senderId,
@@ -125,13 +148,15 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         senderPhone: tx.sender.phoneE164,
         senderAvatarUrl: sender.avatarUrl,
         voiceGender: sender.voiceGender ?? "male",
-        kind: "walkie",
+        kind: "walkie" as const,
         viewOnce: false,
         readyAt: tx.createdAt.getTime(),
         releasedAt: tx.createdAt.getTime(),
-      }, false);
+      };
+      if (!this.emitToUser(userId, SOCKET_EVENTS.TRANSMISSION_READY, payload, false)) break;
+      delivered += 1;
     }
-    this.logger.debug(`Walkie replay user=${userId} count=${rows.length}`);
+    if (delivered) this.logger.debug(`Walkie replay user=${userId} count=${delivered}`);
   }
 
   async handleDisconnect(client: AuthedSocket) {
@@ -156,7 +181,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       const sock = this.server.sockets.sockets.get(sid) as AuthedSocket | undefined;
       if (!sock) continue;
       if (notify) sock.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
-      sock.disconnect(true);
+      this.closeSocket(sock);
     }
   }
 
@@ -165,7 +190,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (client.userId) {
       if (!(await this.sessionStillValid(client))) {
         client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
-        client.disconnect(true);
+        this.closeSocket(client);
         return { ok: false };
       }
       await this.presence.heartbeat(client.userId, client.id);
@@ -208,7 +233,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     void this.sessionStillValid(client).then((ok) => {
       if (ok) return;
       client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
-      client.disconnect(true);
+      this.closeSocket(client);
     });
     return { ok: true, floorKey: room.key };
   }
@@ -221,7 +246,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (!client.userId) return;
     if (!(await this.sessionStillValid(client))) {
       client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
-      client.disconnect(true);
+      this.closeSocket(client);
       return { ok: false };
     }
     const room = await this.floorRoom(client.userId, body);
