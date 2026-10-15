@@ -36,8 +36,9 @@ type Press = {
 const FRAME_MS = 20;
 const LOUD = 600;
 const MIN_SPEECH_MS = 700;
-const SILENCE_MS = 200;
+const SILENCE_MS = 450;
 const MAX_SPEECH_MS = 2000;
+const CAP_GRACE_MS = 700;
 const RELEASE_MIN_MS = 280;
 
 /**
@@ -139,8 +140,9 @@ export class LiveDubService {
     }
     if (!press.ready || !press.dub.length) return;
     const phrase = press.speechMs >= MIN_SPEECH_MS && press.silenceMs >= SILENCE_MS;
-    const cap = press.speechMs >= MAX_SPEECH_MS;
-    if (phrase || cap) void this.enqueue(press, phrase ? "silence" : "cap");
+    const atCap = press.speechMs >= MAX_SPEECH_MS && press.silenceMs >= 160;
+    const hardCap = press.speechMs >= MAX_SPEECH_MS + CAP_GRACE_MS;
+    if (phrase || atCap || hardCap) void this.enqueue(press, phrase ? "silence" : "cap");
   }
 
   finish(socketId: string) {
@@ -219,7 +221,8 @@ export class LiveDubService {
       void this.enqueue(press, "release");
     } else if (
       (press.speechMs >= MIN_SPEECH_MS && press.silenceMs >= SILENCE_MS) ||
-      press.speechMs >= MAX_SPEECH_MS
+      press.speechMs >= MAX_SPEECH_MS + CAP_GRACE_MS ||
+      (press.speechMs >= MAX_SPEECH_MS && press.silenceMs >= 160)
     ) {
       void this.enqueue(press, press.silenceMs >= SILENCE_MS ? "silence" : "cap");
     }
@@ -252,7 +255,11 @@ export class LiveDubService {
     press.chunks = [];
     press.speechMs = 0;
     press.silenceMs = 0;
-    const wav = wavBytes(Buffer.concat(chunks));
+    const pcm = clipSpeech(Buffer.concat(chunks));
+    const heard = pcmStats(pcm);
+    this.logger.log(
+      `live dub audio format=audio/wav rate=16000 ch=1 pcm16 bytes=${pcm.length} durMs=${heard.durMs} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)} loudMs=${speechMs} reason=${reason}`,
+    );
     const byLang = new Map<string, Ear[]>();
     for (const ear of press.dub) {
       const list = byLang.get(ear.listenLang) ?? [];
@@ -261,39 +268,54 @@ export class LiveDubService {
     }
     press.seq += 1;
     const seq = press.seq;
+    if (pcm.length < 3200 || heard.peak < LOUD || heard.durMs < 280) {
+      this.logger.warn(`live dub skip noise bytes=${pcm.length} peak=${Math.round(heard.peak)} durMs=${heard.durMs}`);
+      this.emitLine(press, byLang, seq, "[unclear]");
+      return;
+    }
+    const wav = wavBytes(pcm);
     await Promise.all(
       [...byLang.entries()].map(async ([listenLang, ears]) => {
       const started = Date.now();
-      const line = (await this.stt.translateAudio(wav, listenLang, "audio/wav", "wav")).trim();
+      const raw = (await this.stt.translateAudio(wav, listenLang, "audio/wav", "wav")).trim();
+      const line = captionLine(raw);
       this.logger.log(
-        `live dub phrase reason=${reason} ms=${speechMs} gemini=${Date.now() - started}ms lang=${listenLang} "${line.slice(0, 80)}"`,
+        `live dub phrase reason=${reason} ms=${speechMs} gemini=${Date.now() - started}ms lang=${listenLang} "${line}"`,
       );
-      if (!line) return;
-      await Promise.all(
-        ears.map(async (ear) => {
-          let audioUrl: string | null = null;
-          if (ear.mode === "plus") {
-            const saved = await this.tts.speak(line, listenLang, ear.voiceId, ear.gender, {
-              allowEleven: true,
-              preferEleven: true,
-              timeoutMs: 8000,
-            });
-            audioUrl = saved ? this.storage.publicUrl(saved) : null;
-          }
-          this.emit(ear.userId, {
-            speakerId: press.speakerId,
-            seq,
-            text: line,
-            lang: listenLang,
-            mode: audioUrl ? "plus" : "free",
-            audioUrl,
-            voiceGender: ear.gender,
+      await this.deliver(press, ears, seq, listenLang, line);
+      }),
+    );
+  }
+
+  private emitLine(press: Press, byLang: Map<string, Ear[]>, seq: number, text: string) {
+    for (const [listenLang, ears] of byLang) void this.deliver(press, ears, seq, listenLang, text);
+  }
+
+  private async deliver(press: Press, ears: Ear[], seq: number, listenLang: string, line: string) {
+    await Promise.all(
+      ears.map(async (ear) => {
+        const unclear = line === "[unclear]";
+        let audioUrl: string | null = null;
+        if (!unclear && ear.mode === "plus") {
+          const saved = await this.tts.speak(line, listenLang, ear.voiceId, ear.gender, {
+            allowEleven: true,
+            preferEleven: true,
+            timeoutMs: 8000,
           });
-          this.logger.log(
-            `live dub out user=${ear.userId} mode=${audioUrl ? "plus" : "free"} lang=${listenLang} seq=${seq}`,
-          );
-        }),
-      );
+          audioUrl = saved ? this.storage.publicUrl(saved) : null;
+        }
+        this.emit(ear.userId, {
+          speakerId: press.speakerId,
+          seq,
+          text: line,
+          lang: listenLang,
+          mode: audioUrl ? "plus" : "free",
+          audioUrl,
+          voiceGender: ear.gender,
+        });
+        this.logger.log(
+          `live dub out user=${ear.userId} mode=${audioUrl ? "plus" : "free"} lang=${listenLang} seq=${seq} "${line}"`,
+        );
       }),
     );
   }
@@ -316,6 +338,43 @@ function rms(pcm: Buffer) {
     sum += v * v;
   }
   return Math.sqrt(sum / n);
+}
+
+function pcmStats(pcm: Buffer) {
+  const n = Math.floor(pcm.length / 2);
+  let peak = 0;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = Math.abs(pcm.readInt16LE(i * 2));
+    if (v > peak) peak = v;
+    sum += v * v;
+  }
+  return { peak, rms: n ? Math.sqrt(sum / n) : 0, durMs: Math.round(n / 16) };
+}
+
+/** Drop leading and trailing silence, but keep a short tail so the last word is complete. */
+function clipSpeech(pcm: Buffer) {
+  const frame = 640;
+  const frames: Buffer[] = [];
+  for (let i = 0; i < pcm.length; i += frame) frames.push(pcm.subarray(i, Math.min(i + frame, pcm.length)));
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < frames.length; i++) {
+    if (rms(frames[i]) >= LOUD) {
+      if (first < 0) first = i;
+      last = i;
+    }
+  }
+  if (first < 0) return Buffer.alloc(0);
+  const start = Math.max(0, first - 4);
+  const end = Math.min(frames.length, last + 1 + 12);
+  return Buffer.concat(frames.slice(start, end));
+}
+
+function captionLine(raw: string) {
+  const line = raw.replace(/\s+/g, " ").trim();
+  if (!line || /^\[?\s*unclear\s*\]?$/i.test(line) || /^nothing\.?$/i.test(line)) return "[unclear]";
+  return line;
 }
 
 function wavBytes(pcm: Buffer, sampleRate = 16000) {

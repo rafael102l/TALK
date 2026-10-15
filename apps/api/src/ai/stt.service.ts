@@ -88,8 +88,8 @@ export class SttService {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return "";
     const target = langName(targetLang);
-    const system = `You are a strict, literal real-time speech translator. Your ONLY job is to translate the exact words spoken in the audio into ${target}. Do NOT reply, do NOT converse, do NOT guess. Translate word-for-word as accurately as possible. Output ONLY the translation.`;
-    const prompt = `Translate the exact words spoken in this audio into ${target}. Output ONLY the translation.`;
+    const system = `You are a strict, literal real-time speech translator. Translate ONLY the audible speech in this audio clip into ${target}. If the audio is silent, unclear, or just noise, output NOTHING or "[unclear]" instead of inventing sentences. Do NOT reply, do NOT converse, do NOT guess. Output ONLY the translation.`;
+    const prompt = `Translate ONLY the audible speech in this audio clip into ${target}. If the audio is silent, unclear, or just noise, output NOTHING or "[unclear]" instead of inventing sentences.`;
     const audioMime = geminiAudioMime(mime, ext);
     const started = Date.now();
     for (const model of GEMINI_LIVE_MODELS) {
