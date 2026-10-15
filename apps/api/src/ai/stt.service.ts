@@ -3,11 +3,10 @@ import { LANGUAGES, isLanguageCode } from "@talk/shared";
 import { extname } from "path";
 import { readFile } from "fs/promises";
 
-// Prefer non-thinking / lite first. 2.5-flash thinks by default and used to eat the
-// tiny maxOutputTokens budget → truncated mid-word transcripts.
-const GEMINI_HEAR_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
-/** Live dub is one audio→translation call. 2.0-flash is the fast path; 1.5-flash only if 2.0 is gone. */
-const GEMINI_LIVE_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash"];
+// 2.0-flash and 2.5-flash-lite return 404. 2.5-flash still hears audio; thinking is disabled below.
+const GEMINI_HEAR_MODELS = ["gemini-2.5-flash"];
+/** Live dub is one audio→translation call. 2.0-flash and 1.5-flash now return 404. */
+const GEMINI_LIVE_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"];
 const LANG_LIST = LANGUAGES.map((language) => language.code).join(", ");
 
 const HEBREW = /[\u0590-\u05FF]/;
@@ -116,12 +115,20 @@ export class SttService {
               generationConfig: {
                 temperature: 0.2,
                 maxOutputTokens: 256,
+                ...(model.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
               },
             }),
           },
         );
         if (!res.ok) {
-          this.logger.warn(`Gemini live ${model} failed: ${res.status}`);
+          const errText = await res.text().catch(() => "");
+          let message = "";
+          try {
+            message = String((JSON.parse(errText) as { error?: { message?: string } }).error?.message || "");
+          } catch {
+            message = errText.slice(0, 180);
+          }
+          this.logger.warn(`Gemini live ${model} failed: ${res.status} ${message.slice(0, 180)}`);
           if (res.status === 404) this.deadGemini.add(model);
           continue;
         }
