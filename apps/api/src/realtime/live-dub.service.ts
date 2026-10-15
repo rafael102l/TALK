@@ -22,11 +22,16 @@ type Press = {
   relay: Set<string>;
   dub: Ear[];
   chunks: Buffer[];
+  /** PCM held until languages are known. Same-language ears get it; translated ears never do. */
+  relayBacklog: Buffer[];
   speechMs: number;
   silenceMs: number;
   seq: number;
   flushing: Promise<void>;
   closed: boolean;
+  ready: boolean;
+  loading: boolean;
+  targetIds: string[];
 };
 
 const FRAME_MS = 20;
@@ -47,6 +52,8 @@ export class LiveDubService {
   private readonly logger = new Logger(LiveDubService.name);
   private readonly presses = new Map<string, Press>();
   private emit: (userId: string, payload: PttCaptionPayload) => void = () => undefined;
+  private lockOriginal: (userId: string, speakerId: string, translate: boolean) => void = () => undefined;
+  private emitPcm: (userId: string, speakerId: string, pcm: string, seq: number) => void = () => undefined;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -56,40 +63,83 @@ export class LiveDubService {
     private readonly storage: StorageService,
   ) {}
 
-  attach(emit: (userId: string, payload: PttCaptionPayload) => void) {
-    this.emit = emit;
+  attach(handlers: {
+    caption: (userId: string, payload: PttCaptionPayload) => void;
+    lock: (userId: string, speakerId: string, translate: boolean) => void;
+    pcm: (userId: string, speakerId: string, pcm: string, seq: number) => void;
+  }) {
+    this.emit = handlers.caption;
+    this.lockOriginal = handlers.lock;
+    this.emitPcm = handlers.pcm;
   }
 
-  /** null = languages not loaded yet, so the caller keeps the raw relay. */
-  relayIds(socketId: string, targets: string[]): string[] | null {
+  /**
+   * Raw PCM targets.
+   * pending: languages not loaded — emit nothing.
+   * Otherwise only same-language listeners. Translated listeners are omitted.
+   */
+  route(socketId: string, targets: string[]): { pending: boolean; relay: string[]; dub: number } {
     const press = this.presses.get(socketId);
-    if (!press) return null;
-    return targets.filter((id) => press.relay.has(id) || !press.dub.some((ear) => ear.userId === id));
-  }
-
-  dubCount(socketId: string, targets: string[]) {
-    const press = this.presses.get(socketId);
-    if (!press) return 0;
-    return targets.filter((id) => press.dub.some((ear) => ear.userId === id)).length;
+    if (!press) return { pending: false, relay: targets, dub: 0 };
+    if (!press.ready) return { pending: true, relay: [], dub: targets.length };
+    const relay = targets.filter((id) => press.relay.has(id));
+    const dub = targets.filter((id) => press.dub.some((ear) => ear.userId === id)).length;
+    return { pending: false, relay, dub };
   }
 
   open(socketId: string, speakerId: string, targetIds: string[]) {
     const ids = [...new Set(targetIds.filter((id) => id && id !== speakerId))];
-    void this.load(socketId, speakerId, ids).catch((error: Error) => {
-      this.logger.warn(`live dub open failed: ${error.message}`);
-    });
+    let press = this.presses.get(socketId);
+    if (!press) {
+      press = {
+        socketId,
+        speakerId,
+        speakLang: "",
+        speakerGender: "male",
+        relay: new Set(),
+        dub: [],
+        chunks: [],
+        relayBacklog: [],
+        speechMs: 0,
+        silenceMs: 0,
+        seq: 0,
+        flushing: Promise.resolve(),
+        closed: false,
+        ready: false,
+        loading: false,
+        targetIds: ids,
+      };
+      this.presses.set(socketId, press);
+    } else if (ids.length) {
+      press.targetIds = [...new Set([...press.targetIds, ...ids])];
+    }
+    if (press.ready || press.loading) return;
+    press.loading = true;
+    void this.load(press, press.targetIds)
+      .catch((error: Error) => {
+        this.logger.warn(`live dub open failed: ${error.message}`);
+        press.ready = true;
+        press.relay = new Set(press.targetIds);
+        press.dub = [];
+        this.releaseBacklog(press);
+      })
+      .finally(() => {
+        press.loading = false;
+      });
   }
 
   push(socketId: string, pcm: Buffer) {
     const press = this.presses.get(socketId);
-    if (!press?.dub.length || pcm.length < 2) return;
+    if (!press || pcm.length < 2) return;
     press.chunks.push(pcm);
+    if (!press.ready) press.relayBacklog.push(pcm);
     if (rms(pcm) >= LOUD) {
       press.speechMs += FRAME_MS;
       press.silenceMs = 0;
     } else {
       press.silenceMs += FRAME_MS;
     }
+    if (!press.ready || !press.dub.length) return;
     const phrase = press.speechMs >= MIN_SPEECH_MS && press.silenceMs >= SILENCE_MS;
     const cap = press.speechMs >= MAX_SPEECH_MS;
     if (phrase || cap) void this.enqueue(press, phrase ? "silence" : "cap");
@@ -104,7 +154,19 @@ export class LiveDubService {
     });
   }
 
-  private async load(socketId: string, speakerId: string, targetIds: string[]) {
+  private releaseBacklog(press: Press) {
+    const frames = press.relayBacklog;
+    press.relayBacklog = [];
+    let seq = 0;
+    for (const frame of frames) {
+      const pcm = frame.toString("base64");
+      for (const userId of press.relay) this.emitPcm(userId, press.speakerId, pcm, seq);
+      seq += 1;
+    }
+  }
+
+  private async load(press: Press, targetIds: string[]) {
+    const speakerId = press.speakerId;
     const rows = await this.prisma.user.findMany({
       where: { id: { in: [speakerId, ...targetIds] } },
       select: {
@@ -143,21 +205,26 @@ export class LiveDubService {
         gender: speakerGender,
       });
     }
-    const previous = this.presses.get(socketId);
-    this.presses.set(socketId, {
-      socketId,
-      speakerId,
-      speakLang,
-      speakerGender,
-      relay,
-      dub,
-      chunks: previous?.chunks ?? [],
-      speechMs: previous?.speechMs ?? 0,
-      silenceMs: previous?.silenceMs ?? 0,
-      seq: previous?.seq ?? 0,
-      flushing: previous?.flushing ?? Promise.resolve(),
-      closed: false,
-    });
+    press.speakLang = speakLang;
+    press.speakerGender = speakerGender;
+    press.relay = relay;
+    press.dub = dub;
+    press.ready = true;
+    for (const ear of dub) this.lockOriginal(ear.userId, speakerId, true);
+    for (const id of relay) this.lockOriginal(id, speakerId, false);
+    this.releaseBacklog(press);
+    if (!dub.length) {
+      press.chunks = [];
+      press.speechMs = 0;
+      press.silenceMs = 0;
+    } else if (press.closed) {
+      void this.enqueue(press, "release");
+    } else if (
+      (press.speechMs >= MIN_SPEECH_MS && press.silenceMs >= SILENCE_MS) ||
+      press.speechMs >= MAX_SPEECH_MS
+    ) {
+      void this.enqueue(press, press.silenceMs >= SILENCE_MS ? "silence" : "cap");
+    }
     this.logger.log(
       `live dub open speaker=${speakerId} lang=${speakLang} relay=${[...relay].join(",") || "-"} dub=${dub.map((ear) => `${ear.userId}:${ear.listenLang}:${ear.mode}`).join(",") || "-"}`,
     );
@@ -172,6 +239,7 @@ export class LiveDubService {
   }
 
   private async speakPhrase(press: Press, reason: "silence" | "cap" | "release") {
+    if (!press.ready) return;
     const min = reason === "release" ? RELEASE_MIN_MS : MIN_SPEECH_MS;
     if (!press.dub.length || press.speechMs < min || !press.chunks.length) {
       if (reason === "release") {

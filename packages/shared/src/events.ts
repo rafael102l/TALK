@@ -38,6 +38,8 @@ export type PttSpeakingPayload = {
   speakerName: string;
   speakerAvatarUrl?: string | null;
   voiceGender?: "male" | "female" | "child";
+  /** True when this listener must hear a translation, never the original voice. */
+  translate?: boolean;
 };
 
 export type PttFloorBusyPayload = {
@@ -69,4 +71,6 @@ export type TransmissionReadyPayload = {
   viewOnce?: boolean;
   releasedAt?: number;
   readyAt?: number;
+  /** Listener language differs: do not play the original recording. */
+  suppressOriginal?: boolean;
 };

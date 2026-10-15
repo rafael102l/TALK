@@ -211,8 +211,16 @@ export class TransmissionsService {
       releasedAt: clientRelease,
       readyAt: Date.now(),
     };
+    const speak = (lang || "").slice(0, 2).toLowerCase();
     for (const target of transmission.targets) {
-      this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+      const listener = users.find((user) => user.id === target.userId);
+      const hear = (listener?.listenLang || listener?.speakLang || "").slice(0, 2).toLowerCase();
+      const suppressOriginal = Boolean(hear && speak && hear !== speak);
+      this.realtime.emitToUser(
+        target.userId,
+        SOCKET_EVENTS.TRANSMISSION_READY,
+        suppressOriginal ? { ...payload, audioUrl: null, suppressOriginal: true } : payload,
+      );
       void this.prisma.transmissionTarget.update({
         where: { id: target.id },
         data: { deliveredAt: new Date() },

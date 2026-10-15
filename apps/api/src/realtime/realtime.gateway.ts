@@ -300,12 +300,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
     client.join(`user:${client.userId}`);
     this.ensureDub();
-    const relay = this.liveDub.relayIds(client.id, targets) ?? targets;
-    const dub = this.liveDub.dubCount(client.id, targets);
-    if (dub) this.liveDub.push(client.id, Buffer.from(body.pcm, "base64"));
+    this.liveDub.open(client.id, client.userId, targets);
+    const route = this.liveDub.route(client.id, targets);
+    const pcm = Buffer.from(body.pcm, "base64");
+    if (route.pending || route.dub) this.liveDub.push(client.id, pcm);
+    const dub = route.dub;
     const payload = { speakerId: client.userId, pcm: body.pcm, seq: body.seq ?? 0 };
     let forwarded = 0;
-    for (const userId of relay) {
+    for (const userId of route.relay) {
       if (this.emitLive(userId, SOCKET_EVENTS.PTT_AUDIO, payload)) forwarded += 1;
       else this.noteAudioDrop(userId);
     }
@@ -323,8 +325,21 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   private ensureDub() {
-    this.liveDub.attach((userId, payload) => {
-      this.emitLive(userId, SOCKET_EVENTS.PTT_CAPTION, payload);
+    this.liveDub.attach({
+      caption: (userId, payload) => {
+        this.emitLive(userId, SOCKET_EVENTS.PTT_CAPTION, payload);
+      },
+      lock: (userId, speakerId, translate) => {
+        this.emitLive(userId, SOCKET_EVENTS.PTT_SPEAKING, {
+          channelId: "live",
+          speakerId,
+          speakerName: "",
+          translate,
+        });
+      },
+      pcm: (userId, speakerId, pcm, seq) => {
+        this.emitLive(userId, SOCKET_EVENTS.PTT_AUDIO, { speakerId, pcm, seq });
+      },
     });
   }
 
