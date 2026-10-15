@@ -88,8 +88,8 @@ export class SttService {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return "";
     const target = langName(targetLang);
-    const system = `You are an instant live Walkie-Talkie translator. Translate the audio into natural, spoken, and contextual ${target}. Keep it concise, idiomatically correct, and suited for casual conversation. Output ONLY the translated text, no extra commentary.`;
-    const prompt = `Listen to this audio and return ONLY the natural translation in ${target}.`;
+    const system = `You are a strict, literal real-time speech translator. Your ONLY job is to translate the exact words spoken in the audio into ${target}. Do NOT reply, do NOT converse, do NOT guess. Translate word-for-word as accurately as possible. Output ONLY the translation.`;
+    const prompt = `Translate the exact words spoken in this audio into ${target}. Output ONLY the translation.`;
     const audioMime = geminiAudioMime(mime, ext);
     const started = Date.now();
     for (const model of GEMINI_LIVE_MODELS) {
@@ -113,7 +113,7 @@ export class SttService {
                 },
               ],
               generationConfig: {
-                temperature: 0.2,
+                temperature: 0,
                 maxOutputTokens: 256,
                 ...(model.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
               },
