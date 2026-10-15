@@ -1,5 +1,6 @@
 export const SOCKET_EVENTS = {
   PTT_START: "ptt:start",
+  PTT_AUDIO: "ptt:audio",
   PTT_SPEAKING: "ptt:speaking",
   PTT_FLOOR_BUSY: "ptt:floor-busy",
   PTT_RELEASED: "ptt:released",
