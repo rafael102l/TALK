@@ -1,7 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PttCaptionPayload, VoiceGender } from "@talk/shared";
 import { SttService } from "../ai/stt.service";
-import { TranslateService } from "../ai/translate.service";
 import { TtsService } from "../ai/tts.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
@@ -37,8 +36,8 @@ type Press = {
 const FRAME_MS = 20;
 const LOUD = 600;
 const MIN_SPEECH_MS = 700;
-const SILENCE_MS = 380;
-const MAX_SPEECH_MS = 3200;
+const SILENCE_MS = 200;
+const MAX_SPEECH_MS = 2000;
 const RELEASE_MIN_MS = 280;
 
 /**
@@ -58,7 +57,6 @@ export class LiveDubService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly stt: SttService,
-    private readonly translate: TranslateService,
     private readonly tts: TtsService,
     private readonly storage: StorageService,
   ) {}
@@ -255,11 +253,6 @@ export class LiveDubService {
     press.speechMs = 0;
     press.silenceMs = 0;
     const wav = wavBytes(Buffer.concat(chunks));
-    const heard = await this.stt.transcribeBytes(wav, press.speakLang, "audio/wav", "wav");
-    const text = (heard.text || "").trim();
-    this.logger.log(`live dub phrase reason=${reason} ms=${speechMs} lang=${heard.lang || press.speakLang} "${text.slice(0, 80)}"`);
-    if (!text) return;
-    const source = heard.lang || press.speakLang;
     const byLang = new Map<string, Ear[]>();
     for (const ear of press.dub) {
       const list = byLang.get(ear.listenLang) ?? [];
@@ -268,10 +261,14 @@ export class LiveDubService {
     }
     press.seq += 1;
     const seq = press.seq;
-    for (const [listenLang, ears] of byLang) {
-      const translated = await this.translate.translate(text, source, listenLang);
-      const line = (translated.text || "").trim();
-      if (!line) continue;
+    await Promise.all(
+      [...byLang.entries()].map(async ([listenLang, ears]) => {
+      const started = Date.now();
+      const line = (await this.stt.translateAudio(wav, listenLang, "audio/wav", "wav")).trim();
+      this.logger.log(
+        `live dub phrase reason=${reason} ms=${speechMs} gemini=${Date.now() - started}ms lang=${listenLang} "${line.slice(0, 80)}"`,
+      );
+      if (!line) return;
       await Promise.all(
         ears.map(async (ear) => {
           let audioUrl: string | null = null;
@@ -297,7 +294,8 @@ export class LiveDubService {
           );
         }),
       );
-    }
+      }),
+    );
   }
 }
 

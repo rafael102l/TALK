@@ -6,6 +6,8 @@ import { readFile } from "fs/promises";
 // Prefer non-thinking / lite first. 2.5-flash thinks by default and used to eat the
 // tiny maxOutputTokens budget → truncated mid-word transcripts.
 const GEMINI_HEAR_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash-lite", "gemini-2.5-flash"];
+/** Live dub is one audio→translation call. 2.0-flash is the fast path; 1.5-flash only if 2.0 is gone. */
+const GEMINI_LIVE_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash"];
 const LANG_LIST = LANGUAGES.map((language) => language.code).join(", ");
 
 const HEBREW = /[\u0590-\u05FF]/;
@@ -80,6 +82,68 @@ export class SttService {
     );
     void names;
     return { text, lang };
+  }
+
+  /** One Gemini call: audio in, spoken translation out. No separate STT step. */
+  async translateAudio(audio: Buffer, targetLang: string, mime = "audio/wav", ext = "wav"): Promise<string> {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key || !audio.length) return "";
+    const target = langName(targetLang);
+    const system = `You are an instant live Walkie-Talkie translator. Translate the audio into natural, spoken, and contextual ${target}. Keep it concise, idiomatically correct, and suited for casual conversation. Output ONLY the translated text, no extra commentary.`;
+    const prompt = `Listen to this audio and return ONLY the natural translation in ${target}.`;
+    const audioMime = geminiAudioMime(mime, ext);
+    const started = Date.now();
+    for (const model of GEMINI_LIVE_MODELS) {
+      if (this.deadGemini.has(model)) continue;
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: AbortSignal.timeout(6000),
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: system }] },
+              contents: [
+                {
+                  role: "user",
+                  parts: [
+                    { text: prompt },
+                    { inline_data: { mime_type: audioMime, data: audio.toString("base64") } },
+                  ],
+                },
+              ],
+              generationConfig: {
+                temperature: 0.2,
+                maxOutputTokens: 256,
+              },
+            }),
+          },
+        );
+        if (!res.ok) {
+          this.logger.warn(`Gemini live ${model} failed: ${res.status}`);
+          if (res.status === 404) this.deadGemini.add(model);
+          continue;
+        }
+        const data = (await res.json()) as {
+          candidates?: { content?: { parts?: { text?: string }[] } }[];
+        };
+        const raw =
+          data.candidates?.[0]?.content?.parts
+            ?.map((part) => part.text || "")
+            .join("")
+            .trim() ?? "";
+        const text = onlyTranslation(raw);
+        if (text) {
+          this.logger.log(`live translate ${model} ${Date.now() - started}ms ${targetLang} "${clip(text)}"`);
+          return text;
+        }
+      } catch (error) {
+        this.logger.warn(`Gemini live ${model} error: ${(error as Error).message}`);
+      }
+    }
+    this.logger.warn(`live translate none ${Date.now() - started}ms ${targetLang}`);
+    return "";
   }
 
   private async viaGemini(audio: Buffer, mime: string, ext: string): Promise<SttResult> {
@@ -401,6 +465,21 @@ export function spokenLang(text: string, whisperLang = "", fallback = "") {
   if (heard) return heard;
   if (latin > 0) return "en";
   return detectLang(text) || profile || heard;
+}
+
+function langName(code: string) {
+  const hit = LANGUAGES.find((language) => language.code === normLang(code));
+  return hit?.nameEn || code || "the listener's language";
+}
+
+function onlyTranslation(raw: string) {
+  return raw
+    .replace(/^```[a-z]*\s*/i, "")
+    .replace(/```$/i, "")
+    .replace(/^(translation|translated text)\s*:\s*/i, "")
+    .replace(/^["']|["']$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function geminiAudioMime(mime: string, ext: string) {
