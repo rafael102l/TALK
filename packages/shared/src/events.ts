@@ -1,6 +1,8 @@
 export const SOCKET_EVENTS = {
   PTT_START: "ptt:start",
   PTT_AUDIO: "ptt:audio",
+  /** Translated phrase for one listener. free = text for the phone's TTS. plus = cloned voice file. */
+  PTT_CAPTION: "ptt:caption",
   PTT_SPEAKING: "ptt:speaking",
   PTT_FLOOR_BUSY: "ptt:floor-busy",
   PTT_RELEASED: "ptt:released",
@@ -18,6 +20,16 @@ export const SOCKET_EVENTS = {
 
 export type PttStartPayload = {
   channelId: string;
+};
+
+export type PttCaptionPayload = {
+  speakerId: string;
+  seq: number;
+  text: string;
+  lang: string;
+  mode: "free" | "plus";
+  audioUrl?: string | null;
+  voiceGender?: "male" | "female" | "child";
 };
 
 export type PttSpeakingPayload = {

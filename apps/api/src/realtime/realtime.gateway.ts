@@ -11,6 +11,7 @@ import {
 } from "@nestjs/websockets";
 import { PttSpeakingPayload, SOCKET_EVENTS } from "@talk/shared";
 import { StorageService } from "../storage/storage.service";
+import { LiveDubService } from "./live-dub.service";
 import { toPublicUser } from "../users/user.mapper";
 import { Server, Socket } from "socket.io";
 import { loadChannelIds, loadUser } from "../auth/load-user";
@@ -36,6 +37,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly presence: PresenceService,
     private readonly floor: FloorService,
     private readonly storage: StorageService,
+    private readonly liveDub: LiveDubService,
   ) {}
 
   async handleConnection(client: AuthedSocket) {
@@ -160,6 +162,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   async handleDisconnect(client: AuthedSocket) {
+    this.liveDub.finish(client.id);
     if (!client.userId) return;
     const left = this.server.sockets.adapter.rooms.get(`user:${client.userId}`)?.size ?? 0;
     if (left > 0) return;
@@ -219,6 +222,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       : await this.floorRoom(client.userId, body);
     if (!room) return { ok: false, rooms: "" };
     client.join(`user:${client.userId}`);
+    this.ensureDub();
+    this.liveDub.open(
+      client.id,
+      client.userId,
+      room.listenerIds.filter((id) => id !== client.userId),
+    );
     const gender = body.voiceGender === "female" || body.voiceGender === "child" ? body.voiceGender : "male";
     const payload: PttSpeakingPayload = {
       channelId: room.key,
@@ -247,6 +256,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     @MessageBody() body: { channelId?: string; targetUserIds?: string[]; everyone?: boolean },
   ) {
     if (!client.userId) return;
+    this.liveDub.finish(client.id);
     if (!(await this.sessionStillValid(client))) {
       client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
       this.closeSocket(client);
@@ -289,9 +299,13 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       return { ok: false };
     }
     client.join(`user:${client.userId}`);
+    this.ensureDub();
+    const relay = this.liveDub.relayIds(client.id, targets) ?? targets;
+    const dub = this.liveDub.dubCount(client.id, targets);
+    if (dub) this.liveDub.push(client.id, Buffer.from(body.pcm, "base64"));
     const payload = { speakerId: client.userId, pcm: body.pcm, seq: body.seq ?? 0 };
     let forwarded = 0;
-    for (const userId of targets) {
+    for (const userId of relay) {
       if (this.emitLive(userId, SOCKET_EVENTS.PTT_AUDIO, payload)) forwarded += 1;
       else this.noteAudioDrop(userId);
     }
@@ -301,11 +315,17 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const now = Date.now();
     if (this.audioIn === 1 || now - this.audioLogAt >= 1000) {
       this.logger.log(
-        `ptt audio from=${client.userId} in=${this.audioIn} fwd=${this.audioFwd} seq=${body.seq ?? 0} bytes=${body.pcm.length} rooms=${rooms}`,
+        `ptt audio from=${client.userId} in=${this.audioIn} fwd=${this.audioFwd} dub=${dub} seq=${body.seq ?? 0} bytes=${body.pcm.length} rooms=${rooms}`,
       );
       this.audioLogAt = now;
     }
-    return { ok: forwarded > 0, forwarded, rooms };
+    return { ok: forwarded > 0 || dub > 0, forwarded, dub, rooms };
+  }
+
+  private ensureDub() {
+    this.liveDub.attach((userId, payload) => {
+      this.emitLive(userId, SOCKET_EVENTS.PTT_CAPTION, payload);
+    });
   }
 
   private async floorRoom(
