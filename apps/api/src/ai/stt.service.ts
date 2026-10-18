@@ -5,8 +5,9 @@ import { readFile } from "fs/promises";
 
 // 2.0-flash and 2.5-flash-lite return 404. 2.5-flash still hears audio; thinking is disabled below.
 const GEMINI_HEAR_MODELS = ["gemini-2.5-flash"];
-/** Live dub is one audio→translation call. 2.5-flash hears speech; lite is only the backup. */
+/** Live dub hears with 2.5-flash, then translates the transcript. Lite is only the backup. */
 const GEMINI_LIVE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"];
+const LIVE_HEAR = "Transcribe the spoken audio exactly as heard. Do not filter out valid speech.";
 const LANG_LIST = LANGUAGES.map((language) => language.code).join(", ");
 
 const HEBREW = /[\u0590-\u05FF]/;
@@ -83,15 +84,30 @@ export class SttService {
     return { text, lang };
   }
 
-  /** One Gemini call: audio in, spoken translation out. No separate STT step. */
+  /** Hear the clip, then translate that transcript. Two Gemini calls, no audio on the second. */
   async translateAudio(audio: Buffer, targetLang: string, mime = "audio/wav", ext = "wav"): Promise<string> {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return "";
-    const target = langName(targetLang);
-    const system = `Listen to the audio and translate the spoken speech to ${target}. Do your best to interpret the words. Only return [unclear] if there is absolute silence or pure white noise with zero human voice.`;
-    const prompt = system;
-    const audioMime = geminiAudioMime(mime, ext);
-    const started = Date.now();
+    const heard = await this.geminiLive(key, LIVE_HEAR, [
+      { text: LIVE_HEAR },
+      { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
+    ]);
+    this.logger.log(`live stt ${heard.model || "none"} ${JSON.stringify(heard.text)}`);
+    if (!heard.text || /^\[?\s*unclear\s*\]?$/i.test(heard.text)) {
+      this.logger.log("live translate skipped");
+      return heard.text ? "[unclear]" : "";
+    }
+    const instruction = `Translate the following spoken words into ${langName(targetLang)}. Return only the translation.`;
+    const translated = await this.geminiLive(key, instruction, [{ text: heard.text }]);
+    this.logger.log(`live translate ${translated.model || "none"} ${JSON.stringify(translated.text)}`);
+    return translated.text;
+  }
+
+  private async geminiLive(
+    key: string,
+    system: string,
+    parts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }>,
+  ): Promise<{ model: string; text: string }> {
     for (const model of GEMINI_LIVE_MODELS) {
       if (this.deadGemini.has(model)) continue;
       try {
@@ -103,15 +119,7 @@ export class SttService {
             signal: AbortSignal.timeout(12000),
             body: JSON.stringify({
               systemInstruction: { parts: [{ text: system }] },
-              contents: [
-                {
-                  role: "user",
-                  parts: [
-                    { text: prompt },
-                    { inline_data: { mime_type: audioMime, data: audio.toString("base64") } },
-                  ],
-                },
-              ],
+              contents: [{ role: "user", parts }],
               generationConfig: {
                 temperature: 0,
                 maxOutputTokens: 512,
@@ -141,17 +149,13 @@ export class SttService {
             .join("")
             .trim() ?? "";
         const text = onlyTranslation(raw);
-        this.logger.log(`Gemini live raw ${model} ${JSON.stringify(raw)}`);
-        if (text) {
-          this.logger.log(`live translate ${model} ${Date.now() - started}ms ${targetLang} "${clip(text)}"`);
-          return text;
-        }
+        if (text) return { model, text };
+        this.logger.log(`Gemini live empty ${model} ${JSON.stringify(raw)}`);
       } catch (error) {
         this.logger.warn(`Gemini live ${model} error: ${(error as Error).message}`);
       }
     }
-    this.logger.warn(`live translate none ${Date.now() - started}ms ${targetLang}`);
-    return "";
+    return { model: "", text: "" };
   }
 
   private async viaGemini(audio: Buffer, mime: string, ext: string): Promise<SttResult> {
