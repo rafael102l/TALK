@@ -18,6 +18,8 @@ type Press = {
   speakerId: string;
   speakLang: string;
   speakerGender: VoiceGender;
+  /** Set from the phone's PTT payload. The database must not replace it. */
+  genderFromClient: boolean;
   relay: Set<string>;
   dub: Ear[];
   chunks: Buffer[];
@@ -97,7 +99,7 @@ export class LiveDubService {
     return true;
   }
 
-  open(socketId: string, speakerId: string, targetIds: string[], pressId = "", fresh = false) {
+  open(socketId: string, speakerId: string, targetIds: string[], pressId = "", fresh = false, gender = "") {
     const ids = [...new Set(targetIds.filter((id) => id && id !== speakerId))];
     const id = pressId.trim();
     let press = this.presses.get(socketId);
@@ -114,6 +116,7 @@ export class LiveDubService {
         speakerId,
         speakLang: "",
         speakerGender: "male",
+        genderFromClient: false,
         relay: new Set(),
         dub: [],
         chunks: [],
@@ -135,6 +138,11 @@ export class LiveDubService {
       this.logger.log(`live dub new press=${id || "-"} speaker=${speakerId} bytes=0`);
     } else if (ids.length) {
       press.targetIds = [...new Set([...press.targetIds, ...ids])];
+    }
+    if (gender === "male" || gender === "female" || gender === "child") {
+      press.speakerGender = genderOf(gender);
+      press.genderFromClient = true;
+      for (const ear of press.dub) ear.gender = press.speakerGender;
     }
     if (press.ready || press.loading) return;
     press.loading = true;
@@ -177,6 +185,16 @@ export class LiveDubService {
     );
     if (press.ready) this.relayWav(press);
     return true;
+  }
+
+  /** The gender sent with the WAV. It overrides the profile row for this press. */
+  setSpeakerGender(socketId: string, pressId: string, gender: string) {
+    const press = this.presses.get(socketId);
+    if (!press || press.closed || (pressId && press.pressId && press.pressId !== pressId)) return;
+    press.speakerGender = genderOf(gender);
+    press.genderFromClient = true;
+    for (const ear of press.dub) ear.gender = press.speakerGender;
+    this.logger.log(`live dub gender press=${press.pressId || "-"} gender=${press.speakerGender} source=client`);
   }
 
   finish(socketId: string, pressId = "") {
@@ -229,7 +247,7 @@ export class LiveDubService {
     const byId = new Map(rows.map((row) => [row.id, row]));
     const speaker = byId.get(speakerId);
     const speakLang = langOf(speaker?.speakLang || speaker?.listenLang);
-    const speakerGender = genderOf(speaker?.voiceGender);
+    const speakerGender = press.genderFromClient ? press.speakerGender : genderOf(speaker?.voiceGender);
     const relay = new Set<string>();
     const dub: Ear[] = [];
     for (const id of targetIds) {
@@ -331,7 +349,7 @@ export class LiveDubService {
     await Promise.all(
       [...byLang.entries()].map(async ([listenLang, ears]) => {
       const started = Date.now();
-      const rawText = (await this.stt.translateAudio(wav, listenLang, "audio/wav", "wav")).trim();
+      const rawText = (await this.stt.translateAudio(wav, listenLang, "audio/wav", "wav", press.speakerGender)).trim();
       const line = captionLine(rawText);
       if (line === "[unclear]") this.logUnclear(press, "gemini", "model", wav.length, heard, rawText);
       this.logger.log(

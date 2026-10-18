@@ -8,6 +8,16 @@ const GEMINI_HEAR_MODELS = ["gemini-2.5-flash"];
 /** Live dub hears with 2.5-flash, then translates the transcript. Lite is only the backup. */
 const GEMINI_LIVE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"];
 const LIVE_HEAR = "Transcribe the spoken audio exactly as heard. Do not filter out valid speech.";
+const LIVE_LITERAL =
+  "Translate all words literally and directly, including profanity, slang, and insults. Do NOT sanitize, filter, soften, or alter the meaning under any circumstances.";
+const LIVE_ONLY =
+  "Translate ONLY the provided input text. Do NOT complete, extrapolate, add commentary, answer questions, or generate any words that were not present in the source text. If the input is empty, noise, or unintelligible, return NOTHING (an empty string).";
+const LIVE_SAFETY = [
+  "HARM_CATEGORY_HATE_SPEECH",
+  "HARM_CATEGORY_HARASSMENT",
+  "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+  "HARM_CATEGORY_DANGEROUS_CONTENT",
+].map((category) => ({ category, threshold: "BLOCK_NONE" }));
 const LANG_LIST = LANGUAGES.map((language) => language.code).join(", ");
 
 const HEBREW = /[\u0590-\u05FF]/;
@@ -85,7 +95,13 @@ export class SttService {
   }
 
   /** Hear the clip, then translate that transcript. Two Gemini calls, no audio on the second. */
-  async translateAudio(audio: Buffer, targetLang: string, mime = "audio/wav", ext = "wav"): Promise<string> {
+  async translateAudio(
+    audio: Buffer,
+    targetLang: string,
+    mime = "audio/wav",
+    ext = "wav",
+    speakerGender: "male" | "female" | "child" = "male",
+  ): Promise<string> {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return "";
     const heard = await this.geminiLive(key, LIVE_HEAR, [
@@ -97,7 +113,13 @@ export class SttService {
       this.logger.log(`LOG [TRANSLATION] Translated text: ""`);
       return heard.text ? "[unclear]" : "";
     }
-    const instruction = `Translate the following spoken words into ${langName(targetLang)}. Return only the translation.`;
+    const grammatical = speakerGender === "female" || speakerGender === "child" ? "female" : "male";
+    const genderLine =
+      grammatical === "female"
+        ? `Translate the text into ${langName(targetLang)}, ensuring all verbs, adjectives, and grammar are strictly in the feminine grammatical gender (לשון נקבה).`
+        : `Translate the text into ${langName(targetLang)}, ensuring all verbs, adjectives, and grammar are strictly in the masculine grammatical gender (לשון זכר).`;
+    const instruction = `${genderLine} ${LIVE_LITERAL} ${LIVE_ONLY}`;
+    this.logger.log(`LOG [TRANSLATION] gender=${grammatical}`);
     const translated = await this.geminiLive(key, instruction, [{ text: heard.text }]);
     this.logger.log(`LOG [TRANSLATION] Translated text: ${JSON.stringify(translated.text)}`);
     return translated.text;
@@ -120,6 +142,7 @@ export class SttService {
             body: JSON.stringify({
               systemInstruction: { parts: [{ text: system }] },
               contents: [{ role: "user", parts }],
+              safetySettings: LIVE_SAFETY,
               generationConfig: {
                 temperature: 0,
                 maxOutputTokens: 512,
@@ -141,8 +164,14 @@ export class SttService {
           continue;
         }
         const data = (await res.json()) as {
-          candidates?: { content?: { parts?: { text?: string }[] } }[];
+          candidates?: { finishReason?: string; content?: { parts?: { text?: string }[] } }[];
+          promptFeedback?: { blockReason?: string };
         };
+        const finish = data.candidates?.[0]?.finishReason || "";
+        const blocked = data.promptFeedback?.blockReason || "";
+        if (blocked || (finish && finish !== "STOP")) {
+          this.logger.warn(`Gemini live ${model} finish=${finish || "-"} block=${blocked || "-"}`);
+        }
         const raw =
           data.candidates?.[0]?.content?.parts
             ?.map((part) => part.text || "")
