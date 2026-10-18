@@ -122,11 +122,7 @@ export class SttService {
     const sttMs = Date.now() - sttStarted;
     this.logger.log(`LOG [PERF] STT duration: ${sttMs} ms`);
     this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(heard.raw)}`);
-    const spoken = dedupeSpoken(heard.text);
-    if (spoken !== heard.text.replace(/\s+/g, " ").trim()) {
-      this.logger.log(`LOG [STT] Deduped text: ${JSON.stringify(spoken)}`);
-    }
-    if (!spoken || /^\[?\s*unclear\s*\]?$/i.test(spoken)) {
+    if (!heard.text || /^\[?\s*unclear\s*\]?$/i.test(heard.text)) {
       this.logger.log(`LOG [TRANSLATION] Translated text: ""`);
       this.logger.log(`LOG [PERF] Gemini Translation duration: 0 ms`);
       this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - pipelineStarted} ms`);
@@ -141,7 +137,7 @@ export class SttService {
     this.logger.log(`LOG [TRANSLATION] gender=${grammatical}`);
     // One new request. The only user text is this transcript. No earlier press is attached.
     const translationStarted = Date.now();
-    const translated = await this.geminiLive(key, instruction, [{ text: spoken }], LIVE_TRANSLATION_TOKENS);
+    const translated = await this.geminiLive(key, instruction, [{ text: heard.text }], LIVE_TRANSLATION_TOKENS);
     this.logger.log(`LOG [PERF] Gemini Translation duration: ${Date.now() - translationStarted} ms`);
     this.logger.log(`LOG [TRANSLATION] Translated text: ${JSON.stringify(translated.raw)}`);
     this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - pipelineStarted} ms`);
@@ -322,62 +318,6 @@ export class SttService {
       return { text: "", lang: "" };
     }
   }
-}
-
-export function dedupeSpoken(text: string) {
-  let t = collapseRepeats(text).replace(/\s+/g, " ").trim();
-  if (!t) return t;
-  t = collapseAdjacentPhrases(t);
-  const sentences = t.split(/(?<=[.!?؟。])\s+/).map((part) => part.trim()).filter(Boolean);
-  if (sentences.length < 2) return t;
-  const kept: string[] = [];
-  for (const sentence of sentences) {
-    const prev = kept[kept.length - 1];
-    if (prev && sameUtterance(prev, sentence)) continue;
-    kept.push(sentence);
-  }
-  return kept.join(" ").replace(/\s+/g, " ").trim();
-}
-
-const LEADING_LINK = /^(but|and|so|well|then|oh|um|uh|like|just|אבל|אז|ו)\s+/i;
-
-function utteranceCore(sentence: string) {
-  const bare = sentence
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s']/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(LEADING_LINK, "");
-  return bare;
-}
-
-function sameUtterance(a: string, b: string) {
-  const left = utteranceCore(a);
-  const right = utteranceCore(b);
-  if (!left || !right) return false;
-  if (left === right) return left.split(" ").length >= 3 || left.length >= 12;
-  return false;
-}
-
-function collapseAdjacentPhrases(text: string) {
-  const words = text.split(/\s+/).filter(Boolean);
-  let changed = true;
-  while (changed) {
-    changed = false;
-    const max = Math.min(12, Math.floor(words.length / 2));
-    for (let size = max; size >= 3; size--) {
-      for (let i = 0; i + size * 2 <= words.length; i++) {
-        const left = words.slice(i, i + size).map(utteranceCore).join(" ");
-        const right = words.slice(i + size, i + size * 2).map(utteranceCore).join(" ");
-        if (left.length < 12 || left !== right) continue;
-        words.splice(i + size, size);
-        changed = true;
-        break;
-      }
-      if (changed) break;
-    }
-  }
-  return words.join(" ");
 }
 
 export function collapseRepeats(text: string) {
