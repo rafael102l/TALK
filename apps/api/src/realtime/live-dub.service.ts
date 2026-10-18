@@ -28,6 +28,7 @@ type Press = {
   seq: number;
   flushing: Promise<void>;
   closed: boolean;
+  done: boolean;
   ready: boolean;
   loading: boolean;
   targetIds: string[];
@@ -123,6 +124,7 @@ export class LiveDubService {
         seq: 0,
         flushing: Promise.resolve(),
         closed: false,
+        done: false,
         ready: false,
         loading: false,
         targetIds: ids,
@@ -166,10 +168,9 @@ export class LiveDubService {
       this.logger.warn(`live dub ignore release press=${pressId} current=${press.pressId}`);
       return;
     }
+    if (this.presses.get(socketId) === press) this.presses.delete(socketId);
     press.closed = true;
-    void this.enqueue(press).finally(() => {
-      if (this.presses.get(socketId) === press) this.presses.delete(socketId);
-    });
+    void this.enqueue(press);
   }
 
   private noteStale(pressId: string, press: Press) {
@@ -264,9 +265,7 @@ export class LiveDubService {
   private async speakPhrase(press: Press) {
     if (!press.ready) return;
     if (!press.dub.length || !press.chunks.length) {
-      press.chunks = [];
-      press.speechMs = 0;
-      press.silenceMs = 0;
+      this.idle(press, 0);
       return;
     }
     const chunks = press.chunks;
@@ -292,7 +291,8 @@ export class LiveDubService {
     const seq = press.seq;
     if (reject) {
       this.logUnclear(press, "gate", reject, pcm.length, heard);
-      this.emitLine(press, byLang, seq, "[unclear]");
+      await Promise.all([...byLang.entries()].map(([listenLang, ears]) => this.deliver(press, ears, seq, listenLang, "[unclear]")));
+      this.idle(press, pcm.length);
       return;
     }
     const wav = wavBytes(pcm);
@@ -308,6 +308,19 @@ export class LiveDubService {
       await this.deliver(press, ears, seq, listenLang, line);
       }),
     );
+    this.idle(press, pcm.length);
+  }
+
+  private idle(press: Press, bytes: number) {
+    if (press.done) return;
+    press.done = true;
+    press.chunks = [];
+    press.relayBacklog = [];
+    press.speechMs = 0;
+    press.silenceMs = 0;
+    press.closed = true;
+    if (this.presses.get(press.socketId) === press) this.presses.delete(press.socketId);
+    this.logger.log(`live dub idle press=${press.pressId || "-"} bytes=${bytes} state=IDLE`);
   }
 
   private logUnclear(press: Press, source: string, reason: string, bytes: number, heard: { rms: number; peak: number; durMs: number }) {
