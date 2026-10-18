@@ -35,8 +35,12 @@ type Press = {
 };
 
 const FRAME_MS = 20;
-const LOUD = 600;
-const RELEASE_MIN_MS = 280;
+/** A 20ms frame at or above this RMS counts as speech. Quiet talk sits well under the old 600. */
+const LOUD = 160;
+const MIN_BYTES = 640;
+const MIN_DUR_MS = 60;
+const MIN_PEAK = 120;
+const MIN_RMS = 40;
 
 /**
  * Same language stays raw PCM, sent once when the button is released.
@@ -259,7 +263,7 @@ export class LiveDubService {
 
   private async speakPhrase(press: Press) {
     if (!press.ready) return;
-    if (!press.dub.length || press.speechMs < RELEASE_MIN_MS || !press.chunks.length) {
+    if (!press.dub.length || !press.chunks.length) {
       press.chunks = [];
       press.speechMs = 0;
       press.silenceMs = 0;
@@ -270,10 +274,13 @@ export class LiveDubService {
     press.chunks = [];
     press.speechMs = 0;
     press.silenceMs = 0;
-    const pcm = clipSpeech(Buffer.concat(chunks));
+    const raw = Buffer.concat(chunks);
+    let pcm = clipSpeech(raw);
+    if (pcm.length < Math.min(raw.length, 1600)) pcm = raw;
     const heard = pcmStats(pcm);
+    const reject = unclearReason(pcm.length, heard);
     this.logger.log(
-      `live dub audio press=${press.pressId || "-"} format=audio/wav rate=16000 ch=1 pcm16 bytes=${pcm.length} sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)} loudMs=${speechMs} reason=release`,
+      `live dub audio press=${press.pressId || "-"} format=audio/wav rate=16000 ch=1 pcm16 bytes=${pcm.length} duration_sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)} loudMs=${speechMs} reason=release`,
     );
     const byLang = new Map<string, Ear[]>();
     for (const ear of press.dub) {
@@ -283,8 +290,8 @@ export class LiveDubService {
     }
     press.seq += 1;
     const seq = press.seq;
-    if (pcm.length < 3200 || heard.peak < LOUD || heard.durMs < 280) {
-      this.logger.warn(`live dub skip noise bytes=${pcm.length} peak=${Math.round(heard.peak)} durMs=${heard.durMs}`);
+    if (reject) {
+      this.logUnclear(press, "gate", reject, pcm.length, heard);
       this.emitLine(press, byLang, seq, "[unclear]");
       return;
     }
@@ -292,13 +299,20 @@ export class LiveDubService {
     await Promise.all(
       [...byLang.entries()].map(async ([listenLang, ears]) => {
       const started = Date.now();
-      const raw = (await this.stt.translateAudio(wav, listenLang, "audio/wav", "wav")).trim();
-      const line = captionLine(raw);
+      const rawText = (await this.stt.translateAudio(wav, listenLang, "audio/wav", "wav")).trim();
+      const line = captionLine(rawText);
+      if (line === "[unclear]") this.logUnclear(press, "gemini", "model", pcm.length, heard);
       this.logger.log(
         `live dub phrase reason=release ms=${speechMs} gemini=${Date.now() - started}ms lang=${listenLang} "${line}"`,
       );
       await this.deliver(press, ears, seq, listenLang, line);
       }),
+    );
+  }
+
+  private logUnclear(press: Press, source: string, reason: string, bytes: number, heard: { rms: number; peak: number; durMs: number }) {
+    this.logger.warn(
+      `live dub unclear press=${press.pressId || "-"} source=${source} reason=${reason} bytes=${bytes} duration_sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)}`,
     );
   }
 
@@ -384,6 +398,13 @@ function clipSpeech(pcm: Buffer) {
   const start = Math.max(0, first - 4);
   const end = Math.min(frames.length, last + 1 + 12);
   return Buffer.concat(frames.slice(start, end));
+}
+
+function unclearReason(bytes: number, heard: { rms: number; peak: number; durMs: number }) {
+  if (bytes < MIN_BYTES) return "bytes";
+  if (heard.durMs < MIN_DUR_MS) return "duration";
+  if (heard.peak < MIN_PEAK && heard.rms < MIN_RMS) return "rms";
+  return "";
 }
 
 function captionLine(raw: string) {
