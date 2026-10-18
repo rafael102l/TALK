@@ -333,7 +333,7 @@ export class LiveDubService {
       const started = Date.now();
       const rawText = (await this.stt.translateAudio(wav, listenLang, "audio/wav", "wav")).trim();
       const line = captionLine(rawText);
-      if (line === "[unclear]") this.logUnclear(press, "gemini", "model", wav.length, heard);
+      if (line === "[unclear]") this.logUnclear(press, "gemini", "model", wav.length, heard, rawText);
       this.logger.log(
         `live dub phrase reason=release gemini=${Date.now() - started}ms lang=${listenLang} "${line}"`,
       );
@@ -356,9 +356,17 @@ export class LiveDubService {
     this.logger.log(`live dub idle press=${press.pressId || "-"} bytes=${bytes} state=IDLE`);
   }
 
-  private logUnclear(press: Press, source: string, reason: string, bytes: number, heard: { rms: number; peak: number; durMs: number }) {
+  private logUnclear(
+    press: Press,
+    source: string,
+    reason: string,
+    bytes: number,
+    heard: { rms: number; peak: number; durMs: number },
+    geminiRaw = "",
+  ) {
+    const said = geminiRaw ? ` gemini_raw=${JSON.stringify(geminiRaw)}` : "";
     this.logger.warn(
-      `live dub unclear press=${press.pressId || "-"} source=${source} reason=${reason} bytes=${bytes} duration_sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)}`,
+      `live dub unclear press=${press.pressId || "-"} source=${source} reason=${reason} bytes=${bytes} duration_sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)}${said}`,
     );
   }
 

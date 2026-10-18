@@ -5,8 +5,8 @@ import { readFile } from "fs/promises";
 
 // 2.0-flash and 2.5-flash-lite return 404. 2.5-flash still hears audio; thinking is disabled below.
 const GEMINI_HEAR_MODELS = ["gemini-2.5-flash"];
-/** Live dub is one audio→translation call. 2.0-flash and 1.5-flash now return 404. */
-const GEMINI_LIVE_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"];
+/** Live dub is one audio→translation call. 2.5-flash hears speech; lite is only the backup. */
+const GEMINI_LIVE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"];
 const LANG_LIST = LANGUAGES.map((language) => language.code).join(", ");
 
 const HEBREW = /[\u0590-\u05FF]/;
@@ -88,7 +88,7 @@ export class SttService {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return "";
     const target = langName(targetLang);
-    const system = `You are a strict audio translator. Listen to the audio clip and translate ONLY the exact spoken words into ${target}. If the audio is garbled, noisy, unclear, or does not contain clear intelligible human speech, respond ONLY with '[unclear]'. DO NOT guess, extrapolate, or invent any words or sentences that were not explicitly spoken.`;
+    const system = `Listen to the audio and translate the spoken speech to ${target}. Do your best to interpret the words. Only return [unclear] if there is absolute silence or pure white noise with zero human voice.`;
     const prompt = system;
     const audioMime = geminiAudioMime(mime, ext);
     const started = Date.now();
@@ -141,6 +141,7 @@ export class SttService {
             .join("")
             .trim() ?? "";
         const text = onlyTranslation(raw);
+        this.logger.log(`Gemini live raw ${model} ${JSON.stringify(raw)}`);
         if (text) {
           this.logger.log(`live translate ${model} ${Date.now() - started}ms ${targetLang} "${clip(text)}"`);
           return text;
