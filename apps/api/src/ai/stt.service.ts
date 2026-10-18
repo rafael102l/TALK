@@ -92,14 +92,14 @@ export class SttService {
       { text: LIVE_HEAR },
       { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
     ]);
-    this.logger.log(`live stt ${heard.model || "none"} ${JSON.stringify(heard.text)}`);
+    this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(heard.text)}`);
     if (!heard.text || /^\[?\s*unclear\s*\]?$/i.test(heard.text)) {
-      this.logger.log("live translate skipped");
+      this.logger.log(`LOG [TRANSLATION] Translated text: ""`);
       return heard.text ? "[unclear]" : "";
     }
     const instruction = `Translate the following spoken words into ${langName(targetLang)}. Return only the translation.`;
     const translated = await this.geminiLive(key, instruction, [{ text: heard.text }]);
-    this.logger.log(`live translate ${translated.model || "none"} ${JSON.stringify(translated.text)}`);
+    this.logger.log(`LOG [TRANSLATION] Translated text: ${JSON.stringify(translated.text)}`);
     return translated.text;
   }
 
