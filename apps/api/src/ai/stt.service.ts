@@ -3,10 +3,13 @@ import { LANGUAGES, isLanguageCode } from "@talk/shared";
 import { extname } from "path";
 import { readFile } from "fs/promises";
 
-// 2.0-flash and 2.5-flash-lite return 404. 2.5-flash still hears audio; thinking is disabled below.
+// gemini-1.5-flash and gemini-2.0-flash return 404. Pro is slower. 2.5-flash is the fast live model; thinking is off.
 const GEMINI_HEAR_MODELS = ["gemini-2.5-flash"];
-/** Live dub hears with 2.5-flash, then translates the transcript. Lite is only the backup. */
+/** Hear and translate with Flash, not Pro. Lite is only the backup if Flash 404s. */
 const GEMINI_LIVE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"];
+/** One spoken sentence. The cap stops the reply; the model does not fill it. */
+const LIVE_STT_TOKENS = 384;
+const LIVE_TRANSLATION_TOKENS = 192;
 const LIVE_HEAR =
   "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, or complete any word that was not spoken. If there is no speech, return an empty string.";
 const LIVE_LITERAL =
@@ -105,13 +108,24 @@ export class SttService {
   ): Promise<string> {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return "";
-    const heard = await this.geminiLive(key, LIVE_HEAR, [
-      { text: LIVE_HEAR },
-      { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
-    ]);
+    const pipelineStarted = Date.now();
+    const sttStarted = Date.now();
+    const heard = await this.geminiLive(
+      key,
+      LIVE_HEAR,
+      [
+        { text: LIVE_HEAR },
+        { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
+      ],
+      LIVE_STT_TOKENS,
+    );
+    const sttMs = Date.now() - sttStarted;
+    this.logger.log(`LOG [PERF] STT duration: ${sttMs} ms`);
     this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(heard.raw)}`);
     if (!heard.text || /^\[?\s*unclear\s*\]?$/i.test(heard.text)) {
       this.logger.log(`LOG [TRANSLATION] Translated text: ""`);
+      this.logger.log(`LOG [PERF] Gemini Translation duration: 0 ms`);
+      this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - pipelineStarted} ms`);
       return heard.text ? "[unclear]" : "";
     }
     const grammatical = speakerGender === "female" || speakerGender === "child" ? "female" : "male";
@@ -122,8 +136,11 @@ export class SttService {
     const instruction = `${genderLine} ${LIVE_LITERAL} ${LIVE_ONLY}`;
     this.logger.log(`LOG [TRANSLATION] gender=${grammatical}`);
     // One new request. The only user text is this transcript. No earlier press is attached.
-    const translated = await this.geminiLive(key, instruction, [{ text: heard.text }]);
+    const translationStarted = Date.now();
+    const translated = await this.geminiLive(key, instruction, [{ text: heard.text }], LIVE_TRANSLATION_TOKENS);
+    this.logger.log(`LOG [PERF] Gemini Translation duration: ${Date.now() - translationStarted} ms`);
     this.logger.log(`LOG [TRANSLATION] Translated text: ${JSON.stringify(translated.raw)}`);
+    this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - pipelineStarted} ms`);
     return translated.text;
   }
 
@@ -131,6 +148,7 @@ export class SttService {
     key: string,
     system: string,
     parts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }>,
+    maxOutputTokens = LIVE_TRANSLATION_TOKENS,
   ): Promise<{ model: string; text: string; raw: string }> {
     for (const model of GEMINI_LIVE_MODELS) {
       if (this.deadGemini.has(model)) continue;
@@ -147,7 +165,7 @@ export class SttService {
               safetySettings: LIVE_SAFETY,
               generationConfig: {
                 temperature: 0,
-                maxOutputTokens: 512,
+                maxOutputTokens,
                 ...(model.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
               },
             }),
