@@ -7,11 +7,12 @@ import { readFile } from "fs/promises";
 const GEMINI_HEAR_MODELS = ["gemini-2.5-flash"];
 /** Live dub hears with 2.5-flash, then translates the transcript. Lite is only the backup. */
 const GEMINI_LIVE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"];
-const LIVE_HEAR = "Transcribe the spoken audio exactly as heard. Do not filter out valid speech.";
+const LIVE_HEAR =
+  "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, or complete any word that was not spoken. If there is no speech, return an empty string.";
 const LIVE_LITERAL =
-  "Translate the speaker's meaning, context, tone, and intent the way a live human interpreter would: natural and fluent in the target language, not a blind word-for-word gloss. Keep the original slang, idioms, and tone, including profanity and blunt language, and render each one as the closest natural equivalent in the target language. Do NOT sanitize, filter, soften, or censor them.";
+  "Translate the speaker's meaning, context, tone, and intent into natural wording in the target language. Keep the original slang, idioms, and tone, including profanity and blunt language, and render each one as the closest natural equivalent in the target language. Do NOT sanitize, filter, soften, or censor them.";
 const LIVE_ONLY =
-  "Translate ONLY what was said. Do NOT add information, answer questions, explain, interpret beyond the utterance, or create sentences that were not in the source. Carry across only what was spoken, in the most natural wording for the target language. If the input is empty, noise, or unintelligible, return NOTHING (an empty string).";
+  "CRITICAL RULE: Do NOT add, infer, or insert ANY words, connectors, or punctuation that were not present or strongly implied in the source text. Translate only what was explicitly spoken. Every single translated word must correspond directly to the input text. If the input is empty, noise, or unintelligible, return NOTHING (an empty string).";
 const LIVE_SAFETY = [
   "HARM_CATEGORY_HATE_SPEECH",
   "HARM_CATEGORY_HARASSMENT",
@@ -108,7 +109,7 @@ export class SttService {
       { text: LIVE_HEAR },
       { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
     ]);
-    this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(heard.text)}`);
+    this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(heard.raw)}`);
     if (!heard.text || /^\[?\s*unclear\s*\]?$/i.test(heard.text)) {
       this.logger.log(`LOG [TRANSLATION] Translated text: ""`);
       return heard.text ? "[unclear]" : "";
@@ -120,8 +121,9 @@ export class SttService {
         : `Translate the text into ${langName(targetLang)}, ensuring all verbs, adjectives, and grammar are strictly in the masculine grammatical gender (לשון זכר).`;
     const instruction = `${genderLine} ${LIVE_LITERAL} ${LIVE_ONLY}`;
     this.logger.log(`LOG [TRANSLATION] gender=${grammatical}`);
+    // One new request. The only user text is this transcript. No earlier press is attached.
     const translated = await this.geminiLive(key, instruction, [{ text: heard.text }]);
-    this.logger.log(`LOG [TRANSLATION] Translated text: ${JSON.stringify(translated.text)}`);
+    this.logger.log(`LOG [TRANSLATION] Translated text: ${JSON.stringify(translated.raw)}`);
     return translated.text;
   }
 
@@ -129,7 +131,7 @@ export class SttService {
     key: string,
     system: string,
     parts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }>,
-  ): Promise<{ model: string; text: string }> {
+  ): Promise<{ model: string; text: string; raw: string }> {
     for (const model of GEMINI_LIVE_MODELS) {
       if (this.deadGemini.has(model)) continue;
       try {
@@ -178,13 +180,13 @@ export class SttService {
             .join("")
             .trim() ?? "";
         const text = onlyTranslation(raw);
-        if (text) return { model, text };
+        if (text) return { model, text, raw };
         this.logger.log(`Gemini live empty ${model} ${JSON.stringify(raw)}`);
       } catch (error) {
         this.logger.warn(`Gemini live ${model} error: ${(error as Error).message}`);
       }
     }
-    return { model: "", text: "" };
+    return { model: "", text: "", raw: "" };
   }
 
   private async viaGemini(audio: Buffer, mime: string, ext: string): Promise<SttResult> {
