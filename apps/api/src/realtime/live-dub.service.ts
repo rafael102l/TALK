@@ -21,6 +21,9 @@ type Press = {
   relay: Set<string>;
   dub: Ear[];
   chunks: Buffer[];
+  /** The phone's finished WAV. Gemini hears this file and nothing stitched on the server. */
+  wav: Buffer | null;
+  relayed: boolean;
   /** PCM held until languages are known. Same-language ears get it; translated ears never do. */
   relayBacklog: Buffer[];
   speechMs: number;
@@ -38,10 +41,6 @@ type Press = {
 const FRAME_MS = 20;
 /** A 20ms frame at or above this RMS counts as speech. Quiet talk sits well under the old 600. */
 const LOUD = 160;
-const MIN_BYTES = 640;
-const MIN_DUR_MS = 60;
-const MIN_PEAK = 120;
-const MIN_RMS = 40;
 
 /**
  * Same language stays raw PCM, sent once when the button is released.
@@ -118,6 +117,8 @@ export class LiveDubService {
         relay: new Set(),
         dub: [],
         chunks: [],
+        wav: null,
+        relayed: false,
         relayBacklog: [],
         speechMs: 0,
         silenceMs: 0,
@@ -159,6 +160,23 @@ export class LiveDubService {
     press.chunks.push(pcm);
     if (!press.ready) press.relayBacklog.push(pcm);
     if (rms(pcm) >= LOUD) press.speechMs += FRAME_MS;
+  }
+
+  /** Store the phone's finished WAV. Same-language ears hear it in order. Gemini hears this exact file. */
+  setClip(socketId: string, wav: Buffer, pressId = "") {
+    const press = this.presses.get(socketId);
+    if (!press || press.closed || (pressId && press.pressId && press.pressId !== pressId)) {
+      this.logger.warn(`live dub drop wav press=${pressId || "-"} current=${press?.pressId || "-"} bytes=${wav.length}`);
+      return false;
+    }
+    press.wav = wav;
+    press.chunks = [];
+    const pcmBytes = Math.max(0, wav.length - 44);
+    this.logger.log(
+      `live dub wav press=${press.pressId || "-"} bytes=${wav.length} pcmBytes=${pcmBytes} duration_sec=${(pcmBytes / 32000).toFixed(2)}`,
+    );
+    if (press.ready) this.relayWav(press);
+    return true;
   }
 
   finish(socketId: string, pressId = "") {
@@ -242,6 +260,7 @@ export class LiveDubService {
     for (const ear of dub) this.lockOriginal(ear.userId, speakerId, true);
     for (const id of relay) this.lockOriginal(id, speakerId, false);
     this.releaseBacklog(press);
+    if (press.wav) this.relayWav(press);
     if (!dub.length) {
       press.chunks = [];
       press.speechMs = 0;
@@ -262,24 +281,38 @@ export class LiveDubService {
     return press.flushing;
   }
 
+  private relayWav(press: Press) {
+    if (press.relayed || !press.wav || !press.relay.size) return;
+    const pcm = wavPcm(press.wav);
+    if (pcm.length < 2) return;
+    press.relayed = true;
+    const frame = 640;
+    let seq = 0;
+    for (let i = 0; i < pcm.length; i += frame) {
+      const slice = pcm.subarray(i, Math.min(i + frame, pcm.length));
+      const payload = slice.toString("base64");
+      for (const userId of press.relay) this.emitPcm(userId, press.speakerId, payload, seq);
+      seq += 1;
+    }
+    this.logger.log(`live dub relay wav press=${press.pressId || "-"} bytes=${pcm.length} frames=${seq}`);
+  }
+
   private async speakPhrase(press: Press) {
-    if (!press.ready) return;
-    if (!press.dub.length || !press.chunks.length) {
-      this.idle(press, 0);
+    if (!press.ready || press.done) return;
+    const wav = press.wav ?? (press.chunks.length ? wavBytes(Buffer.concat(press.chunks)) : null);
+    if (!press.dub.length || !wav) {
+      if (!press.dub.length) this.relayWav(press);
+      this.idle(press, wav?.length ?? 0);
       return;
     }
-    const chunks = press.chunks;
-    const speechMs = press.speechMs;
     press.chunks = [];
     press.speechMs = 0;
     press.silenceMs = 0;
-    const raw = Buffer.concat(chunks);
-    let pcm = clipSpeech(raw);
-    if (pcm.length < Math.min(raw.length, 1600)) pcm = raw;
-    const heard = pcmStats(pcm);
-    const reject = unclearReason(pcm.length, heard);
+    const pcmBytes = Math.max(0, wav.length - 44);
+    const heard = pcmStats(wavPcm(wav));
+    const reject = wav.length < 1024 || wav.toString("ascii", 0, 4) !== "RIFF" ? "bytes" : "";
     this.logger.log(
-      `live dub audio press=${press.pressId || "-"} format=audio/wav rate=16000 ch=1 pcm16 bytes=${pcm.length} duration_sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)} loudMs=${speechMs} reason=release`,
+      `live dub audio press=${press.pressId || "-"} format=audio/wav rate=16000 ch=1 pcm16 bytes=${wav.length} pcmBytes=${pcmBytes} duration_sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)} reason=release`,
     );
     const byLang = new Map<string, Ear[]>();
     for (const ear of press.dub) {
@@ -290,31 +323,31 @@ export class LiveDubService {
     press.seq += 1;
     const seq = press.seq;
     if (reject) {
-      this.logUnclear(press, "gate", reject, pcm.length, heard);
+      this.logUnclear(press, "gate", reject, wav.length, heard);
       await Promise.all([...byLang.entries()].map(([listenLang, ears]) => this.deliver(press, ears, seq, listenLang, "[unclear]")));
-      this.idle(press, pcm.length);
+      this.idle(press, wav.length);
       return;
     }
-    const wav = wavBytes(pcm);
     await Promise.all(
       [...byLang.entries()].map(async ([listenLang, ears]) => {
       const started = Date.now();
       const rawText = (await this.stt.translateAudio(wav, listenLang, "audio/wav", "wav")).trim();
       const line = captionLine(rawText);
-      if (line === "[unclear]") this.logUnclear(press, "gemini", "model", pcm.length, heard);
+      if (line === "[unclear]") this.logUnclear(press, "gemini", "model", wav.length, heard);
       this.logger.log(
-        `live dub phrase reason=release ms=${speechMs} gemini=${Date.now() - started}ms lang=${listenLang} "${line}"`,
+        `live dub phrase reason=release gemini=${Date.now() - started}ms lang=${listenLang} "${line}"`,
       );
       await this.deliver(press, ears, seq, listenLang, line);
       }),
     );
-    this.idle(press, pcm.length);
+    this.idle(press, wav.length);
   }
 
   private idle(press: Press, bytes: number) {
     if (press.done) return;
     press.done = true;
     press.chunks = [];
+    press.wav = null;
     press.relayBacklog = [];
     press.speechMs = 0;
     press.silenceMs = 0;
@@ -394,30 +427,12 @@ function pcmStats(pcm: Buffer) {
   return { peak, rms: n ? Math.sqrt(sum / n) : 0, durMs: Math.round(n / 16) };
 }
 
-/** Drop leading and trailing silence, but keep a short tail so the last word is complete. */
-function clipSpeech(pcm: Buffer) {
-  const frame = 640;
-  const frames: Buffer[] = [];
-  for (let i = 0; i < pcm.length; i += frame) frames.push(pcm.subarray(i, Math.min(i + frame, pcm.length)));
-  let first = -1;
-  let last = -1;
-  for (let i = 0; i < frames.length; i++) {
-    if (rms(frames[i]) >= LOUD) {
-      if (first < 0) first = i;
-      last = i;
-    }
+function wavPcm(wav: Buffer) {
+  if (wav.length >= 44 && wav.toString("ascii", 36, 40) === "data") {
+    const size = wav.readUInt32LE(40);
+    return wav.subarray(44, Math.min(wav.length, 44 + size));
   }
-  if (first < 0) return Buffer.alloc(0);
-  const start = Math.max(0, first - 4);
-  const end = Math.min(frames.length, last + 1 + 12);
-  return Buffer.concat(frames.slice(start, end));
-}
-
-function unclearReason(bytes: number, heard: { rms: number; peak: number; durMs: number }) {
-  if (bytes < MIN_BYTES) return "bytes";
-  if (heard.durMs < MIN_DUR_MS) return "duration";
-  if (heard.peak < MIN_PEAK && heard.rms < MIN_RMS) return "rms";
-  return "";
+  return wav.length > 44 ? wav.subarray(44) : Buffer.alloc(0);
 }
 
 function captionLine(raw: string) {

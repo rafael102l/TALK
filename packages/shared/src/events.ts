@@ -1,6 +1,8 @@
 export const SOCKET_EVENTS = {
   PTT_START: "ptt:start",
   PTT_AUDIO: "ptt:audio",
+  /** One finished WAV for this press. The server does not stitch PCM frames. */
+  PTT_CLIP: "ptt:clip",
   /** Translated phrase for one listener. free = text for the phone's TTS. plus = cloned voice file. */
   PTT_CAPTION: "ptt:caption",
   PTT_SPEAKING: "ptt:speaking",

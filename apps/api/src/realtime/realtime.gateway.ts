@@ -22,7 +22,7 @@ import { PresenceService } from "./presence.service";
 
 type AuthedSocket = Socket & { userId?: string; displayName?: string; sessionVersion?: number };
 
-@WebSocketGateway({ cors: { origin: true } })
+@WebSocketGateway({ cors: { origin: true }, maxHttpBufferSize: 8 * 1024 * 1024 })
 export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(RealtimeGateway.name);
   /** One replay of missed clips per user. A reconnect loop was re-sending the same three every second. */
@@ -282,6 +282,28 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   private audioFwd = 0;
   private audioLogAt = 0;
   private audioDropAt = 0;
+
+  @SubscribeMessage(SOCKET_EVENTS.PTT_CLIP)
+  pttClip(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { targetUserIds?: string[]; wav?: string; pressId?: string },
+  ) {
+    if (!client.userId || typeof body?.wav !== "string") return { ok: false, bytes: 0 };
+    if (body.wav.length < 1024 || body.wav.length > 6_000_000) {
+      this.logger.warn(`ptt clip drop size=${body.wav.length} user=${client.userId}`);
+      return { ok: false, bytes: 0 };
+    }
+    const targets = [...new Set((body.targetUserIds ?? []).filter((id) => id && id !== client.userId))].slice(0, 32);
+    if (!targets.length) return { ok: false, bytes: 0 };
+    const wav = Buffer.from(body.wav, "base64");
+    client.join(`user:${client.userId}`);
+    this.ensureDub();
+    const pressId = typeof body.pressId === "string" ? body.pressId : "";
+    this.liveDub.open(client.id, client.userId, targets, pressId, false);
+    const stored = this.liveDub.setClip(client.id, wav, pressId);
+    this.logger.log(`ptt clip from=${client.userId} press=${pressId || "-"} bytes=${wav.length} stored=${stored}`);
+    return { ok: stored, bytes: wav.length };
+  }
 
   @SubscribeMessage(SOCKET_EVENTS.PTT_AUDIO)
   pttAudio(
