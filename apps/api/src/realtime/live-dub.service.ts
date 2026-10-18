@@ -31,6 +31,7 @@ type Press = {
   ready: boolean;
   loading: boolean;
   targetIds: string[];
+  pressId: string;
 };
 
 const FRAME_MS = 20;
@@ -54,6 +55,7 @@ export class LiveDubService {
   private emit: (userId: string, payload: PttCaptionPayload) => void = () => undefined;
   private lockOriginal: (userId: string, speakerId: string, translate: boolean) => void = () => undefined;
   private emitPcm: (userId: string, speakerId: string, pcm: string, seq: number) => void = () => undefined;
+  private staleLogAt = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -86,9 +88,25 @@ export class LiveDubService {
     return { pending: false, relay, dub };
   }
 
-  open(socketId: string, speakerId: string, targetIds: string[]) {
+  owns(socketId: string, pressId: string) {
+    const press = this.presses.get(socketId);
+    if (!press) return true;
+    if (press.closed) return false;
+    if (pressId && press.pressId && press.pressId !== pressId) return false;
+    return true;
+  }
+
+  open(socketId: string, speakerId: string, targetIds: string[], pressId = "", fresh = false) {
     const ids = [...new Set(targetIds.filter((id) => id && id !== speakerId))];
+    const id = pressId.trim();
     let press = this.presses.get(socketId);
+    if (press && id && press.pressId !== id) {
+      if (!fresh) return;
+      const leftover = press.chunks.reduce((sum, frame) => sum + frame.length, 0);
+      this.logger.log(`live dub replace old=${press.pressId} new=${id} leftoverBytes=${leftover}`);
+      this.finish(socketId);
+      press = undefined;
+    }
     if (!press) {
       press = {
         socketId,
@@ -107,8 +125,10 @@ export class LiveDubService {
         ready: false,
         loading: false,
         targetIds: ids,
+        pressId: id,
       };
       this.presses.set(socketId, press);
+      this.logger.log(`live dub new press=${id || "-"} speaker=${speakerId} bytes=0`);
     } else if (ids.length) {
       press.targetIds = [...new Set([...press.targetIds, ...ids])];
     }
@@ -127,9 +147,12 @@ export class LiveDubService {
       });
   }
 
-  push(socketId: string, pcm: Buffer) {
+  push(socketId: string, pcm: Buffer, pressId = "") {
     const press = this.presses.get(socketId);
-    if (!press || pcm.length < 2) return;
+    if (!press || pcm.length < 2 || press.closed || (pressId && press.pressId && press.pressId !== pressId)) {
+      if (pcm.length >= 2 && press && (press.closed || (pressId && press.pressId !== pressId))) this.noteStale(pressId, press);
+      return;
+    }
     press.chunks.push(pcm);
     if (!press.ready) press.relayBacklog.push(pcm);
     if (rms(pcm) >= LOUD) {
@@ -145,13 +168,27 @@ export class LiveDubService {
     if (phrase || atCap || hardCap) void this.enqueue(press, phrase ? "silence" : "cap");
   }
 
-  finish(socketId: string) {
+  finish(socketId: string, pressId = "") {
     const press = this.presses.get(socketId);
     if (!press) return;
+    if (pressId && press.pressId && press.pressId !== pressId) {
+      this.logger.warn(`live dub ignore release press=${pressId} current=${press.pressId}`);
+      return;
+    }
     press.closed = true;
     void this.enqueue(press, "release").finally(() => {
       if (this.presses.get(socketId) === press) this.presses.delete(socketId);
     });
+  }
+
+  private noteStale(pressId: string, press: Press) {
+    const now = Date.now();
+    if (now - this.staleLogAt < 1000) return;
+    this.staleLogAt = now;
+    const bytes = press.chunks.reduce((sum, frame) => sum + frame.length, 0);
+    this.logger.warn(
+      `live dub drop stale press=${pressId || "-"} current=${press.pressId || "-"} closed=${press.closed} keptBytes=${bytes}`,
+    );
   }
 
   private releaseBacklog(press: Press) {
@@ -258,7 +295,7 @@ export class LiveDubService {
     const pcm = clipSpeech(Buffer.concat(chunks));
     const heard = pcmStats(pcm);
     this.logger.log(
-      `live dub audio format=audio/wav rate=16000 ch=1 pcm16 bytes=${pcm.length} durMs=${heard.durMs} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)} loudMs=${speechMs} reason=${reason}`,
+      `live dub audio press=${press.pressId || "-"} format=audio/wav rate=16000 ch=1 pcm16 bytes=${pcm.length} sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)} loudMs=${speechMs} reason=${reason}`,
     );
     const byLang = new Map<string, Ear[]>();
     for (const ear of press.dub) {

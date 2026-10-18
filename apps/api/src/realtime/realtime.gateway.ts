@@ -212,6 +212,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       speakerName?: string;
       speakerAvatarUrl?: string | null;
       voiceGender?: "male" | "female" | "child";
+      pressId?: string;
     },
   ) {
     if (!client.userId) return;
@@ -227,6 +228,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       client.id,
       client.userId,
       room.listenerIds.filter((id) => id !== client.userId),
+      typeof body.pressId === "string" ? body.pressId : "",
+      true,
     );
     const gender = body.voiceGender === "female" || body.voiceGender === "child" ? body.voiceGender : "male";
     const payload: PttSpeakingPayload = {
@@ -253,10 +256,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage(SOCKET_EVENTS.PTT_RELEASED)
   async pttReleased(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { channelId?: string; targetUserIds?: string[]; everyone?: boolean },
+    @MessageBody() body: { channelId?: string; targetUserIds?: string[]; everyone?: boolean; pressId?: string },
   ) {
     if (!client.userId) return;
-    this.liveDub.finish(client.id);
+    this.liveDub.finish(client.id, typeof body.pressId === "string" ? body.pressId : "");
     if (!(await this.sessionStillValid(client))) {
       client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
       this.closeSocket(client);
@@ -283,7 +286,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage(SOCKET_EVENTS.PTT_AUDIO)
   pttAudio(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { targetUserIds?: string[]; pcm?: string; seq?: number },
+    @MessageBody() body: { targetUserIds?: string[]; pcm?: string; seq?: number; pressId?: string },
   ) {
     if (!client.userId || typeof body?.pcm !== "string") {
       this.logger.warn(`ptt audio drop bad-body user=${client.userId ?? "?"} type=${typeof body?.pcm}`);
@@ -300,10 +303,15 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
     client.join(`user:${client.userId}`);
     this.ensureDub();
-    this.liveDub.open(client.id, client.userId, targets);
+    const framePress = typeof body.pressId === "string" ? body.pressId : "";
+    if (!this.liveDub.owns(client.id, framePress)) {
+      this.liveDub.push(client.id, Buffer.from(body.pcm, "base64"), framePress);
+      return { ok: false, forwarded: 0, dub: 0, rooms: "" };
+    }
+    this.liveDub.open(client.id, client.userId, targets, framePress, false);
     const route = this.liveDub.route(client.id, targets);
     const pcm = Buffer.from(body.pcm, "base64");
-    if (route.pending || route.dub) this.liveDub.push(client.id, pcm);
+    if (route.pending || route.dub) this.liveDub.push(client.id, pcm, framePress);
     const dub = route.dub;
     const payload = { speakerId: client.userId, pcm: body.pcm, seq: body.seq ?? 0 };
     let forwarded = 0;
