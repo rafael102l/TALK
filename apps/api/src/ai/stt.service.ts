@@ -10,9 +10,9 @@ const GEMINI_LIVE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"];
 const LIVE_HEAR =
   "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, or complete any word that was not spoken. If there is no speech, return an empty string.";
 const LIVE_LITERAL =
-  "Translate the speaker's meaning, context, tone, and intent into natural wording in the target language. Keep the original slang, idioms, and tone, including profanity and blunt language, and render each one as the closest natural equivalent in the target language. Do NOT sanitize, filter, soften, or censor them.";
+  "Translate the whole utterance as one sentence, not word by word. Use the target language's natural syntax, word order, and flow, the way a person would say that same sentence. Carry across all of the content, slang, idioms, and profanity as the closest natural equivalent in the target language. Do NOT sanitize, filter, soften, or censor them.";
 const LIVE_ONLY =
-  "CRITICAL RULE: Do NOT add, infer, or insert ANY words, connectors, or punctuation that were not present or strongly implied in the source text. Translate only what was explicitly spoken. Every single translated word must correspond directly to the input text. If the input is empty, noise, or unintelligible, return NOTHING (an empty string).";
+  "Translate ONLY what was said. Do NOT answer questions, simplify, explain, or invent sentences that were not in the input. If the input is empty, noise, or unintelligible, return NOTHING (an empty string).";
 const LIVE_SAFETY = [
   "HARM_CATEGORY_HATE_SPEECH",
   "HARM_CATEGORY_HARASSMENT",
