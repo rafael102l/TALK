@@ -9,9 +9,9 @@ const GEMINI_HEAR_MODELS = ["gemini-2.5-flash"];
 const GEMINI_LIVE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"];
 const LIVE_HEAR = "Transcribe the spoken audio exactly as heard. Do not filter out valid speech.";
 const LIVE_LITERAL =
-  "Translate all words literally and directly, including profanity, slang, and insults. Do NOT sanitize, filter, soften, or alter the meaning under any circumstances.";
+  "Translate the speaker's meaning, context, tone, and intent the way a live human interpreter would: natural and fluent in the target language, not a blind word-for-word gloss. Keep the original slang, idioms, and tone, including profanity and blunt language, and render each one as the closest natural equivalent in the target language. Do NOT sanitize, filter, soften, or censor them.";
 const LIVE_ONLY =
-  "Translate ONLY the provided input text. Do NOT complete, extrapolate, add commentary, answer questions, or generate any words that were not present in the source text. If the input is empty, noise, or unintelligible, return NOTHING (an empty string).";
+  "Translate ONLY what was said. Do NOT add information, answer questions, explain, interpret beyond the utterance, or create sentences that were not in the source. Carry across only what was spoken, in the most natural wording for the target language. If the input is empty, noise, or unintelligible, return NOTHING (an empty string).";
 const LIVE_SAFETY = [
   "HARM_CATEGORY_HATE_SPEECH",
   "HARM_CATEGORY_HARASSMENT",
