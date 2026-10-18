@@ -36,17 +36,14 @@ type Press = {
 
 const FRAME_MS = 20;
 const LOUD = 600;
-const MIN_SPEECH_MS = 700;
-const SILENCE_MS = 450;
-const MAX_SPEECH_MS = 2000;
-const CAP_GRACE_MS = 700;
 const RELEASE_MIN_MS = 280;
 
 /**
- * Live PTT stays raw PCM when both people share a language.
- * A different listen language is buffered to a pause (or a short cap) and then
- * translated. FREE sends text. PLUS also speaks it in the sender's cloned voice.
- * The plan flag is read once per press, not on every 20ms frame.
+ * Same language stays raw PCM, sent once when the button is released.
+ * A different listen language keeps every frame of that press and is translated
+ * once, on release, as one complete clip. Nothing is sent to Gemini while the
+ * button is still down. FREE sends the full caption. PLUS attaches the voice file
+ * to that same caption.
  */
 @Injectable()
 export class LiveDubService {
@@ -155,17 +152,7 @@ export class LiveDubService {
     }
     press.chunks.push(pcm);
     if (!press.ready) press.relayBacklog.push(pcm);
-    if (rms(pcm) >= LOUD) {
-      press.speechMs += FRAME_MS;
-      press.silenceMs = 0;
-    } else {
-      press.silenceMs += FRAME_MS;
-    }
-    if (!press.ready || !press.dub.length) return;
-    const phrase = press.speechMs >= MIN_SPEECH_MS && press.silenceMs >= SILENCE_MS;
-    const atCap = press.speechMs >= MAX_SPEECH_MS && press.silenceMs >= 160;
-    const hardCap = press.speechMs >= MAX_SPEECH_MS + CAP_GRACE_MS;
-    if (phrase || atCap || hardCap) void this.enqueue(press, phrase ? "silence" : "cap");
+    if (rms(pcm) >= LOUD) press.speechMs += FRAME_MS;
   }
 
   finish(socketId: string, pressId = "") {
@@ -176,7 +163,7 @@ export class LiveDubService {
       return;
     }
     press.closed = true;
-    void this.enqueue(press, "release").finally(() => {
+    void this.enqueue(press).finally(() => {
       if (this.presses.get(socketId) === press) this.presses.delete(socketId);
     });
   }
@@ -255,36 +242,27 @@ export class LiveDubService {
       press.speechMs = 0;
       press.silenceMs = 0;
     } else if (press.closed) {
-      void this.enqueue(press, "release");
-    } else if (
-      (press.speechMs >= MIN_SPEECH_MS && press.silenceMs >= SILENCE_MS) ||
-      press.speechMs >= MAX_SPEECH_MS + CAP_GRACE_MS ||
-      (press.speechMs >= MAX_SPEECH_MS && press.silenceMs >= 160)
-    ) {
-      void this.enqueue(press, press.silenceMs >= SILENCE_MS ? "silence" : "cap");
+      void this.enqueue(press);
     }
     this.logger.log(
       `live dub open speaker=${speakerId} lang=${speakLang} relay=${[...relay].join(",") || "-"} dub=${dub.map((ear) => `${ear.userId}:${ear.listenLang}:${ear.mode}`).join(",") || "-"}`,
     );
   }
 
-  private enqueue(press: Press, reason: "silence" | "cap" | "release") {
-    const run = press.flushing.then(() => this.speakPhrase(press, reason));
+  private enqueue(press: Press) {
+    const run = press.flushing.then(() => this.speakPhrase(press));
     press.flushing = run.catch((error: Error) => {
       this.logger.warn(`live dub phrase failed: ${error.message}`);
     });
     return press.flushing;
   }
 
-  private async speakPhrase(press: Press, reason: "silence" | "cap" | "release") {
+  private async speakPhrase(press: Press) {
     if (!press.ready) return;
-    const min = reason === "release" ? RELEASE_MIN_MS : MIN_SPEECH_MS;
-    if (!press.dub.length || press.speechMs < min || !press.chunks.length) {
-      if (reason === "release") {
-        press.chunks = [];
-        press.speechMs = 0;
-        press.silenceMs = 0;
-      }
+    if (!press.dub.length || press.speechMs < RELEASE_MIN_MS || !press.chunks.length) {
+      press.chunks = [];
+      press.speechMs = 0;
+      press.silenceMs = 0;
       return;
     }
     const chunks = press.chunks;
@@ -295,7 +273,7 @@ export class LiveDubService {
     const pcm = clipSpeech(Buffer.concat(chunks));
     const heard = pcmStats(pcm);
     this.logger.log(
-      `live dub audio press=${press.pressId || "-"} format=audio/wav rate=16000 ch=1 pcm16 bytes=${pcm.length} sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)} loudMs=${speechMs} reason=${reason}`,
+      `live dub audio press=${press.pressId || "-"} format=audio/wav rate=16000 ch=1 pcm16 bytes=${pcm.length} sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)} loudMs=${speechMs} reason=release`,
     );
     const byLang = new Map<string, Ear[]>();
     for (const ear of press.dub) {
@@ -317,7 +295,7 @@ export class LiveDubService {
       const raw = (await this.stt.translateAudio(wav, listenLang, "audio/wav", "wav")).trim();
       const line = captionLine(raw);
       this.logger.log(
-        `live dub phrase reason=${reason} ms=${speechMs} gemini=${Date.now() - started}ms lang=${listenLang} "${line}"`,
+        `live dub phrase reason=release ms=${speechMs} gemini=${Date.now() - started}ms lang=${listenLang} "${line}"`,
       );
       await this.deliver(press, ears, seq, listenLang, line);
       }),

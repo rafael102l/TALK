@@ -100,7 +100,7 @@ export class SttService {
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            signal: AbortSignal.timeout(6000),
+            signal: AbortSignal.timeout(12000),
             body: JSON.stringify({
               systemInstruction: { parts: [{ text: system }] },
               contents: [
@@ -114,7 +114,7 @@ export class SttService {
               ],
               generationConfig: {
                 temperature: 0,
-                maxOutputTokens: 256,
+                maxOutputTokens: 512,
                 ...(model.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
               },
             }),
