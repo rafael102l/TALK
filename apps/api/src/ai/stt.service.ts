@@ -13,9 +13,9 @@ const LIVE_TRANSLATION_TOKENS = 192;
 const LIVE_HEAR =
   "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, or complete any word that was not spoken. If there is no speech, return an empty string.";
 const LIVE_LITERAL =
-  "Translate the whole utterance as one sentence, not word by word. Use the target language's natural syntax, word order, and flow, the way a person would say that same sentence. Carry across all of the content, slang, idioms, and profanity as the closest natural equivalent in the target language. Do NOT sanitize, filter, soften, or censor them.";
+  "Translate the whole utterance as one sentence in the target language's natural syntax, not word by word. CRITICAL: Do NOT sanitize, soften, rephrase, tone down, or 'improve' the user's speech. If the user is rude, aggressive, or grammatically raw, the translation MUST reflect that exact same tone, rudeness, and intent in the target language. Carry slang, insults, idioms, and profanity as the closest natural equivalent. Do NOT add polite intro words (e.g., 'Tell me', 'Please') if they were not explicitly spoken. Do NOT drop any insult, slang, or emphasis.";
 const LIVE_ONLY =
-  "Translate ONLY what was said. Do NOT answer questions, simplify, explain, or invent sentences that were not in the input. If the input is empty, noise, or unintelligible, return NOTHING (an empty string).";
+  "Translate the EXACT meaning and attitude of the utterance. Match the structure and raw intent without editing. If the source says 'מה אתה רוצה אתה דפוק אתה' and the target is English, translate to 'What do you want, you're crazy/dumb' — not a polite rewrite such as 'Tell me what you want'. Do the same in the requested target language: keep every insult and add no words that were not spoken. Translate ONLY what was said. Do NOT answer questions, simplify, explain, or invent sentences that were not in the input. If the input is empty, noise, or unintelligible, return NOTHING (an empty string).";
 const LIVE_SAFETY = [
   "HARM_CATEGORY_HATE_SPEECH",
   "HARM_CATEGORY_HARASSMENT",
