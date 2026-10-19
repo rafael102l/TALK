@@ -128,7 +128,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           createdAt: { gte: since },
         },
       },
-      include: { transmission: { include: { sender: true } } },
+      include: { transmission: { include: { sender: true, renders: true } } },
       orderBy: { transmission: { createdAt: "asc" } },
       take: 3,
     });
@@ -137,20 +137,32 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     for (const row of rows) {
       const tx = row.transmission;
       const sender = toPublicUser(tx.sender);
-      const lang = row.language || sender.speakLang || "he";
+      const sourceLang = (tx.sender.speakLang || tx.sender.listenLang || "he").slice(0, 2).toLowerCase();
+      const hear = (row.language || sourceLang).slice(0, 2).toLowerCase();
+      const sameLang = hear === sourceLang;
+      const render = tx.renders.find((item) => item.language === hear);
+      const audioUrl = sameLang
+        ? tx.originalAudioUrl
+          ? this.storage.publicUrl(tx.originalAudioUrl)
+          : null
+        : render?.audioUrl
+          ? this.storage.publicUrl(render.audioUrl)
+          : null;
+      if (!sameLang && !audioUrl) continue;
       const payload = {
         transmissionId: tx.id,
         channelId: tx.channelId,
         senderId: tx.senderId,
         senderName: sender.displayName || tx.sender.phoneE164,
-        language: lang,
-        speakLang: lang,
+        language: hear,
+        speakLang: sourceLang,
         mode: sender.plan === "PLUS" ? "plus" : "free",
-        audioUrl: tx.originalAudioUrl ? this.storage.publicUrl(tx.originalAudioUrl) : null,
-        originalText: "",
-        translatedText: "",
+        audioUrl,
+        originalText: tx.originalText || "",
+        translatedText: sameLang ? tx.originalText || "" : render?.translatedText || "",
         durationMs: tx.durationMs,
-        usedOriginalVoice: true,
+        usedOriginalVoice: sameLang,
+        suppressOriginal: !sameLang,
         needsAccept: false,
         live: false,
         senderPhone: tx.sender.phoneE164,

@@ -437,11 +437,11 @@ export class LiveDubService {
       ears.map(async (ear) => {
         const unclear = line === "[unclear]";
         let audioUrl: string | null = null;
-        if (!unclear && ear.mode === "plus") {
+        if (!unclear) {
           const saved = await this.tts.speak(line, listenLang, ear.voiceId, ear.gender, {
             allowEleven: true,
             preferEleven: true,
-            timeoutMs: 8000,
+            timeoutMs: 12000,
           });
           audioUrl = saved ? this.storage.publicUrl(saved) : null;
         }

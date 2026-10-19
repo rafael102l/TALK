@@ -217,22 +217,24 @@ export class TransmissionsService {
     };
     const speak = (lang || "").slice(0, 2).toLowerCase();
     let textOnly = 0;
+    const dubbed: { targetId: string; language: string }[] = [];
     for (const target of transmission.targets) {
       const listener = users.find((user) => user.id === target.userId);
       const hear = (listener?.listenLang || listener?.speakLang || "").slice(0, 2).toLowerCase();
       const sameLanguage = Boolean(speak && hear && hear === speak);
-      if (!sameLanguage) textOnly += 1;
-      this.realtime.emitToUser(
-        target.userId,
-        SOCKET_EVENTS.TRANSMISSION_READY,
-        sameLanguage
-          ? payload
-          : { ...payload, language: hear || payload.language, audioUrl: null, suppressOriginal: true, usedOriginalVoice: false },
-      );
+      if (!sameLanguage) {
+        textOnly += 1;
+        if (hear) dubbed.push({ targetId: target.userId, language: hear });
+        continue;
+      }
+      this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
       void this.prisma.transmissionTarget.update({
         where: { id: target.id },
         data: { deliveredAt: new Date() },
       });
+    }
+    if (dubbed.length) {
+      void this.dubWalkie(file, transmission.id, payload, speak, voiceGender, dubbed);
     }
     this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
     this.logger.log(
@@ -245,6 +247,68 @@ export class TransmissionsService {
       }),
     );
     return { id: transmission.id, status: "READY" as const, channelId: channel.id };
+  }
+
+  /** Cross-language walkie: Gemini text becomes TTS. The original recording stays with the speaker. */
+  private async dubWalkie(
+    file: Express.Multer.File,
+    transmissionId: string,
+    payload: TransmissionReadyPayload,
+    speak: string,
+    voiceGender: "male" | "female" | "child",
+    dubbed: { targetId: string; language: string }[],
+  ) {
+    try {
+      const ext = extFrom(file);
+      const heard = await this.stt.hearClip(file.buffer, file.mimetype || "audio/wav", ext, speak);
+      const originalText = heard.stt.trim();
+      if (!originalText) {
+        this.logger.warn(`Walkie dub empty stt ${transmissionId}`);
+        return;
+      }
+      await this.prisma.transmission.update({
+        where: { id: transmissionId },
+        data: { originalText },
+      });
+      const languages = [...new Set(dubbed.map((row) => row.language))];
+      for (const language of languages) {
+        const translated = await this.stt.translateHeard(originalText, language, voiceGender);
+        const line = translated.text.replace(/\s+/g, " ").trim();
+        if (!line || /^\[unclear\]$/i.test(line)) {
+          this.logger.warn(`Walkie dub no translation ${transmissionId} ${speak}->${language}`);
+          continue;
+        }
+        const saved = await this.tts.speak(line, language, null, voiceGender, {
+          allowEleven: true,
+          preferEleven: true,
+          timeoutMs: 12000,
+        });
+        if (!saved) {
+          this.logger.warn(`Walkie dub no tts ${transmissionId} ${speak}->${language}`);
+          continue;
+        }
+        await this.prisma.transmissionRender.upsert({
+          where: { transmissionId_language: { transmissionId, language } },
+          create: { transmissionId, language, audioUrl: saved, translatedText: line },
+          update: { audioUrl: saved, translatedText: line },
+        });
+        const audioUrl = this.storage.publicUrl(saved);
+        for (const row of dubbed.filter((item) => item.language === language)) {
+          this.realtime.emitToUser(row.targetId, SOCKET_EVENTS.TRANSMISSION_READY, {
+            ...payload,
+            language,
+            audioUrl,
+            originalText,
+            translatedText: line,
+            usedOriginalVoice: false,
+            suppressOriginal: true,
+          });
+          this.logger.log(`Walkie dub ${transmissionId} ${speak}->${language} user=${row.targetId} tts`);
+        }
+      }
+    } catch (error) {
+      this.logger.warn(`Walkie dub failed ${transmissionId}: ${(error as Error).message}`);
+    }
   }
 
   async createText(
@@ -858,8 +922,7 @@ export class TransmissionsService {
       // Walkie replies: play in the listener's language (TTS) when languages differ.
       const audioUrl =
         kind === "walkie" && !sameLang
-          ? publicMedia(this.storage, langRender?.audioUrl) ||
-            publicMedia(this.storage, tx.originalAudioUrl)
+          ? publicMedia(this.storage, langRender?.audioUrl)
           : publicMedia(this.storage, sameLang ? tx.originalAudioUrl : langRender?.audioUrl || tx.originalAudioUrl);
       items.push({
         id: tx.id,
