@@ -4,6 +4,10 @@ export type LiveCall = {
   callId: string;
   callerId: string;
   calleeId: string;
+  callerName: string;
+  callerPhone: string;
+  callerAvatar: string | null;
+  callerGender: string;
   accepted: boolean;
   timer?: ReturnType<typeof setTimeout>;
 };

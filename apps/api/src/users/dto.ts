@@ -36,3 +36,15 @@ export class PushTokenDto {
   @MinLength(8)
   token!: string;
 }
+
+export class CallPushDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(4096)
+  fcmToken?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(4096)
+  voipToken?: string;
+}

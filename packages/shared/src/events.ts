@@ -35,12 +35,16 @@ export const SOCKET_EVENTS = {
 export type CallPerson = {
   id: string;
   name: string;
+  /** E.164 number shown as the system caller id. */
+  phone?: string;
   avatarUrl?: string | null;
   gender?: "male" | "female" | "child";
 };
 
 export type IncomingCallPayload = {
   callId: string;
+  callerName: string;
+  callerPhone: string;
   caller: CallPerson;
 };
 

@@ -94,6 +94,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       for (const channelId of channelIds) client.join(`channel:${channelId}`);
       this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: user.id, online: true });
       this.flushMissedCalls(client);
+      this.flushRingingCalls(client);
       this.scheduleReplay(user.id);
     } catch (error) {
       this.logger.debug(`Socket profile delayed: ${(error as Error).message}`);
@@ -506,32 +507,39 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
     const caller = await this.prisma.user.findUnique({
       where: { id: client.userId },
-      select: { displayName: true, avatarUrl: true, voiceGender: true },
+      select: { displayName: true, avatarUrl: true, voiceGender: true, phoneE164: true },
     });
     if (!caller) return { ok: false };
-    if (this.connectedCount(targetUserId) === 0) {
-      this.markUnavailable(client, callId, targetUserId, caller);
-      return { ok: false, reason: "offline" };
+    const incoming = this.incomingBody(callId, client.userId, caller);
+    const offline = this.connectedCount(targetUserId) === 0;
+    if (offline) {
+      const woke = await this.push.notifyIncomingCall(targetUserId, incoming);
+      if (!woke) {
+        this.markUnavailable(client, callId, targetUserId, caller);
+        return { ok: false, reason: "offline" };
+      }
     }
     const timer = setTimeout(() => this.expireCall(callId), 45_000);
-    this.calls.open({ callId, callerId: client.userId, calleeId: targetUserId, accepted: false, timer });
-    const sent = this.emitToUser(
-      targetUserId,
-      SOCKET_EVENTS.INCOMING_CALL,
-      {
-        callId,
-        caller: {
-          id: client.userId,
-          name: caller.displayName,
-          avatarUrl: caller.avatarUrl,
-          gender: caller.voiceGender,
-        },
-      },
-      false,
-    );
-    if (!sent) {
-      this.markUnavailable(client, callId, targetUserId, caller);
-      return { ok: false, reason: "offline" };
+    this.calls.open({
+      callId,
+      callerId: client.userId,
+      calleeId: targetUserId,
+      callerName: incoming.callerName,
+      callerPhone: incoming.callerPhone,
+      callerAvatar: caller.avatarUrl,
+      callerGender: caller.voiceGender || "male",
+      accepted: false,
+      timer,
+    });
+    if (!offline) {
+      const sent = this.emitToUser(targetUserId, SOCKET_EVENTS.INCOMING_CALL, incoming, false);
+      if (!sent) {
+        const woke = await this.push.notifyIncomingCall(targetUserId, incoming);
+        if (!woke) {
+          this.markUnavailable(client, callId, targetUserId, caller);
+          return { ok: false, reason: "offline" };
+        }
+      }
     }
     this.logger.log(`call open id=${callId} from=${client.userId} to=${targetUserId}`);
     return { ok: true, callId };
@@ -629,11 +637,51 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.logger.log(`call missed sync user=${client.userId} n=${calls.length}`);
   }
 
+  private flushRingingCalls(client: AuthedSocket) {
+    if (!client.userId || !client.connected) return;
+    const call = this.calls.busy(client.userId);
+    if (!call || call.calleeId !== client.userId || call.accepted) return;
+    client.emit(SOCKET_EVENTS.INCOMING_CALL, {
+      callId: call.callId,
+      callerName: call.callerName,
+      callerPhone: call.callerPhone,
+      caller: {
+        id: call.callerId,
+        name: call.callerName,
+        phone: call.callerPhone,
+        avatarUrl: call.callerAvatar,
+        gender: call.callerGender,
+      },
+    });
+    this.logger.log(`call ringing sync user=${client.userId} id=${call.callId}`);
+  }
+
+  private incomingBody(
+    callId: string,
+    callerId: string,
+    caller: { displayName: string | null; phoneE164: string; avatarUrl: string | null; voiceGender: string | null },
+  ) {
+    const callerName = caller.displayName || caller.phoneE164;
+    const callerPhone = caller.phoneE164;
+    return {
+      callId,
+      callerName,
+      callerPhone,
+      caller: {
+        id: callerId,
+        name: callerName,
+        phone: callerPhone,
+        avatarUrl: caller.avatarUrl,
+        gender: caller.voiceGender || "male",
+      },
+    };
+  }
+
   private markUnavailable(
     client: AuthedSocket,
     callId: string,
     targetUserId: string,
-    caller: { displayName: string | null; avatarUrl: string | null; voiceGender: string | null },
+    caller: { displayName: string | null; phoneE164?: string | null; avatarUrl: string | null; voiceGender: string | null },
   ) {
     this.calls.rememberMissed(targetUserId, {
       callId,
@@ -645,7 +693,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     });
     this.calls.end(callId);
     client.emit(SOCKET_EVENTS.CALL_UNAVAILABLE, { callId, reason: "offline" });
-    void this.push.notifyUsers([targetUserId], caller.displayName || "TALK", "שיחה שלא נענתה", {
+    void this.push.notifyUsers([targetUserId], caller.displayName || caller.phoneE164 || "TALK", "שיחה שלא נענתה", {
       type: "missed-call",
       callId,
       callerId: client.userId || "",

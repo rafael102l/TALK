@@ -14,13 +14,17 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { User } from "@prisma/client";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
-import { PushTokenDto, UpdateProfileDto } from "./dto";
+import { PushService } from "../push/push.service";
+import { CallPushDto, PushTokenDto, UpdateProfileDto } from "./dto";
 import { UsersService } from "./users.service";
 
 @Controller("users")
 @UseGuards(JwtAuthGuard)
 export class UsersController {
-  constructor(private readonly users: UsersService) {}
+  constructor(
+    private readonly users: UsersService,
+    private readonly push: PushService,
+  ) {}
 
   @Get("me")
   me(@CurrentUser() user: User) {
@@ -35,6 +39,12 @@ export class UsersController {
   @Post("me/push-token")
   pushToken(@CurrentUser() user: User, @Body() body: PushTokenDto) {
     return this.users.savePushToken(user, body.token);
+  }
+
+  /** FCM device token (Android) and PushKit VoIP token (iOS). */
+  @Post("me/call-push")
+  callPush(@CurrentUser() user: User, @Body() body: CallPushDto) {
+    return this.push.saveCallDevice(user.id, body);
   }
 
   @Post("me/voice-sample")
