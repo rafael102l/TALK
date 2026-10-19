@@ -111,11 +111,14 @@ export class SttService {
     if (!key || !audio.length) return empty;
     const code = normLang(sourceLang);
     const tag = code ? speechTag(code) : "";
-    if (!code) this.logger.warn("LOG [TRACE] STT language missing");
-    const hear = hearInstruction(code || "he", tag || "he-IL");
+    if (!code || !tag) {
+      this.logger.warn("LOG [TRACE] STT language missing");
+      return empty;
+    }
+    const hear = hearInstruction(code, tag);
     this.logger.log(`LOG [TRACE] Raw Audio Length: ${wavSeconds(audio).toFixed(2)} sec`);
     this.logger.log(`LOG [TRACE] Audio format: ${describeWav(audio)}`);
-    this.logger.log(`LOG [TRACE] STT language: ${tag || "he-IL"}`);
+    this.logger.log(`LOG [TRACE] STT language: ${tag}`);
     const heard = await this.geminiLive(
       key,
       hear,

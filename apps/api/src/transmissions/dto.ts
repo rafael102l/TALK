@@ -48,6 +48,16 @@ export class CreateTransmissionDto {
   kind?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  speakLang?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  sourceLanguage?: string;
+
+  @IsOptional()
   @Transform(({ value }) => value === true || value === "true" || value === "1")
   @IsBoolean()
   viewOnce?: boolean;

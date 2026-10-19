@@ -153,9 +153,8 @@ export class LiveDubService {
       .catch((error: Error) => {
         this.logger.warn(`live dub open failed: ${error.message}`);
         press.ready = true;
-        press.relay = new Set(press.targetIds);
+        press.relay = new Set();
         press.dub = [];
-        this.releaseBacklog(press);
       })
       .finally(() => {
         press.loading = false;
@@ -268,10 +267,11 @@ export class LiveDubService {
     for (const id of targetIds) {
       const row = byId.get(id);
       const listenLang = langOf(row?.listenLang || row?.speakLang);
-      if (!listenLang || listenLang === speakLang) {
+      if (speakLang && listenLang && listenLang === speakLang) {
         relay.add(id);
         continue;
       }
+      if (!listenLang) continue;
       const plus = row?.plan === "PLUS";
       const voiceId =
         plus && row?.voiceCloneStatus === "READY" && row.elevenVoiceId && !row.elevenVoiceId.startsWith("mock-")
@@ -362,7 +362,12 @@ export class LiveDubService {
       return;
     }
     const sourceLang = press.speakLang;
-    if (!sourceLang) this.logger.warn(`live dub stt press=${press.pressId || "-"} missing speakLang`);
+    if (!sourceLang) {
+      this.logger.warn(`LOG [TRACE] STT language missing press=${press.pressId || "-"}`);
+      await Promise.all([...byLang.entries()].map(([listenLang, ears]) => this.deliver(press, ears, seq, listenLang, "[unclear]")));
+      this.idle(press, wav.length);
+      return;
+    }
     const heardOnce = await this.stt.hearClip(wav, "audio/wav", "wav", sourceLang);
     const stt = heardOnce.stt;
     const translations: string[] = [];

@@ -62,6 +62,8 @@ export class TransmissionsService {
       kind?: string;
       viewOnce?: boolean;
       releasedAt?: number;
+      speakLang?: string;
+      sourceLanguage?: string;
     },
   ) {
     if (!file?.buffer?.length) throw new BadRequestException("חסר קובץ שמע");
@@ -78,7 +80,7 @@ export class TransmissionsService {
 
     const users = await this.prisma.user.findMany({ where: { id: { in: targetIds } } });
     if (kind === "walkie") {
-      return this.relayWalkie(sender, file, input, users, targetIds, clientRelease);
+      return this.relayWalkie(sender, file, input, users, targetIds, clientRelease, input.sourceLanguage || input.speakLang || "");
     }
     const sameLanguage =
       users.length > 0 &&
@@ -136,14 +138,15 @@ export class TransmissionsService {
     users: User[],
     targetIds: string[],
     clientRelease: number,
+    sourceLanguage = "",
   ) {
     try {
-      return await this.relayWalkieNow(sender, file, input, users, targetIds, clientRelease);
+      return await this.relayWalkieNow(sender, file, input, users, targetIds, clientRelease, sourceLanguage);
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2024") {
         await new Promise((resolve) => setTimeout(resolve, 1500));
         try {
-          return await this.relayWalkieNow(sender, file, input, users, targetIds, clientRelease);
+          return await this.relayWalkieNow(sender, file, input, users, targetIds, clientRelease, sourceLanguage);
         } catch (retryError) {
           error = retryError;
         }
@@ -162,10 +165,11 @@ export class TransmissionsService {
     users: User[],
     targetIds: string[],
     clientRelease: number,
+    sourceLanguage = "",
   ) {
     const channel = await this.ensureChannel(sender, input.channelId, targetIds);
     const audioUrl = await this.storage.save(file.buffer, extFrom(file), "audio");
-    const lang = sender.speakLang || sender.listenLang || "he";
+    const lang = (sourceLanguage || sender.speakLang || sender.listenLang || "").slice(0, 2).toLowerCase();
     const transmission = await this.prisma.transmission.create({
       data: {
         senderId: sender.id,
@@ -179,7 +183,7 @@ export class TransmissionsService {
         targets: {
           create: users.map((user) => ({
             userId: user.id,
-            language: lang,
+            language: (user.listenLang || user.speakLang || lang).slice(0, 2).toLowerCase(),
           })),
         },
       },
@@ -212,14 +216,18 @@ export class TransmissionsService {
       readyAt: Date.now(),
     };
     const speak = (lang || "").slice(0, 2).toLowerCase();
+    let textOnly = 0;
     for (const target of transmission.targets) {
       const listener = users.find((user) => user.id === target.userId);
       const hear = (listener?.listenLang || listener?.speakLang || "").slice(0, 2).toLowerCase();
-      const suppressOriginal = Boolean(hear && speak && hear !== speak);
+      const sameLanguage = Boolean(speak && hear && hear === speak);
+      if (!sameLanguage) textOnly += 1;
       this.realtime.emitToUser(
         target.userId,
         SOCKET_EVENTS.TRANSMISSION_READY,
-        suppressOriginal ? { ...payload, audioUrl: null, suppressOriginal: true } : payload,
+        sameLanguage
+          ? payload
+          : { ...payload, language: hear || payload.language, audioUrl: null, suppressOriginal: true, usedOriginalVoice: false },
       );
       void this.prisma.transmissionTarget.update({
         where: { id: target.id },
@@ -228,7 +236,7 @@ export class TransmissionsService {
     }
     this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
     this.logger.log(
-      `Walkie relay ${transmission.id} bytes=${file.buffer.length} targets=${transmission.targets.length}`,
+      `Walkie relay ${transmission.id} bytes=${file.buffer.length} targets=${transmission.targets.length} textOnly=${textOnly}`,
     );
     void Promise.all(
       users.map(async (target) => {
@@ -951,7 +959,7 @@ export class TransmissionsService {
       const langRender = tx.renders.find((r) => r.language === row.language);
       const audioUrl = sameLang
         ? publicMedia(this.storage, tx.originalAudioUrl)
-        : publicMedia(this.storage, langRender?.audioUrl) || publicMedia(this.storage, tx.originalAudioUrl);
+        : publicMedia(this.storage, langRender?.audioUrl) || null;
       if (!audioUrl && !(tx.originalText || langRender?.translatedText)) continue;
       payloads.push({
         transmissionId: tx.id,
@@ -965,7 +973,8 @@ export class TransmissionsService {
         originalText: tx.originalText,
         translatedText: sameLang ? tx.originalText : langRender?.translatedText || "",
         durationMs: tx.durationMs,
-        usedOriginalVoice: sameLang || !langRender?.translatedText,
+        usedOriginalVoice: sameLang,
+        suppressOriginal: !sameLang,
         needsAccept: true,
         live: false,
         senderPhone: tx.sender.phoneE164,
