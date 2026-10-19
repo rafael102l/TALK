@@ -20,6 +20,7 @@ import { JwtPayload } from "../auth/jwt-payload";
 import { CallRegistry } from "./call.registry";
 import { FloorService } from "./floor.service";
 import { PresenceService } from "./presence.service";
+import { PushService } from "../push/push.service";
 
 type AuthedSocket = Socket & { userId?: string; displayName?: string; sessionVersion?: number };
 
@@ -40,6 +41,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly storage: StorageService,
     private readonly liveDub: LiveDubService,
     private readonly calls: CallRegistry,
+    private readonly push: PushService,
   ) {}
 
   async handleConnection(client: AuthedSocket) {
@@ -91,6 +93,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       const channelIds = await loadChannelIds(this.prisma, user.id);
       for (const channelId of channelIds) client.join(`channel:${channelId}`);
       this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: user.id, online: true });
+      this.flushMissedCalls(client);
       this.scheduleReplay(user.id);
     } catch (error) {
       this.logger.debug(`Socket profile delayed: ${(error as Error).message}`);
@@ -462,7 +465,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.debug(`Socket server not ready for ${event} user=${userId}`);
       return false;
     }
-    const n = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
+    const n = this.connectedCount(userId);
     if (!n) {
       this.logger.debug(`No live socket for ${event} user=${userId}`);
       if (retry && event === SOCKET_EVENTS.TRANSMISSION_READY) {
@@ -506,6 +509,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       select: { displayName: true, avatarUrl: true, voiceGender: true },
     });
     if (!caller) return { ok: false };
+    if (this.connectedCount(targetUserId) === 0) {
+      this.markUnavailable(client, callId, targetUserId, caller);
+      return { ok: false, reason: "offline" };
+    }
     const timer = setTimeout(() => this.expireCall(callId), 45_000);
     this.calls.open({ callId, callerId: client.userId, calleeId: targetUserId, accepted: false, timer });
     const sent = this.emitToUser(
@@ -523,8 +530,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       false,
     );
     if (!sent) {
-      this.calls.end(callId);
-      client.emit(SOCKET_EVENTS.CALL_UNAVAILABLE, { callId });
+      this.markUnavailable(client, callId, targetUserId, caller);
       return { ok: false, reason: "offline" };
     }
     this.logger.log(`call open id=${callId} from=${client.userId} to=${targetUserId}`);
@@ -605,13 +611,72 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     return call;
   }
 
+  private connectedCount(userId: string) {
+    const room = this.server?.sockets?.adapter.rooms.get(`user:${userId}`);
+    if (!room || !this.server?.sockets) return 0;
+    let n = 0;
+    for (const id of room) {
+      if (this.server.sockets.sockets.get(id)?.connected) n += 1;
+    }
+    return n;
+  }
+
+  private flushMissedCalls(client: AuthedSocket) {
+    if (!client.userId || !client.connected) return;
+    const calls = this.calls.takeMissed(client.userId);
+    if (!calls.length) return;
+    client.emit(SOCKET_EVENTS.CALL_MISSED_SYNC, { calls });
+    this.logger.log(`call missed sync user=${client.userId} n=${calls.length}`);
+  }
+
+  private markUnavailable(
+    client: AuthedSocket,
+    callId: string,
+    targetUserId: string,
+    caller: { displayName: string | null; avatarUrl: string | null; voiceGender: string | null },
+  ) {
+    this.calls.rememberMissed(targetUserId, {
+      callId,
+      peerId: client.userId || "",
+      peerName: caller.displayName || "",
+      avatarUrl: caller.avatarUrl,
+      gender: caller.voiceGender || "male",
+      at: new Date().toISOString(),
+    });
+    this.calls.end(callId);
+    client.emit(SOCKET_EVENTS.CALL_UNAVAILABLE, { callId, reason: "offline" });
+    void this.push.notifyUsers([targetUserId], caller.displayName || "TALK", "שיחה שלא נענתה", {
+      type: "missed-call",
+      callId,
+      callerId: client.userId || "",
+      callerName: caller.displayName || "",
+    });
+    this.logger.warn(`call unavailable id=${callId} to=${targetUserId} no socket`);
+  }
+
   private expireCall(callId: string) {
     const call = this.calls.get(callId);
     if (!call || call.accepted) return;
     this.calls.end(callId);
     this.emitToUser(call.callerId, SOCKET_EVENTS.END_CALL, { callId, reason: "missed" }, false);
     this.emitToUser(call.calleeId, SOCKET_EVENTS.END_CALL, { callId, reason: "missed" }, false);
+    if (this.connectedCount(call.calleeId) === 0) void this.rememberExpiredMiss(call);
     this.logger.log(`call missed id=${callId}`);
+  }
+
+  private async rememberExpiredMiss(call: { callId: string; callerId: string; calleeId: string }) {
+    const caller = await this.prisma.user.findUnique({
+      where: { id: call.callerId },
+      select: { displayName: true, avatarUrl: true, voiceGender: true },
+    });
+    this.calls.rememberMissed(call.calleeId, {
+      callId: call.callId,
+      peerId: call.callerId,
+      peerName: caller?.displayName || "",
+      avatarUrl: caller?.avatarUrl ?? null,
+      gender: caller?.voiceGender || "male",
+      at: new Date().toISOString(),
+    });
   }
 
   private readToken(client: Socket) {

@@ -28,6 +28,8 @@ export const SOCKET_EVENTS = {
   CALL_ICE: "call-ice",
   CALL_UNAVAILABLE: "call-unavailable",
   CALL_BUSY: "call-busy",
+  /** Missed calls that arrived while this phone had no socket. Sent once on reconnect. */
+  CALL_MISSED_SYNC: "call-missed-sync",
 } as const;
 
 export type CallPerson = {
