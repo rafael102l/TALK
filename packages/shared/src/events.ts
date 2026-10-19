@@ -18,7 +18,29 @@ export const SOCKET_EVENTS = {
   CONTACT_ACCEPTED: "contact:accepted",
   /** Previous device must drop auth — another device claimed this phone's session. */
   SESSION_REPLACED: "session:replaced",
+  CALL_USER: "call-user",
+  INCOMING_CALL: "incoming-call",
+  ACCEPT_CALL: "accept-call",
+  REJECT_CALL: "reject-call",
+  END_CALL: "end-call",
+  CALL_OFFER: "call-offer",
+  CALL_ANSWER: "call-answer",
+  CALL_ICE: "call-ice",
+  CALL_UNAVAILABLE: "call-unavailable",
+  CALL_BUSY: "call-busy",
 } as const;
+
+export type CallPerson = {
+  id: string;
+  name: string;
+  avatarUrl?: string | null;
+  gender?: "male" | "female" | "child";
+};
+
+export type IncomingCallPayload = {
+  callId: string;
+  caller: CallPerson;
+};
 
 export type PttStartPayload = {
   channelId: string;

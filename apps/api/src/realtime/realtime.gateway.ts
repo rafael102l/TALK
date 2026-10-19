@@ -17,6 +17,7 @@ import { Server, Socket } from "socket.io";
 import { loadChannelIds, loadUser } from "../auth/load-user";
 import { PrismaService } from "../prisma/prisma.service";
 import { JwtPayload } from "../auth/jwt-payload";
+import { CallRegistry } from "./call.registry";
 import { FloorService } from "./floor.service";
 import { PresenceService } from "./presence.service";
 
@@ -38,6 +39,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly floor: FloorService,
     private readonly storage: StorageService,
     private readonly liveDub: LiveDubService,
+    private readonly calls: CallRegistry,
   ) {}
 
   async handleConnection(client: AuthedSocket) {
@@ -484,6 +486,132 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       select: { sessionVersion: true },
     });
     return Boolean(user && user.sessionVersion === client.sessionVersion);
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.CALL_USER)
+  async callUser(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { targetUserId?: string; callId?: string },
+  ) {
+    if (!client.userId || !(await this.sessionStillValid(client))) return { ok: false };
+    const targetUserId = (body?.targetUserId || "").slice(0, 80);
+    const callId = (body?.callId || "").slice(0, 80);
+    if (!targetUserId || !callId || targetUserId === client.userId) return { ok: false };
+    if (this.calls.busy(client.userId) || this.calls.busy(targetUserId)) {
+      client.emit(SOCKET_EVENTS.CALL_BUSY, { callId });
+      return { ok: false, reason: "busy" };
+    }
+    const caller = await this.prisma.user.findUnique({
+      where: { id: client.userId },
+      select: { displayName: true, avatarUrl: true, voiceGender: true },
+    });
+    if (!caller) return { ok: false };
+    const timer = setTimeout(() => this.expireCall(callId), 45_000);
+    this.calls.open({ callId, callerId: client.userId, calleeId: targetUserId, accepted: false, timer });
+    const sent = this.emitToUser(
+      targetUserId,
+      SOCKET_EVENTS.INCOMING_CALL,
+      {
+        callId,
+        caller: {
+          id: client.userId,
+          name: caller.displayName,
+          avatarUrl: caller.avatarUrl,
+          gender: caller.voiceGender,
+        },
+      },
+      false,
+    );
+    if (!sent) {
+      this.calls.end(callId);
+      client.emit(SOCKET_EVENTS.CALL_UNAVAILABLE, { callId });
+      return { ok: false, reason: "offline" };
+    }
+    this.logger.log(`call open id=${callId} from=${client.userId} to=${targetUserId}`);
+    return { ok: true, callId };
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.ACCEPT_CALL)
+  acceptCall(@ConnectedSocket() client: AuthedSocket, @MessageBody() body: { callId?: string }) {
+    const call = this.liveCallFor(client.userId, body?.callId);
+    if (!call || call.calleeId !== client.userId) return { ok: false };
+    call.accepted = true;
+    if (call.timer) clearTimeout(call.timer);
+    call.timer = undefined;
+    this.emitToUser(call.callerId, SOCKET_EVENTS.ACCEPT_CALL, { callId: call.callId }, false);
+    return { ok: true };
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.REJECT_CALL)
+  rejectCall(@ConnectedSocket() client: AuthedSocket, @MessageBody() body: { callId?: string }) {
+    const call = this.liveCallFor(client.userId, body?.callId);
+    if (!call) return { ok: false };
+    const other = call.callerId === client.userId ? call.calleeId : call.callerId;
+    this.calls.end(call.callId);
+    this.emitToUser(other, SOCKET_EVENTS.REJECT_CALL, { callId: call.callId }, false);
+    return { ok: true };
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.END_CALL)
+  endCall(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { callId?: string; reason?: string },
+  ) {
+    const call = this.liveCallFor(client.userId, body?.callId);
+    if (!call) return { ok: false };
+    const other = call.callerId === client.userId ? call.calleeId : call.callerId;
+    const reason = call.accepted ? "ended" : body?.reason || "cancelled";
+    this.calls.end(call.callId);
+    this.emitToUser(other, SOCKET_EVENTS.END_CALL, { callId: call.callId, reason }, false);
+    return { ok: true };
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.CALL_OFFER)
+  callOffer(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { callId?: string; sdp?: string },
+  ) {
+    return this.relaySignal(client, body?.callId, SOCKET_EVENTS.CALL_OFFER, { sdp: body?.sdp || "" });
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.CALL_ANSWER)
+  callAnswer(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { callId?: string; sdp?: string },
+  ) {
+    return this.relaySignal(client, body?.callId, SOCKET_EVENTS.CALL_ANSWER, { sdp: body?.sdp || "" });
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.CALL_ICE)
+  callIce(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { callId?: string; candidate?: unknown },
+  ) {
+    return this.relaySignal(client, body?.callId, SOCKET_EVENTS.CALL_ICE, { candidate: body?.candidate ?? null });
+  }
+
+  private relaySignal(client: AuthedSocket, callId: string | undefined, event: string, extra: object) {
+    const call = this.liveCallFor(client.userId, callId);
+    if (!call) return { ok: false };
+    const other = call.callerId === client.userId ? call.calleeId : call.callerId;
+    this.emitToUser(other, event, { callId: call.callId, ...extra }, false);
+    return { ok: true };
+  }
+
+  private liveCallFor(userId: string | undefined, callId: string | undefined) {
+    if (!userId || !callId) return undefined;
+    const call = this.calls.get(callId);
+    if (!call || (call.callerId !== userId && call.calleeId !== userId)) return undefined;
+    return call;
+  }
+
+  private expireCall(callId: string) {
+    const call = this.calls.get(callId);
+    if (!call || call.accepted) return;
+    this.calls.end(callId);
+    this.emitToUser(call.callerId, SOCKET_EVENTS.END_CALL, { callId, reason: "missed" }, false);
+    this.emitToUser(call.calleeId, SOCKET_EVENTS.END_CALL, { callId, reason: "missed" }, false);
+    this.logger.log(`call missed id=${callId}`);
   }
 
   private readToken(client: Socket) {
