@@ -109,12 +109,13 @@ export class SttService {
     const key = process.env.GEMINI_API_KEY;
     const empty = { stt: "", raw: "", started };
     if (!key || !audio.length) return empty;
-    const code = normLang(sourceLang) || "he";
-    const tag = speechTag(code);
-    const hear = hearInstruction(code, tag);
+    const code = normLang(sourceLang);
+    const tag = code ? speechTag(code) : "";
+    if (!code) this.logger.warn("LOG [TRACE] STT language missing");
+    const hear = hearInstruction(code || "he", tag || "he-IL");
     this.logger.log(`LOG [TRACE] Raw Audio Length: ${wavSeconds(audio).toFixed(2)} sec`);
     this.logger.log(`LOG [TRACE] Audio format: ${describeWav(audio)}`);
-    this.logger.log(`LOG [TRACE] STT language: ${code} (${tag})`);
+    this.logger.log(`LOG [TRACE] STT language: ${tag || "he-IL"}`);
     const heard = await this.geminiLive(
       key,
       hear,
@@ -551,16 +552,54 @@ function langName(code: string) {
 }
 
 function speechTag(code: string) {
-  if (code === "he") return "he-IL";
-  if (code === "en") return "en-US";
-  if (code === "ar") return "ar";
-  if (code === "ru") return "ru-RU";
-  return code;
+  const tags: Record<string, string> = {
+    he: "he-IL",
+    en: "en-US",
+    ar: "ar-SA",
+    ru: "ru-RU",
+    hi: "hi-IN",
+    fr: "fr-FR",
+    es: "es-ES",
+    de: "de-DE",
+    pt: "pt-BR",
+    it: "it-IT",
+    tr: "tr-TR",
+    uk: "uk-UA",
+    zh: "zh-CN",
+    ja: "ja-JP",
+    ko: "ko-KR",
+    pl: "pl-PL",
+    nl: "nl-NL",
+    id: "id-ID",
+    sv: "sv-SE",
+    da: "da-DK",
+    no: "nb-NO",
+    fi: "fi-FI",
+    el: "el-GR",
+    cs: "cs-CZ",
+    ro: "ro-RO",
+    hu: "hu-HU",
+    vi: "vi-VN",
+    th: "th-TH",
+    ms: "ms-MY",
+    tl: "fil-PH",
+    bg: "bg-BG",
+    hr: "hr-HR",
+    sk: "sk-SK",
+    bn: "bn-IN",
+    ta: "ta-IN",
+    fa: "fa-IR",
+    ur: "ur-PK",
+    sw: "sw-KE",
+    ka: "ka-GE",
+    am: "am-ET",
+  };
+  return tags[code] || code;
 }
 
 function hearInstruction(code: string, tag: string) {
   const name = langName(code);
-  return `${LIVE_HEAR} The speaker is speaking ${name}. The language code is exactly ${code} (${tag}). Transcribe only in that language and its usual script. Do not switch language. Do not guess foreign words or personal names. If a word is unclear, omit that word.`;
+  return `${LIVE_HEAR} LOCKED LANGUAGE: the speaker selected ${name}. Transcribe only in ${tag}. Do not detect, switch, or guess any other language. Write only in that language's usual script. Do not invent names or words from another language. If a word is unclear, omit that word.`;
 }
 
 function describeWav(audio: Buffer) {

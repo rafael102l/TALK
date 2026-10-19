@@ -361,7 +361,8 @@ export class LiveDubService {
       this.idle(press, wav.length);
       return;
     }
-    const sourceLang = press.speakLang || "he";
+    const sourceLang = press.speakLang;
+    if (!sourceLang) this.logger.warn(`live dub stt press=${press.pressId || "-"} missing speakLang`);
     const heardOnce = await this.stt.hearClip(wav, "audio/wav", "wav", sourceLang);
     const stt = heardOnce.stt;
     const translations: string[] = [];
