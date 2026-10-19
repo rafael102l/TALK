@@ -512,9 +512,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (!caller) return { ok: false };
     const incoming = this.incomingBody(callId, client.userId, caller);
     const offline = this.connectedCount(targetUserId) === 0;
+    const wake = this.push.notifyIncomingCall(targetUserId, incoming);
     if (offline) {
-      const woke = await this.push.notifyIncomingCall(targetUserId, incoming);
-      if (!woke) {
+      if (!(await wake)) {
         this.markUnavailable(client, callId, targetUserId, caller);
         return { ok: false, reason: "offline" };
       }
@@ -533,12 +533,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     });
     if (!offline) {
       const sent = this.emitToUser(targetUserId, SOCKET_EVENTS.INCOMING_CALL, incoming, false);
-      if (!sent) {
-        const woke = await this.push.notifyIncomingCall(targetUserId, incoming);
-        if (!woke) {
-          this.markUnavailable(client, callId, targetUserId, caller);
-          return { ok: false, reason: "offline" };
-        }
+      if (!sent && !(await wake)) {
+        this.markUnavailable(client, callId, targetUserId, caller);
+        return { ok: false, reason: "offline" };
       }
     }
     this.logger.log(`call open id=${callId} from=${client.userId} to=${targetUserId}`);

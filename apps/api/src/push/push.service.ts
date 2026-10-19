@@ -144,6 +144,8 @@ export class PushService {
           title: incoming.callerName,
           body: incoming.callerPhone || "שיחה נכנסת",
           categoryId: "incoming-call",
+          sound: "default",
+          ttl: 0,
           data,
         }),
       });
@@ -160,7 +162,11 @@ export class PushService {
       await getMessaging().send({
         token,
         data,
-        android: { priority: "high" },
+        android: {
+          priority: "high",
+          ttl: 0,
+          collapseKey: "incoming-call",
+        },
       });
       return true;
     } catch (error) {
