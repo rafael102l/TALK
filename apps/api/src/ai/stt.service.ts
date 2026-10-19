@@ -11,7 +11,7 @@ const GEMINI_LIVE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"];
 const LIVE_STT_TOKENS = 384;
 const LIVE_TRANSLATION_TOKENS = 192;
 const LIVE_HEAR =
-  "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, repair, or complete any word or sentence that was not spoken. If the audio is cut off, unclear, or only noise, return an empty string.";
+  "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, repair, or complete any word or sentence that was not spoken. If the audio is cut off, unclear, or only noise, return an empty string. Do not replace the words with different names.";
 const LIVE_LITERAL =
   "Translate the whole utterance as one sentence in the target language's natural syntax, not word by word. CRITICAL: Do NOT sanitize, soften, rephrase, tone down, or 'improve' the user's speech. If the user is rude, aggressive, or grammatically raw, the translation MUST reflect that exact same tone, rudeness, and intent in the target language. Carry slang, insults, idioms, and profanity as the closest natural equivalent. Do NOT add polite intro words (e.g., 'Tell me', 'Please') if they were not explicitly spoken. Do NOT drop any insult, slang, or emphasis. Do NOT complete a cut-off sentence.";
 const LIVE_ONLY =
@@ -98,31 +98,33 @@ export class SttService {
     return { text, lang };
   }
 
-  /** Hear the clip, then translate that transcript. Two Gemini calls, no audio on the second. */
-  async translateAudio(
+  /** Hear the clip once in the speaker's language. No translation on this call. */
+  async hearClip(
     audio: Buffer,
-    targetLang: string,
     mime = "audio/wav",
     ext = "wav",
-    speakerGender: "male" | "female" | "child" = "male",
-  ): Promise<string> {
+    sourceLang = "",
+  ): Promise<{ stt: string; raw: string; started: number }> {
+    const started = Date.now();
     const key = process.env.GEMINI_API_KEY;
-    if (!key || !audio.length) return "";
-    const pipelineStarted = Date.now();
-    const audioSec = wavSeconds(audio).toFixed(2);
-    this.logger.log(`LOG [TRACE] Raw Audio Length: ${audioSec} sec`);
-    const sttStarted = Date.now();
+    const empty = { stt: "", raw: "", started };
+    if (!key || !audio.length) return empty;
+    const code = normLang(sourceLang) || "he";
+    const tag = speechTag(code);
+    const hear = hearInstruction(code, tag);
+    this.logger.log(`LOG [TRACE] Raw Audio Length: ${wavSeconds(audio).toFixed(2)} sec`);
+    this.logger.log(`LOG [TRACE] Audio format: ${describeWav(audio)}`);
+    this.logger.log(`LOG [TRACE] STT language: ${code} (${tag})`);
     const heard = await this.geminiLive(
       key,
-      LIVE_HEAR,
+      hear,
       [
-        { text: LIVE_HEAR },
+        { text: hear },
         { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
       ],
       LIVE_STT_TOKENS,
     );
-    const sttMs = Date.now() - sttStarted;
-    this.logger.log(`LOG [PERF] STT duration: ${sttMs} ms`);
+    this.logger.log(`LOG [PERF] STT duration: ${Date.now() - started} ms`);
     this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(heard.raw)}`);
     this.logger.log(`LOG [TRACE] STT Output: ${JSON.stringify(heard.raw)}`);
     const spoken = liveSpeech(heard.text);
@@ -130,9 +132,20 @@ export class SttService {
       this.logger.log(`LOG [TRACE] Gemini Output: ""`);
       this.logger.log(`LOG [TRANSLATION] Translated text: ""`);
       this.logger.log(`LOG [PERF] Gemini Translation duration: 0 ms`);
-      this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - pipelineStarted} ms`);
-      return heard.text && /^\[?\s*unclear\s*\]?$/i.test(heard.text) ? "[unclear]" : "";
+      return { stt: "", raw: heard.raw, started };
     }
+    return { stt: spoken, raw: heard.raw, started };
+  }
+
+  /** Translate one transcript. The audio is not sent again. */
+  async translateHeard(
+    stt: string,
+    targetLang: string,
+    speakerGender: "male" | "female" | "child" = "male",
+  ): Promise<{ text: string; raw: string }> {
+    const key = process.env.GEMINI_API_KEY;
+    const spoken = liveSpeech(stt);
+    if (!key || !spoken) return { text: "", raw: "" };
     const grammatical = speakerGender === "female" || speakerGender === "child" ? "female" : "male";
     const genderLine =
       grammatical === "female"
@@ -140,14 +153,12 @@ export class SttService {
         : `Translate the text into ${langName(targetLang)}, ensuring all verbs, adjectives, and grammar are strictly in the masculine grammatical gender (לשון זכר).`;
     const instruction = `${genderLine} ${LIVE_LITERAL} ${LIVE_ONLY}`;
     this.logger.log(`LOG [TRANSLATION] gender=${grammatical}`);
-    // One new request. The only user text is this transcript. No earlier press is attached.
     const translationStarted = Date.now();
     const translated = await this.geminiLive(key, instruction, [{ text: spoken }], LIVE_TRANSLATION_TOKENS);
     this.logger.log(`LOG [PERF] Gemini Translation duration: ${Date.now() - translationStarted} ms`);
     this.logger.log(`LOG [TRACE] Gemini Output: ${JSON.stringify(translated.raw)}`);
     this.logger.log(`LOG [TRANSLATION] Translated text: ${JSON.stringify(translated.raw)}`);
-    this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - pipelineStarted} ms`);
-    return translated.text;
+    return { text: translated.text, raw: translated.raw };
   }
 
   private async geminiLive(
@@ -537,6 +548,29 @@ export function spokenLang(text: string, whisperLang = "", fallback = "") {
 function langName(code: string) {
   const hit = LANGUAGES.find((language) => language.code === normLang(code));
   return hit?.nameEn || code || "the listener's language";
+}
+
+function speechTag(code: string) {
+  if (code === "he") return "he-IL";
+  if (code === "en") return "en-US";
+  if (code === "ar") return "ar";
+  if (code === "ru") return "ru-RU";
+  return code;
+}
+
+function hearInstruction(code: string, tag: string) {
+  const name = langName(code);
+  return `${LIVE_HEAR} The speaker is speaking ${name}. The language code is exactly ${code} (${tag}). Transcribe only in that language and its usual script. Do not switch language. Do not guess foreign words or personal names. If a word is unclear, omit that word.`;
+}
+
+function describeWav(audio: Buffer) {
+  if (audio.length < 44 || audio.toString("ascii", 0, 4) !== "RIFF" || audio.toString("ascii", 8, 12) !== "WAVE") return "not-wav";
+  const format = audio.readUInt16LE(20);
+  const channels = audio.readUInt16LE(22);
+  const rate = audio.readUInt32LE(24);
+  const bits = audio.readUInt16LE(34);
+  const kind = format === 1 ? "pcm" : `format=${format}`;
+  return `${kind} ${rate}Hz ${bits}-bit ${channels === 1 ? "mono" : `${channels}ch`}`;
 }
 
 function wavSeconds(audio: Buffer) {

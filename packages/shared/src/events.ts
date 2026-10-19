@@ -32,6 +32,12 @@ export type PttCaptionPayload = {
   mode: "free" | "plus";
   audioUrl?: string | null;
   voiceGender?: "male" | "female" | "child";
+  /** What STT heard in the speaker's language. Shown to the sender. */
+  sttText?: string;
+  /** Translation that was delivered to the listener. */
+  translatedText?: string;
+  /** Receipt for the sender. The phone shows it and does not speak it. */
+  forSpeaker?: boolean;
 };
 
 export type PttSpeakingPayload = {

@@ -213,6 +213,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       speakerAvatarUrl?: string | null;
       voiceGender?: "male" | "female" | "child";
       pressId?: string;
+      speakLang?: string;
     },
   ) {
     if (!client.userId) return;
@@ -236,6 +237,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       true,
       sentGender,
     );
+    const pressId = typeof body.pressId === "string" ? body.pressId : "";
+    if (typeof body.speakLang === "string" && body.speakLang.trim()) {
+      this.liveDub.setSpeakerLang(client.id, pressId, body.speakLang);
+    }
     const gender = sentGender === "female" || sentGender === "child" ? sentGender : "male";
     const payload: PttSpeakingPayload = {
       channelId: room.key,
@@ -292,7 +297,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   pttClip(
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody()
-    body: { targetUserIds?: string[]; wav?: string; pressId?: string; gender?: string },
+    body: { targetUserIds?: string[]; wav?: string; pressId?: string; gender?: string; speakLang?: string },
   ) {
     if (!client.userId || typeof body?.wav !== "string") return { ok: false, bytes: 0 };
     if (body.wav.length < 1024 || body.wav.length > 6_000_000) {
@@ -308,6 +313,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const gender = body.gender === "female" || body.gender === "child" ? "female" : body.gender === "male" ? "male" : "";
     this.liveDub.open(client.id, client.userId, targets, pressId, false, gender);
     if (gender) this.liveDub.setSpeakerGender(client.id, pressId, gender);
+    if (typeof body.speakLang === "string" && body.speakLang.trim()) {
+      this.liveDub.setSpeakerLang(client.id, pressId, body.speakLang);
+    }
     const stored = this.liveDub.setClip(client.id, wav, pressId);
     this.logger.log(`ptt clip from=${client.userId} press=${pressId || "-"} bytes=${wav.length} stored=${stored} gender=${gender || "-"}`);
     return { ok: stored, bytes: wav.length };
