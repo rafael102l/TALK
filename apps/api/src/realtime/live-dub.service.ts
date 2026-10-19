@@ -375,7 +375,7 @@ export class LiveDubService {
       this.logger.log(
         `live dub phrase reason=release gemini=${Date.now() - started}ms lang=${listenLang} "${line}"`,
       );
-      await this.deliver(press, ears, seq, listenLang, line);
+      await this.deliver(press, ears, seq, listenLang, line, stt);
       }),
     );
     const translatedText = [...new Set(translations)].join(" · ");
@@ -426,7 +426,7 @@ export class LiveDubService {
     for (const [listenLang, ears] of byLang) void this.deliver(press, ears, seq, listenLang, text);
   }
 
-  private async deliver(press: Press, ears: Ear[], seq: number, listenLang: string, line: string) {
+  private async deliver(press: Press, ears: Ear[], seq: number, listenLang: string, line: string, sttText = "") {
     await Promise.all(
       ears.map(async (ear) => {
         const unclear = line === "[unclear]";
@@ -447,6 +447,8 @@ export class LiveDubService {
           mode: audioUrl ? "plus" : "free",
           audioUrl,
           voiceGender: ear.gender,
+          sttText,
+          translatedText: line === "[unclear]" ? "" : line,
         });
         this.logger.log(
           `live dub out user=${ear.userId} mode=${audioUrl ? "plus" : "free"} lang=${listenLang} seq=${seq} "${line}"`,
