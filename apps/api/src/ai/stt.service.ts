@@ -11,11 +11,11 @@ const GEMINI_LIVE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"];
 const LIVE_STT_TOKENS = 384;
 const LIVE_TRANSLATION_TOKENS = 192;
 const LIVE_HEAR =
-  "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, or complete any word that was not spoken. If there is no speech, return an empty string.";
+  "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, repair, or complete any word or sentence that was not spoken. If the audio is cut off, unclear, or only noise, return an empty string.";
 const LIVE_LITERAL =
-  "Translate the whole utterance as one sentence in the target language's natural syntax, not word by word. CRITICAL: Do NOT sanitize, soften, rephrase, tone down, or 'improve' the user's speech. If the user is rude, aggressive, or grammatically raw, the translation MUST reflect that exact same tone, rudeness, and intent in the target language. Carry slang, insults, idioms, and profanity as the closest natural equivalent. Do NOT add polite intro words (e.g., 'Tell me', 'Please') if they were not explicitly spoken. Do NOT drop any insult, slang, or emphasis.";
+  "Translate the whole utterance as one sentence in the target language's natural syntax, not word by word. CRITICAL: Do NOT sanitize, soften, rephrase, tone down, or 'improve' the user's speech. If the user is rude, aggressive, or grammatically raw, the translation MUST reflect that exact same tone, rudeness, and intent in the target language. Carry slang, insults, idioms, and profanity as the closest natural equivalent. Do NOT add polite intro words (e.g., 'Tell me', 'Please') if they were not explicitly spoken. Do NOT drop any insult, slang, or emphasis. Do NOT complete a cut-off sentence.";
 const LIVE_ONLY =
-  "Translate the EXACT meaning and attitude of the utterance. Match the structure and raw intent without editing. If the source says 'מה אתה רוצה אתה דפוק אתה' and the target is English, translate to 'What do you want, you're crazy/dumb' — not a polite rewrite such as 'Tell me what you want'. Do the same in the requested target language: keep every insult and add no words that were not spoken. Translate ONLY what was said. Do NOT answer questions, simplify, explain, or invent sentences that were not in the input. If the input is empty, noise, or unintelligible, return NOTHING (an empty string).";
+  "Translate the EXACT meaning and attitude of the utterance. Match the structure and raw intent without editing. If the source says 'מה אתה רוצה אתה דפוק אתה' and the target is English, translate to 'What do you want, you're crazy/dumb' — not a polite rewrite such as 'Tell me what you want'. Do the same in the requested target language. Translate ONLY the exact words in the transcript. If that transcript is cut off, unclear, or only noise, return an empty string. Do NOT complete, repair, or extend it. Do NOT answer questions, simplify, explain, or invent sentences that were not in the input.";
 const LIVE_SAFETY = [
   "HARM_CATEGORY_HATE_SPEECH",
   "HARM_CATEGORY_HARASSMENT",
@@ -109,6 +109,8 @@ export class SttService {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return "";
     const pipelineStarted = Date.now();
+    const audioSec = wavSeconds(audio).toFixed(2);
+    this.logger.log(`LOG [TRACE] Raw Audio Length: ${audioSec} sec`);
     const sttStarted = Date.now();
     const heard = await this.geminiLive(
       key,
@@ -122,11 +124,14 @@ export class SttService {
     const sttMs = Date.now() - sttStarted;
     this.logger.log(`LOG [PERF] STT duration: ${sttMs} ms`);
     this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(heard.raw)}`);
-    if (!heard.text || /^\[?\s*unclear\s*\]?$/i.test(heard.text)) {
+    this.logger.log(`LOG [TRACE] STT Output: ${JSON.stringify(heard.raw)}`);
+    const spoken = liveSpeech(heard.text);
+    if (!spoken) {
+      this.logger.log(`LOG [TRACE] Gemini Output: ""`);
       this.logger.log(`LOG [TRANSLATION] Translated text: ""`);
       this.logger.log(`LOG [PERF] Gemini Translation duration: 0 ms`);
       this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - pipelineStarted} ms`);
-      return heard.text ? "[unclear]" : "";
+      return heard.text && /^\[?\s*unclear\s*\]?$/i.test(heard.text) ? "[unclear]" : "";
     }
     const grammatical = speakerGender === "female" || speakerGender === "child" ? "female" : "male";
     const genderLine =
@@ -137,8 +142,9 @@ export class SttService {
     this.logger.log(`LOG [TRANSLATION] gender=${grammatical}`);
     // One new request. The only user text is this transcript. No earlier press is attached.
     const translationStarted = Date.now();
-    const translated = await this.geminiLive(key, instruction, [{ text: heard.text }], LIVE_TRANSLATION_TOKENS);
+    const translated = await this.geminiLive(key, instruction, [{ text: spoken }], LIVE_TRANSLATION_TOKENS);
     this.logger.log(`LOG [PERF] Gemini Translation duration: ${Date.now() - translationStarted} ms`);
+    this.logger.log(`LOG [TRACE] Gemini Output: ${JSON.stringify(translated.raw)}`);
     this.logger.log(`LOG [TRANSLATION] Translated text: ${JSON.stringify(translated.raw)}`);
     this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - pipelineStarted} ms`);
     return translated.text;
@@ -531,6 +537,27 @@ export function spokenLang(text: string, whisperLang = "", fallback = "") {
 function langName(code: string) {
   const hit = LANGUAGES.find((language) => language.code === normLang(code));
   return hit?.nameEn || code || "the listener's language";
+}
+
+function wavSeconds(audio: Buffer) {
+  let pcm = audio.length > 44 ? audio.length - 44 : audio.length;
+  let bytesPerSec = 16000 * 2;
+  if (audio.length >= 44 && audio.toString("ascii", 0, 4) === "RIFF") {
+    const rate = audio.readUInt32LE(24) || 16000;
+    const channels = audio.readUInt16LE(22) || 1;
+    const bits = audio.readUInt16LE(34) || 16;
+    if (audio.toString("ascii", 36, 40) === "data") pcm = Math.min(audio.readUInt32LE(40), Math.max(0, audio.length - 44));
+    bytesPerSec = rate * channels * (bits / 8);
+  }
+  return bytesPerSec > 0 ? pcm / bytesPerSec : 0;
+}
+
+/** Noise, an unclear marker, or no words: do not ask Gemini to invent a sentence. */
+function liveSpeech(text: string) {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (!line || /^\[?\s*unclear\s*\]?$/i.test(line) || /^nothing\.?$/i.test(line)) return "";
+  if (!/[\p{L}\p{N}]/u.test(line)) return "";
+  return line;
 }
 
 function onlyTranslation(raw: string) {
