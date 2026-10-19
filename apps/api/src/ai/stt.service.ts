@@ -551,7 +551,7 @@ function langName(code: string) {
   return hit?.nameEn || code || "the listener's language";
 }
 
-function speechTag(code: string) {
+export function speechTag(code: string) {
   const tags: Record<string, string> = {
     he: "he-IL",
     en: "en-US",

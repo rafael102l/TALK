@@ -38,6 +38,8 @@ export type PttCaptionPayload = {
   translatedText?: string;
   /** Receipt for the sender. The phone shows it and does not speak it. */
   forSpeaker?: boolean;
+  /** BCP-47 tag for the listener TTS, such as ru-RU. */
+  targetLanguage?: string;
 };
 
 export type PttSpeakingPayload = {

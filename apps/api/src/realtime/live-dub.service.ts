@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PttCaptionPayload, VoiceGender } from "@talk/shared";
-import { SttService } from "../ai/stt.service";
+import { SttService, speechTag } from "../ai/stt.service";
 import { TtsService } from "../ai/tts.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
@@ -450,6 +450,7 @@ export class LiveDubService {
           voiceGender: ear.gender,
           sttText,
           translatedText: line === "[unclear]" ? "" : line,
+          targetLanguage: speechTag(listenLang),
         });
         this.logger.log(
           `live dub out user=${ear.userId} mode=${audioUrl ? "plus" : "free"} lang=${listenLang} seq=${seq} "${line}"`,
