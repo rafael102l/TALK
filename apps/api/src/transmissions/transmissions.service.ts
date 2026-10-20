@@ -8,7 +8,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { Prisma, User } from "@prisma/client";
-import { HistoryItem, SOCKET_EVENTS, TransmissionReadyPayload } from "@talk/shared";
+import { decodeReply, HistoryItem, packReply, SOCKET_EVENTS, TransmissionReadyPayload } from "@talk/shared";
 import { readFile } from "fs/promises";
 import {
   SttService,
@@ -65,6 +65,9 @@ export class TransmissionsService {
       releasedAt?: number;
       speakLang?: string;
       sourceLanguage?: string;
+      replyToId?: string;
+      replyToName?: string;
+      replyToText?: string;
     },
   ) {
     if (!file?.buffer?.length) throw new BadRequestException("חסר קובץ שמע");
@@ -106,7 +109,11 @@ export class TransmissionsService {
         senderId: sender.id,
         channelId: channel.id,
         originalAudioUrl: audioUrl,
-        originalText: input.originalText?.trim() || null,
+        originalText: packReply(input.originalText?.trim() || "", {
+          id: input.replyToId,
+          name: input.replyToName,
+          text: input.replyToText,
+        }),
         durationMs: input.durationMs ?? null,
         kind,
         viewOnce: kind === "voice" && Boolean(input.viewOnce),
@@ -319,10 +326,18 @@ export class TransmissionsService {
       channelId?: string;
       targetUserIds?: string[];
       everyone?: boolean;
+      replyToId?: string;
+      replyToName?: string;
+      replyToText?: string;
     },
   ) {
-    const originalText = input.originalText.trim();
-    if (!originalText) throw new BadRequestException("חסרה הודעה");
+    const packed = packReply(input.originalText.trim(), {
+      id: input.replyToId,
+      name: input.replyToName,
+      text: input.replyToText,
+    });
+    const visible = decodeReply(packed).text.trim();
+    if (!visible) throw new BadRequestException("חסרה הודעה");
     const targetIds = await this.resolveTargets(sender, input);
     if (!targetIds.length) throw new BadRequestException("לא נבחרו נמענים");
     const channel = await this.ensureChannel(sender, input.channelId, targetIds);
@@ -332,7 +347,7 @@ export class TransmissionsService {
         senderId: sender.id,
         channelId: channel.id,
         originalAudioUrl: "",
-        originalText,
+        originalText: packed,
         durationMs: null,
         kind: "text",
         status: "PROCESSING",
@@ -349,8 +364,8 @@ export class TransmissionsService {
       transmission,
       sender,
       Promise.resolve({
-        text: originalText,
-        lang: detectLang(originalText) || sender.speakLang || sender.listenLang,
+        text: visible,
+        lang: detectLang(visible) || sender.speakLang || sender.listenLang,
       }),
       Date.now(),
       { textOnly: true },
@@ -447,8 +462,9 @@ export class TransmissionsService {
         const shown = clean.length > 80 ? `${clean.slice(0, 80)}…` : clean;
         this.logger.warn(`Gate ${transmission.id} check=${check}${shown ? ` "${shown}"` : ""}`);
       };
+      const quoted = decodeReply(transmission.originalText || "");
       let originalText = textOnly
-        ? usableSpeech(sttResult.text) || sttResult.text.trim()
+        ? usableSpeech(quoted.text) || quoted.text.trim() || usableSpeech(sttResult.text) || sttResult.text.trim()
         : usableSpeech(sttResult.text);
       if (!textOnly && originalText && isStutterGarbage(originalText)) {
         originalText = "";
@@ -553,6 +569,9 @@ export class TransmissionsService {
             : byLang[target.language] || (textOnly ? originalText : ""),
           durationMs: textOnly ? null : transmission.durationMs,
           usedOriginalVoice,
+          replyToId: quoted.reply?.id || null,
+          replyToName: quoted.reply?.name || null,
+          replyToText: quoted.reply?.text || null,
           needsAccept: first || (delivery === "walkie" && !live),
           live,
           senderPhone: sender.phoneE164,
@@ -710,7 +729,7 @@ export class TransmissionsService {
         try {
           await this.prisma.transmission.update({
             where: { id: transmission.id },
-            data: { originalText: originalText || null, status: "READY" },
+            data: { originalText: packReply(originalText || "", quoted.reply) || null, status: "READY" },
           });
         } catch (error) {
           this.logger.error(`READY update failed ${transmission.id}: ${(error as Error).message}`);
@@ -787,6 +806,9 @@ export class TransmissionsService {
           translatedText: originalText,
           durationMs: textOnly ? null : transmission.durationMs,
           usedOriginalVoice: true,
+          replyToId: quoted.reply?.id || null,
+          replyToName: quoted.reply?.name || null,
+          replyToText: quoted.reply?.text || null,
           voiceGender,
           kind: delivery,
           viewOnce: Boolean(transmission.viewOnce),
@@ -915,8 +937,9 @@ export class TransmissionsService {
       if (tx.senderId === user.id) continue;
       const senderPublic = toPublicUser(tx.sender);
       const kind = tx.kind || (tx.originalAudioUrl ? "walkie" : "text");
+      const quoted = decodeReply(tx.originalText);
       const sourceLang =
-        detectLang(tx.originalText || "") || tx.sender.speakLang || tx.sender.listenLang;
+        detectLang(quoted.text) || tx.sender.speakLang || tx.sender.listenLang;
       const listenLang = row.language || user.listenLang || user.speakLang;
       const sameLang = listenLang === sourceLang;
       const langRender = tx.renders.find((r) => r.language === listenLang) ?? tx.renders[0];
@@ -934,8 +957,11 @@ export class TransmissionsService {
         peerName: tx.sender.displayName,
         peerAvatar: senderPublic.avatarUrl,
         peerGender: senderPublic.voiceGender,
-        originalText: tx.originalText,
-        translatedText: langRender?.translatedText ?? tx.originalText,
+        originalText: quoted.text || tx.originalText,
+        translatedText: langRender?.translatedText ?? quoted.text || tx.originalText,
+        replyToId: quoted.reply?.id || null,
+        replyToName: quoted.reply?.name || null,
+        replyToText: quoted.reply?.text || null,
         audioUrl,
         language: listenLang,
         speakLang: sourceLang,
@@ -950,8 +976,9 @@ export class TransmissionsService {
       for (const target of tx.targets) {
         if (target.userId === user.id) continue;
         const peer = toPublicUser(target.user);
+        const quoted = decodeReply(tx.originalText);
         const sourceLang =
-          detectLang(tx.originalText || "") || user.speakLang || user.listenLang;
+          detectLang(quoted.text) || user.speakLang || user.listenLang;
         items.push({
           id: `${tx.id}:${target.userId}`,
           senderName: user.displayName,
@@ -961,8 +988,11 @@ export class TransmissionsService {
           peerName: target.user.displayName,
           peerAvatar: peer.avatarUrl,
           peerGender: peer.voiceGender,
-          originalText: tx.originalText,
-          translatedText: tx.originalText,
+          originalText: quoted.text || tx.originalText,
+          translatedText: quoted.text || tx.originalText,
+          replyToId: quoted.reply?.id || null,
+          replyToName: quoted.reply?.name || null,
+          replyToText: quoted.reply?.text || null,
           audioUrl: publicMedia(this.storage, tx.originalAudioUrl),
           language: sourceLang,
           speakLang: sourceLang,
@@ -1015,8 +1045,9 @@ export class TransmissionsService {
       const tx = row.transmission;
       if (incomingBySender.get(tx.senderId)?.status === "BLOCKED") continue;
       const senderPublic = toPublicUser(tx.sender);
+      const quoted = decodeReply(tx.originalText);
       const sourceLang =
-        detectLang(tx.originalText || "") ||
+        detectLang(quoted.text) ||
         tx.sender.speakLang ||
         tx.sender.listenLang;
       const sameLang = row.language === sourceLang;
@@ -1034,8 +1065,11 @@ export class TransmissionsService {
         speakLang: sourceLang,
         mode: user.plan === "PLUS" ? "plus" : "free",
         audioUrl,
-        originalText: tx.originalText,
-        translatedText: sameLang ? tx.originalText : langRender?.translatedText || "",
+        originalText: quoted.text || tx.originalText,
+        translatedText: sameLang ? quoted.text || tx.originalText : langRender?.translatedText || "",
+        replyToId: quoted.reply?.id || null,
+        replyToName: quoted.reply?.name || null,
+        replyToText: quoted.reply?.text || null,
         durationMs: tx.durationMs,
         usedOriginalVoice: sameLang,
         suppressOriginal: !sameLang,

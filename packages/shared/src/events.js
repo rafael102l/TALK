@@ -10,6 +10,7 @@ exports.SOCKET_EVENTS = {
     TRANSMISSION_READY: "transmission:ready",
     TRANSMISSION_FAILED: "transmission:failed",
     PRESENCE: "presence:update",
+    PRESENCE_APP: "presence:app",
     CHAT_TYPING: "chat:typing",
     CHAT_REACTION: "chat:reaction",
     INCOMING: "incoming:transmission",

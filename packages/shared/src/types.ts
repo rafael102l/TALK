@@ -80,4 +80,7 @@ export type HistoryItem = {
   peerGender?: VoiceGender;
   kind?: "walkie" | "voice" | "text";
   viewOnce?: boolean;
+  replyToId?: string | null;
+  replyToName?: string | null;
+  replyToText?: string | null;
 };

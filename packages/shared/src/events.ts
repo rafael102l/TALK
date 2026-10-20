@@ -13,6 +13,7 @@ export const SOCKET_EVENTS = {
   TRANSMISSION_FAILED: "transmission:failed",
   TRANSMISSION_REMOVED: "transmission:removed",
   PRESENCE: "presence:update",
+  PRESENCE_APP: "presence:app",
   CHAT_TYPING: "chat:typing",
   CHAT_REACTION: "chat:reaction",
   INCOMING: "incoming:transmission",
@@ -113,4 +114,7 @@ export type TransmissionReadyPayload = {
   readyAt?: number;
   /** Listener language differs: do not play the original recording. */
   suppressOriginal?: boolean;
+  replyToId?: string | null;
+  replyToName?: string | null;
+  replyToText?: string | null;
 };

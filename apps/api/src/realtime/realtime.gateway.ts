@@ -92,7 +92,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       await this.presence.setOnline(user.id, client.id);
       const channelIds = await loadChannelIds(this.prisma, user.id);
       for (const channelId of channelIds) client.join(`channel:${channelId}`);
-      this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: user.id, online: true });
+      const chatOnline = this.presence.isChatOnline(user.id);
+      if (chatOnline) {
+        this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: user.id, online: true });
+      }
       this.flushMissedCalls(client);
       this.flushRingingCalls(client);
       this.scheduleReplay(user.id);
@@ -204,6 +207,21 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       if (notify) sock.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
       this.closeSocket(sock);
     }
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.PRESENCE_APP)
+  async appPresence(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { online?: boolean },
+  ) {
+    if (!client.userId) return { ok: false };
+    const lastSeen = await this.presence.setAppActive(client.userId, Boolean(body?.online));
+    this.server.emit(SOCKET_EVENTS.PRESENCE, {
+      userId: client.userId,
+      online: this.presence.isChatOnline(client.userId),
+      lastSeen: lastSeen || undefined,
+    });
+    return { ok: true };
   }
 
   @SubscribeMessage("presence:heartbeat")

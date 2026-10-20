@@ -67,6 +67,21 @@ export class CreateTransmissionDto {
   @IsInt()
   @Min(1)
   releasedAt?: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  replyToId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  replyToName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(240)
+  replyToText?: string;
 }
 
 export class CreateTextDto {
@@ -88,6 +103,21 @@ export class CreateTextDto {
   @IsOptional()
   @IsString()
   channelId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  replyToId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  replyToName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(240)
+  replyToText?: string;
 }
 
 export class ReadPeerDto {
