@@ -958,7 +958,7 @@ export class TransmissionsService {
         peerAvatar: senderPublic.avatarUrl,
         peerGender: senderPublic.voiceGender,
         originalText: quoted.text || tx.originalText,
-        translatedText: langRender?.translatedText ?? quoted.text || tx.originalText,
+        translatedText: (langRender?.translatedText ?? quoted.text) || tx.originalText,
         replyToId: quoted.reply?.id || null,
         replyToName: quoted.reply?.name || null,
         replyToText: quoted.reply?.text || null,
