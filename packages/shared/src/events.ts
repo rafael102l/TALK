@@ -13,6 +13,8 @@ export const SOCKET_EVENTS = {
   TRANSMISSION_FAILED: "transmission:failed",
   TRANSMISSION_REMOVED: "transmission:removed",
   PRESENCE: "presence:update",
+  CHAT_TYPING: "chat:typing",
+  CHAT_REACTION: "chat:reaction",
   INCOMING: "incoming:transmission",
   CONTACT_REQUEST: "contact:request",
   CONTACT_ACCEPTED: "contact:accepted",

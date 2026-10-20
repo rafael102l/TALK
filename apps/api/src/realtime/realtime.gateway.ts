@@ -184,8 +184,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (!client.userId) return;
     const left = this.server.sockets.adapter.rooms.get(`user:${client.userId}`)?.size ?? 0;
     if (left > 0) return;
-    await this.presence.setOffline(client.userId);
-    this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: client.userId, online: false });
+    const lastSeen = await this.presence.setOffline(client.userId);
+    this.server.emit(SOCKET_EVENTS.PRESENCE, { userId: client.userId, online: false, lastSeen });
   }
 
   /**
@@ -216,6 +216,36 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       }
       await this.presence.heartbeat(client.userId, client.id);
     }
+    return { ok: true };
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.CHAT_TYPING)
+  chatTyping(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { targetUserId?: string; typing?: boolean },
+  ) {
+    if (!client.userId || !body?.targetUserId) return { ok: false };
+    this.emitToUser(
+      body.targetUserId,
+      SOCKET_EVENTS.CHAT_TYPING,
+      { userId: client.userId, typing: Boolean(body.typing) },
+      false,
+    );
+    return { ok: true };
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.CHAT_REACTION)
+  chatReaction(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { targetUserId?: string; transmissionId?: string; emoji?: string | null },
+  ) {
+    if (!client.userId || !body?.targetUserId || !body.transmissionId) return { ok: false };
+    this.emitToUser(
+      body.targetUserId,
+      SOCKET_EVENTS.CHAT_REACTION,
+      { userId: client.userId, transmissionId: body.transmissionId, emoji: body.emoji || "" },
+      true,
+    );
     return { ok: true };
   }
 
@@ -481,7 +511,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const n = this.connectedCount(userId);
     if (!n) {
       this.logger.debug(`No live socket for ${event} user=${userId}`);
-      if (retry && event === SOCKET_EVENTS.TRANSMISSION_READY) {
+      if (retry && (event === SOCKET_EVENTS.TRANSMISSION_READY || event === SOCKET_EVENTS.CHAT_REACTION)) {
         setTimeout(() => this.emitToUser(userId, event, payload, false), 2000);
         setTimeout(() => this.emitToUser(userId, event, payload, false), 8000);
       }

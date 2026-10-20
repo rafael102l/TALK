@@ -10,6 +10,8 @@ exports.SOCKET_EVENTS = {
     TRANSMISSION_READY: "transmission:ready",
     TRANSMISSION_FAILED: "transmission:failed",
     PRESENCE: "presence:update",
+    CHAT_TYPING: "chat:typing",
+    CHAT_REACTION: "chat:reaction",
     INCOMING: "incoming:transmission",
 };
 //# sourceMappingURL=events.js.map

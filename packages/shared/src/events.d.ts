@@ -7,6 +7,8 @@ export declare const SOCKET_EVENTS: {
     readonly TRANSMISSION_READY: "transmission:ready";
     readonly TRANSMISSION_FAILED: "transmission:failed";
     readonly PRESENCE: "presence:update";
+    readonly CHAT_TYPING: "chat:typing";
+    readonly CHAT_REACTION: "chat:reaction";
     readonly INCOMING: "incoming:transmission";
 };
 export type PttStartPayload = {

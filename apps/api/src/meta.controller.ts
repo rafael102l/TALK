@@ -71,6 +71,7 @@ export class MetaController {
   async presenceCheck(@CurrentUser() _user: User, @Query("userIds") userIds?: string) {
     const ids = (userIds ?? "").split(",").filter(Boolean);
     const online = await this.presence.onlineUserIds(ids);
-    return { online: [...online] };
+    const lastSeen = await this.presence.lastSeenMap(ids);
+    return { online: [...online], lastSeen };
   }
 }
