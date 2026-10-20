@@ -103,13 +103,16 @@ export class PushService {
       .map((u) => u.expoPushToken)
       .filter((t): t is string => Boolean(t));
     if (!tokens.length) return;
+    const walkie = payload.type === "walkie";
+    const channelId = walkie ? "walkie_talkie_channel" : "talk-ptt";
+    const sound = walkie ? "walkie_talkie" : "default";
     const messages = tokens.map((to) => ({
       to,
-      sound: "default" as const,
+      sound,
       title,
       body,
       data: payload,
-      channelId: "talk-ptt",
+      channelId,
       priority: "high" as const,
       ...(extra.image
         ? {
@@ -203,7 +206,13 @@ export class PushService {
     image?: string | null,
   ) {
     try {
-      if (!getApps().length) return false;
+      if (!getApps().length) {
+        this.logger.warn("FCM message skipped — Firebase admin is not ready");
+        return false;
+      }
+      const walkie = data.type === "walkie";
+      const channelId = walkie ? "walkie_talkie_channel" : "talk-ptt";
+      const sound = walkie ? "walkie_talkie" : "default";
       await getMessaging().send({
         token,
         data,
@@ -213,16 +222,17 @@ export class PushService {
           notification: {
             title,
             body,
-            channelId: "talk-ptt",
-            sound: "default",
-            defaultSound: true,
+            channelId,
+            sound,
+            defaultSound: !walkie,
             imageUrl: image || undefined,
           },
         },
         apns: {
-          payload: { aps: { sound: "default" } },
+          payload: { aps: { sound: walkie ? "walkie_talkie.mp3" : "default" } },
         },
       });
+      this.logger.log(`FCM ${data.type || "message"} channel=${channelId}`);
       return true;
     } catch (error) {
       this.logger.warn(`FCM message failed: ${(error as Error).message}`);
