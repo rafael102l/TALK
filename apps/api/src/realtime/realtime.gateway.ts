@@ -576,8 +576,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     });
     if (!caller) return { ok: false };
     const incoming = this.incomingBody(callId, client.userId, caller, Boolean(body?.video));
-    const inFront = this.presence.isChatOnline(targetUserId);
-    if (!inFront) void this.push.notifyIncomingCall(targetUserId, incoming);
+    const socketLive = this.connectedCount(targetUserId) > 0;
+    if (!socketLive) void this.push.notifyIncomingCall(targetUserId, incoming);
     const timer = setTimeout(() => this.expireCall(callId), 45_000);
     this.calls.open({
       callId,
@@ -592,7 +592,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       timer,
     });
     this.emitToUser(targetUserId, SOCKET_EVENTS.INCOMING_CALL, incoming, false);
-    this.logger.log(`call open id=${callId} from=${client.userId} to=${targetUserId} front=${String(inFront)}`);
+    this.logger.log(`call open id=${callId} from=${client.userId} to=${targetUserId} socket=${String(socketLive)}`);
     return { ok: true, callId };
   }
 

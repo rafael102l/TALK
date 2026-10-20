@@ -599,7 +599,7 @@ export class TransmissionsService {
               ? "שידור חדש הגיע"
               : "יש שידור שמחכה — לחצו כדי לשמוע"
             : (payload.translatedText || originalText || "הודעה קולית").slice(0, 180);
-        if (!this.presence.isChatOnline(target.userId)) void this.push.notifyUsers(
+        if (!this.presence.isSocketLive(target.userId)) void this.push.notifyUsers(
           [target.userId],
           title,
           body,

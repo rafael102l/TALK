@@ -178,20 +178,11 @@ export class PushService {
       await getMessaging().send({
         token,
         data,
-        notification: { title, body },
         android: {
           priority: "high",
           ttl: 0,
           collapseKey: "incoming-call",
-          notification: {
-            title,
-            body,
-            channelId: "talk-calls",
-            sound: "default",
-            defaultSound: true,
-            priority: "max",
-            visibility: "public",
-          },
+          directBootOk: true,
         },
         apns: {
           payload: { aps: { sound: "default", "content-available": 1 } },

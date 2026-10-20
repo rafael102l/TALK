@@ -46,6 +46,10 @@ export class PresenceService {
     return this.foreground.has(userId) && this.live.has(userId);
   }
 
+  isSocketLive(userId: string) {
+    return this.live.has(userId);
+  }
+
   async setOffline(userId: string) {
     this.live.delete(userId);
     this.foreground.delete(userId);
