@@ -5,6 +5,7 @@ import {
   Injectable,
   InternalServerErrorException,
   Logger,
+  NotFoundException,
 } from "@nestjs/common";
 import { Prisma, User } from "@prisma/client";
 import { HistoryItem, SOCKET_EVENTS, TransmissionReadyPayload } from "@talk/shared";
@@ -1114,6 +1115,24 @@ export class TransmissionsService {
     void this.firebase.removeTransmission(watchers, tx.id);
     for (const id of watchers) {
       this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_REMOVED, { transmissionId: tx.id });
+    }
+    return { ok: true };
+  }
+
+  async unsend(user: User, transmissionId: string) {
+    const tx = await this.prisma.transmission.findUnique({
+      where: { id: transmissionId },
+      include: { targets: true, renders: true },
+    });
+    if (!tx) throw new NotFoundException();
+    if (tx.senderId !== user.id) throw new ForbiddenException();
+    await this.storage.remove(tx.originalAudioUrl);
+    for (const render of tx.renders) await this.storage.remove(render.audioUrl);
+    const watchers = [...new Set([tx.senderId, ...tx.targets.map((row) => row.userId)])];
+    await this.prisma.transmission.delete({ where: { id: tx.id } });
+    void this.firebase.removeTransmission(watchers, tx.id);
+    for (const id of watchers) {
+      this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_REMOVED, { transmissionId: tx.id }, true);
     }
     return { ok: true };
   }

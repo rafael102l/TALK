@@ -70,4 +70,9 @@ export class TransmissionsController {
   played(@CurrentUser() user: User, @Param("id") id: string) {
     return this.transmissions.markPlayed(user, id);
   }
+
+  @Post(":id/unsend")
+  unsend(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.transmissions.unsend(user, id);
+  }
 }

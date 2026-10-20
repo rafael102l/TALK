@@ -511,7 +511,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const n = this.connectedCount(userId);
     if (!n) {
       this.logger.debug(`No live socket for ${event} user=${userId}`);
-      if (retry && (event === SOCKET_EVENTS.TRANSMISSION_READY || event === SOCKET_EVENTS.CHAT_REACTION)) {
+      if (
+        retry &&
+        (event === SOCKET_EVENTS.TRANSMISSION_READY ||
+          event === SOCKET_EVENTS.CHAT_REACTION ||
+          event === SOCKET_EVENTS.TRANSMISSION_REMOVED)
+      ) {
         setTimeout(() => this.emitToUser(userId, event, payload, false), 2000);
         setTimeout(() => this.emitToUser(userId, event, payload, false), 8000);
       }
