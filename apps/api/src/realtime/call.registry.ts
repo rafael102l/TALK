@@ -8,6 +8,7 @@ export type LiveCall = {
   callerPhone: string;
   callerAvatar: string | null;
   callerGender: string;
+  video: boolean;
   accepted: boolean;
   timer?: ReturnType<typeof setTimeout>;
 };

@@ -560,7 +560,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage(SOCKET_EVENTS.CALL_USER)
   async callUser(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { targetUserId?: string; callId?: string },
+    @MessageBody() body: { targetUserId?: string; callId?: string; video?: boolean },
   ) {
     if (!client.userId || !(await this.sessionStillValid(client))) return { ok: false };
     const targetUserId = (body?.targetUserId || "").slice(0, 80);
@@ -575,15 +575,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       select: { displayName: true, avatarUrl: true, voiceGender: true, phoneE164: true },
     });
     if (!caller) return { ok: false };
-    const incoming = this.incomingBody(callId, client.userId, caller);
-    const offline = this.connectedCount(targetUserId) === 0;
-    const wake = this.push.notifyIncomingCall(targetUserId, incoming);
-    if (offline) {
-      if (!(await wake)) {
-        this.markUnavailable(client, callId, targetUserId, caller);
-        return { ok: false, reason: "offline" };
-      }
-    }
+    const incoming = this.incomingBody(callId, client.userId, caller, Boolean(body?.video));
+    const inFront = this.presence.isChatOnline(targetUserId);
+    if (!inFront) void this.push.notifyIncomingCall(targetUserId, incoming);
     const timer = setTimeout(() => this.expireCall(callId), 45_000);
     this.calls.open({
       callId,
@@ -593,17 +587,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       callerPhone: incoming.callerPhone,
       callerAvatar: caller.avatarUrl,
       callerGender: caller.voiceGender || "male",
+      video: Boolean(body?.video),
       accepted: false,
       timer,
     });
-    if (!offline) {
-      const sent = this.emitToUser(targetUserId, SOCKET_EVENTS.INCOMING_CALL, incoming, false);
-      if (!sent && !(await wake)) {
-        this.markUnavailable(client, callId, targetUserId, caller);
-        return { ok: false, reason: "offline" };
-      }
-    }
-    this.logger.log(`call open id=${callId} from=${client.userId} to=${targetUserId}`);
+    this.emitToUser(targetUserId, SOCKET_EVENTS.INCOMING_CALL, incoming, false);
+    this.logger.log(`call open id=${callId} from=${client.userId} to=${targetUserId} front=${String(inFront)}`);
     return { ok: true, callId };
   }
 
@@ -707,6 +696,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       callId: call.callId,
       callerName: call.callerName,
       callerPhone: call.callerPhone,
+      video: Boolean(call.video),
       caller: {
         id: call.callerId,
         name: call.callerName,
@@ -722,6 +712,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     callId: string,
     callerId: string,
     caller: { displayName: string | null; phoneE164: string; avatarUrl: string | null; voiceGender: string | null },
+    video = false,
   ) {
     const callerName = caller.displayName || caller.phoneE164;
     const callerPhone = caller.phoneE164;
@@ -729,6 +720,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       callId,
       callerName,
       callerPhone,
+      video,
       caller: {
         id: callerId,
         name: callerName,

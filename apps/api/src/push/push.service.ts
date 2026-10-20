@@ -9,6 +9,7 @@ type CallWake = {
   callId: string;
   callerName: string;
   callerPhone: string;
+  video?: boolean;
   caller: { id: string; name: string; phone: string; avatarUrl?: string | null; gender?: string | null };
 };
 
@@ -58,16 +59,17 @@ export class PushService {
     `;
     const device = rows[0];
     const data = {
-      type: "incoming-call",
+      type: "incoming_call",
       callId: incoming.callId,
       callerId: incoming.caller.id,
       callerName: incoming.callerName,
       callerPhone: incoming.callerPhone,
       avatarUrl: incoming.caller.avatarUrl || "",
       gender: incoming.caller.gender || "male",
+      video: incoming.video ? "1" : "0",
     };
     let woke = false;
-    if (device?.fcmToken) woke = (await this.sendFcm(device.fcmToken, data)) || woke;
+    if (device?.fcmToken) woke = (await this.sendFcmCall(device.fcmToken, data, incoming.callerName, incoming.callerPhone || "שיחה נכנסת")) || woke;
     if (device?.voipToken) woke = (await this.sendVoip(device.voipToken, data)) || woke;
     if (user?.expoPushToken) woke = (await this.sendExpoCall(user.expoPushToken, incoming, data)) || woke;
     if (woke) this.logger.log(`call wake user=${userId} id=${incoming.callId}`);
@@ -81,18 +83,32 @@ export class PushService {
     data: Record<string, string>,
     extra: { image?: string | null } = {},
   ) {
+    if (!userIds.length) return;
+    await this.ensureTable();
+    const payload = stringData({ type: data.type || "message", ...data });
     const users = await this.prisma.user.findMany({
-      where: { id: { in: userIds }, expoPushToken: { not: null } },
-      select: { expoPushToken: true },
+      where: { id: { in: userIds } },
+      select: { id: true, expoPushToken: true },
     });
-    const tokens = users.map((u) => u.expoPushToken).filter((t): t is string => Boolean(t));
+    const gotFcm = new Set<string>();
+    for (const user of users) {
+      const rows = await this.prisma.$queryRaw<Array<{ fcmToken: string | null }>>`
+        SELECT "fcmToken" FROM "CallDevice" WHERE "userId" = ${user.id}
+      `;
+      const fcm = rows[0]?.fcmToken?.trim();
+      if (fcm && (await this.sendFcmMessage(fcm, title, body, payload, extra.image))) gotFcm.add(user.id);
+    }
+    const tokens = users
+      .filter((u) => u.expoPushToken && !gotFcm.has(u.id))
+      .map((u) => u.expoPushToken)
+      .filter((t): t is string => Boolean(t));
     if (!tokens.length) return;
     const messages = tokens.map((to) => ({
       to,
       sound: "default" as const,
       title,
       body,
-      data,
+      data: payload,
       channelId: "talk-ptt",
       priority: "high" as const,
       ...(extra.image
@@ -156,21 +172,69 @@ export class PushService {
     }
   }
 
-  private async sendFcm(token: string, data: Record<string, string>) {
+  private async sendFcmCall(token: string, data: Record<string, string>, title: string, body: string) {
     try {
       if (!getApps().length) return false;
       await getMessaging().send({
         token,
         data,
+        notification: { title, body },
         android: {
           priority: "high",
           ttl: 0,
           collapseKey: "incoming-call",
+          notification: {
+            title,
+            body,
+            channelId: "talk-calls",
+            sound: "default",
+            defaultSound: true,
+            priority: "max",
+            visibility: "public",
+          },
+        },
+        apns: {
+          payload: { aps: { sound: "default", "content-available": 1 } },
         },
       });
       return true;
     } catch (error) {
       this.logger.warn(`FCM call failed: ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  private async sendFcmMessage(
+    token: string,
+    title: string,
+    body: string,
+    data: Record<string, string>,
+    image?: string | null,
+  ) {
+    try {
+      if (!getApps().length) return false;
+      await getMessaging().send({
+        token,
+        data,
+        notification: { title, body, imageUrl: image || undefined },
+        android: {
+          priority: "high",
+          notification: {
+            title,
+            body,
+            channelId: "talk-ptt",
+            sound: "default",
+            defaultSound: true,
+            imageUrl: image || undefined,
+          },
+        },
+        apns: {
+          payload: { aps: { sound: "default" } },
+        },
+      });
+      return true;
+    } catch (error) {
+      this.logger.warn(`FCM message failed: ${(error as Error).message}`);
       return false;
     }
   }
@@ -243,6 +307,12 @@ export class PushService {
     this.apnsTokenAt = now;
     return this.apnsToken;
   }
+}
+
+function stringData(data: Record<string, string>) {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(data)) out[key] = value == null ? "" : String(value);
+  return out;
 }
 
 function derToJose(der: Buffer) {
