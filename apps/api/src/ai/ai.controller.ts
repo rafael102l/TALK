@@ -40,18 +40,24 @@ export class AiController {
       langA,
       langB,
     });
-    const spoken = (turn.translatedText || "").replace(/\s+/g, " ").trim();
+    const sourceLang = turn.sourceLang === langB ? langB : langA;
+    const targetLang = sourceLang === langA ? langB : langA;
+    const sourceText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
+    const translatedText = (turn.translatedText || "").replace(/\s+/g, " ").trim();
     let audio: Buffer | null = null;
     try {
-      audio = spoken ? await this.translator.speak(spoken, langB, body.gender || "male") : null;
+      audio =
+        translatedText && translatedText !== sourceText
+          ? await this.translator.speak(translatedText, targetLang, body.gender || "male")
+          : null;
     } catch {
       audio = null;
     }
     return {
-      sourceText: turn.sourceText,
-      translatedText: turn.translatedText,
-      sourceLang: langA,
-      targetLang: langB,
+      sourceText,
+      translatedText,
+      sourceLang,
+      targetLang,
       audioBase64: audio ? audio.toString("base64") : "",
       mime: "audio/mpeg" as const,
     };
