@@ -31,23 +31,27 @@ export class AiController {
   )
   async translatorTurn(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: TranslatorDto) {
     const original = file?.originalname || "";
+    const langA = body.langA?.trim() || "he";
+    const langB = body.langB?.trim() || "en";
     const turn = await this.translator.transcribe({
       audio: file?.buffer ? Buffer.from(file.buffer) : undefined,
       mime: file?.mimetype || "audio/mp4",
       ext: extname(original).replace(".", "") || "m4a",
-      langA: body.langA?.trim() || "he",
-      langB: body.langB?.trim() || "en",
+      langA,
+      langB,
     });
     const spoken = (turn.translatedText || "").replace(/\s+/g, " ").trim();
-    const targetLang = (turn.targetLang || body.langB || "en").trim();
     let audio: Buffer | null = null;
     try {
-      audio = spoken ? await this.translator.speak(spoken, targetLang, body.gender || "male") : null;
+      audio = spoken ? await this.translator.speak(spoken, langB, body.gender || "male") : null;
     } catch {
       audio = null;
     }
     return {
-      ...turn,
+      sourceText: turn.sourceText,
+      translatedText: turn.translatedText,
+      sourceLang: langA,
+      targetLang: langB,
       audioBase64: audio ? audio.toString("base64") : "",
       mime: "audio/mpeg" as const,
     };

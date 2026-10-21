@@ -69,20 +69,12 @@ export class TranslatorService {
     langA: string,
     langB: string,
   ): Promise<Turn | null> {
-    const [hearA, hearB] = await Promise.all([
-      this.whisperFor(audio, langA, mime, ext),
-      this.whisperFor(audio, langB, mime, ext),
-    ]);
-    const picked = pickHeard(hearA, hearB, langA, langB);
-    if (picked?.text) {
-      this.logger.log(`translator-pick ${picked.source}->${picked.target} ${clip(picked.text)}`);
-      return this.finishTurn(picked.text, picked.source, picked.target);
-    }
-    const gemini = await this.geminiHear(audio, mime, ext, langA, langB);
-    if (!gemini?.text) return null;
-    const source = gemini.sourceLang === langB ? langB : langA;
-    const target = source === langA ? langB : langA;
-    return this.finishTurn(gemini.text, source, target);
+    const heard =
+      (await this.whisperFor(audio, langA, mime, ext)).text ||
+      (await this.geminiHear(audio, mime, ext, langA, langB))?.text ||
+      "";
+    if (!heard) return null;
+    return this.finishTurn(heard, langA, langB);
   }
 
   private async whisperFor(audio: Buffer, lang: string, mime: string, ext: string) {
@@ -136,9 +128,10 @@ export class TranslatorService {
     if (!key) return null;
     const prompt = [
       "STATELESS standalone request. Brand-new isolated utterance.",
-      `Detect the spoken language using ONLY ${langA} (${tagA}) or ${langB} (${tagB}). Never any other language.`,
-      "Transcribe exactly in that language's native script. Do not transliterate. Do not invent names. Do not complete cut-off words.",
-      `Return JSON: {"sourceText":"...","sourceLang":"${langA}"|"${langB}"}`,
+      `STT LOCK: transcribe ONLY in ${tagA} (${langA}). Do not decode as ${tagB} or any other language.`,
+      `Write sourceText in ${langA} native script. Never transliterate.`,
+      "Do not invent names. Do not complete cut-off words. Do not repeat the same phrase.",
+      `Return JSON: {"sourceText":"..."}`,
     ].join(" ");
     try {
       const res = await fetch(
@@ -178,7 +171,7 @@ export class TranslatorService {
           .trim() ?? "";
       const parsed = parseTurn(raw, langA, langB);
       if (!parsed?.sourceText) return null;
-      return { text: parsed.sourceText, sourceLang: parsed.sourceLang };
+      return { text: parsed.sourceText };
     } catch (error) {
       this.logger.warn(`translator gemini ${(error as Error).message}`);
       return null;
@@ -399,12 +392,10 @@ function parseTurn(raw: string, langA: string, langB: string): Turn | null {
     const sourceText = String(data.sourceText || data.text || "").replace(/\s+/g, " ").trim();
     if (!sourceText) return null;
     const translatedText = String(data.translatedText || "").replace(/\s+/g, " ").trim();
-    const claimed = String(data.sourceLang || data.language || "").trim();
-    const sourceLang =
-      claimed === langB ? langB : claimed === langA ? langA : guessPairLang(sourceText, langA, langB);
-    const targetLang = sourceLang === langA ? langB : langA;
     void data.confidence;
-    return { sourceText, translatedText, sourceLang, targetLang };
+    void data.sourceLang;
+    void data.language;
+    return { sourceText, translatedText, sourceLang: langA, targetLang: langB };
   } catch {
     return null;
   }
@@ -427,51 +418,6 @@ function copiedSourceSentence(text: string, sourceText: string) {
 
 function logTranslateFail(message: string) {
   console.error(message);
-}
-
-function pickHeard(
-  hearA: { text: string; avgLogprob: number },
-  hearB: { text: string; avgLogprob: number },
-  langA: string,
-  langB: string,
-) {
-  const textA = hearA.text;
-  const textB = hearB.text;
-  if (!textA && !textB) return null;
-  if (!textA) return { text: textB, source: langB, target: langA };
-  if (!textB) return { text: textA, source: langA, target: langB };
-  const scoreA = scoreHeard(textA, langA, langB, hearA.avgLogprob);
-  const scoreB = scoreHeard(textB, langB, langA, hearB.avgLogprob);
-  if (scoreB > scoreA) return { text: textB, source: langB, target: langA };
-  return { text: textA, source: langA, target: langB };
-}
-
-function scoreHeard(text: string, lang: string, other: string, avgLogprob: number) {
-  let score = avgLogprob + Math.min(text.length, 80) / 40;
-  const mine = hasScript(text, lang);
-  const theirs = hasScript(text, other);
-  if (mine && !theirs) score += 8;
-  else if (theirs && !mine) score -= 8;
-  else if (mine && theirs) score += 1;
-  return score;
-}
-
-function guessPairLang(text: string, langA: string, langB: string) {
-  const a = hasScript(text, langA);
-  const b = hasScript(text, langB);
-  if (b && !a) return langB;
-  return langA;
-}
-
-function hasScript(text: string, lang: string) {
-  if (lang === "he") return /[\u0590-\u05FF]/.test(text);
-  if (lang === "ar" || lang === "fa" || lang === "ur") return /[\u0600-\u06FF]/.test(text);
-  if (lang === "ru" || lang === "uk" || lang === "bg") return /[\u0400-\u04FF]/.test(text);
-  if (lang === "hi" || lang === "bn" || lang === "ta") return /[\u0900-\u097F\u0980-\u09FF\u0B80-\u0BFF]/.test(text);
-  if (lang === "zh" || lang === "ja" || lang === "ko") return /[\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text);
-  if (lang === "am") return /[\u1200-\u137F]/.test(text);
-  if (lang === "ka") return /[\u10A0-\u10FF]/.test(text);
-  return /[A-Za-zÀ-ÿ]/.test(text) && !/[\u0590-\u05FF\u0600-\u06FF]/.test(text);
 }
 
 function geminiAudioMime(mime: string, ext: string) {
