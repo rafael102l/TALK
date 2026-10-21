@@ -22,6 +22,9 @@ const GEMINI_TRANSLATE_MODELS = [
   "gemini-2.0-flash-lite",
 ];
 
+const STRICT_TRANSLATE =
+  "You are a strict word-for-word translator. Translate ONLY the user's spoken input into the target language. Do NOT add any pleasantries, notes, context, corrections, or explanations. Return ONLY the direct translation.";
+
 type Turn = {
   sourceText: string;
   translatedText: string;
@@ -63,16 +66,26 @@ export class TranslatorService {
     langA: string,
     langB: string,
   ): Promise<Turn | null> {
-    const heard =
-      sanitizeTranscript(await this.whisperLocked(audio, langA, mime, ext)) ||
-      sanitizeTranscript(await this.geminiHear(audio, mime, ext, langA, langB));
-    if (!heard) return null;
-    return this.finishTurn(heard, langA, langB);
+    const [hearA, hearB] = await Promise.all([
+      this.whisperFor(audio, langA, mime, ext),
+      this.whisperFor(audio, langB, mime, ext),
+    ]);
+    const picked = pickHeard(hearA, hearB, langA, langB);
+    if (picked?.text) {
+      this.logger.log(`translator-pick ${picked.source}->${picked.target} ${clip(picked.text)}`);
+      return this.finishTurn(picked.text, picked.source, picked.target);
+    }
+    const gemini = await this.geminiHear(audio, mime, ext, langA, langB);
+    if (!gemini?.text) return null;
+    const source = gemini.sourceLang === langB ? langB : langA;
+    const target = source === langA ? langB : langA;
+    return this.finishTurn(gemini.text, source, target);
   }
 
-  private async whisperLocked(audio: Buffer, lang: string, mime: string, ext: string) {
+  private async whisperFor(audio: Buffer, lang: string, mime: string, ext: string) {
+    const empty = { text: "", avgLogprob: -2 };
     const key = process.env.OPENAI_API_KEY;
-    if (!key || !audio.length) return "";
+    if (!key || !audio.length) return empty;
     try {
       const form = new FormData();
       form.append("file", new Blob([new Uint8Array(audio)], { type: mime }), `speech.${ext || "m4a"}`);
@@ -80,10 +93,7 @@ export class TranslatorService {
       form.append("language", lang);
       form.append("temperature", "0");
       form.append("response_format", "verbose_json");
-      form.append(
-        "prompt",
-        "Transcribe exactly what was spoken. Do not invent names. Do not complete cut-off words. Do not repeat phrases.",
-      );
+      form.append("prompt", `${speechTag(lang) || lang} only. Transcribe exactly.`);
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
@@ -92,21 +102,27 @@ export class TranslatorService {
       });
       if (!res.ok) {
         this.logger.warn(`translator whisper ${lang} failed: ${res.status}`);
-        return "";
+        return empty;
       }
       const data = (await res.json()) as {
         text?: string;
         segments?: { text?: string; no_speech_prob?: number; compression_ratio?: number; avg_logprob?: number }[];
       };
-      const pieces = (data.segments || [])
-        .filter((seg) => (seg.no_speech_prob ?? 0) < 0.8)
-        .filter((seg) => (seg.compression_ratio ?? 1) < 2.8)
-        .map((seg) => (seg.text || "").trim())
-        .filter(Boolean);
-      return pieces.join(" ").trim() || (data.text || "").replace(/\s+/g, " ").trim();
+      const kept = (data.segments || []).filter(
+        (seg) => (seg.no_speech_prob ?? 0) < 0.8 && (seg.compression_ratio ?? 1) < 2.8,
+      );
+      const text =
+        kept
+          .map((seg) => (seg.text || "").trim())
+          .filter(Boolean)
+          .join(" ")
+          .trim() || (data.text || "").replace(/\s+/g, " ").trim();
+      const probs = kept.map((seg) => seg.avg_logprob).filter((value): value is number => typeof value === "number");
+      const avgLogprob = probs.length ? probs.reduce((sum, value) => sum + value, 0) / probs.length : -1;
+      return { text: sanitizeTranscript(text), avgLogprob };
     } catch (error) {
       this.logger.warn(`translator whisper ${lang} ${(error as Error).message}`);
-      return "";
+      return empty;
     }
   }
 
@@ -114,15 +130,12 @@ export class TranslatorService {
     const tagA = speechTag(langA) || langA;
     const tagB = speechTag(langB) || langB;
     const key = process.env.GEMINI_API_KEY;
-    if (!key) return "";
+    if (!key) return null;
     const prompt = [
-      "STATELESS standalone request. This is a brand-new isolated utterance.",
-      "Do not use conversation history, prior turns, memory, or cached translations.",
-      `STT LOCK: transcribe ONLY in ${tagA} (${langA}). Do not decode as ${tagB} or any other language.`,
-      `Write sourceText in ${langA} native script. Never transliterate.`,
-      "Do not invent names. Do not complete cut-off words. Do not repeat the same phrase.",
-      "Transcribe only words that were fully spoken. If the ending is unclear, omit the unfinished word.",
-      `Return JSON: {"sourceText":"..."}`,
+      "STATELESS standalone request. Brand-new isolated utterance.",
+      `Detect the spoken language using ONLY ${langA} (${tagA}) or ${langB} (${tagB}). Never any other language.`,
+      "Transcribe exactly in that language's native script. Do not transliterate. Do not invent names. Do not complete cut-off words.",
+      `Return JSON: {"sourceText":"...","sourceLang":"${langA}"|"${langB}"}`,
     ].join(" ");
     try {
       const res = await fetch(
@@ -142,7 +155,7 @@ export class TranslatorService {
               },
             ],
             generationConfig: {
-              temperature: 0,
+              temperature: 0.0,
               maxOutputTokens: 640,
               responseMimeType: "application/json",
               thinkingConfig: { thinkingBudget: 0 },
@@ -152,7 +165,7 @@ export class TranslatorService {
       );
       if (!res.ok) {
         this.logger.warn(`translator gemini ${res.status}`);
-        return "";
+        return null;
       }
       const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
       const raw =
@@ -161,10 +174,11 @@ export class TranslatorService {
           .join("")
           .trim() ?? "";
       const parsed = parseTurn(raw, langA, langB);
-      return parsed?.sourceText || "";
+      if (!parsed?.sourceText) return null;
+      return { text: parsed.sourceText, sourceLang: parsed.sourceLang };
     } catch (error) {
       this.logger.warn(`translator gemini ${(error as Error).message}`);
-      return "";
+      return null;
     }
   }
 
@@ -196,7 +210,7 @@ export class TranslatorService {
 
   private async translateFast(text: string, source: string, target: string, retry = false) {
     const prompt = [
-      "STATELESS standalone translation. No conversation history.",
+      STRICT_TRANSLATE,
       `Input language: ${source}. Output language: ${target}.`,
       `Translate into ${target} only. Do not write ${source}. Do not repeat the input.`,
       retry ? `The previous output was still in ${source}. Return ${target} only.` : "",
@@ -227,7 +241,7 @@ export class TranslatorService {
   private async viaGeminiTranslate(model: string, prompt: string, key: string) {
     try {
       const generationConfig: Record<string, unknown> = {
-        temperature: 0,
+        temperature: 0.0,
         maxOutputTokens: 512,
       };
       if (model.includes("2.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
@@ -273,12 +287,12 @@ export class TranslatorService {
         signal: AbortSignal.timeout(5000),
         body: JSON.stringify({
           model: "gpt-4o-mini",
-          temperature: 0,
+          temperature: 0.0,
           max_tokens: 512,
           messages: [
             {
               role: "system",
-              content: `Translate from ${source} to ${target} only. Return the translation only. Keep names and loanwords.`,
+              content: `${STRICT_TRANSLATE} Input language: ${source}. Output language: ${target}.`,
             },
             { role: "user", content: text },
           ],
@@ -376,10 +390,12 @@ function parseTurn(raw: string, langA: string, langB: string): Turn | null {
     const sourceText = String(data.sourceText || data.text || "").replace(/\s+/g, " ").trim();
     if (!sourceText) return null;
     const translatedText = String(data.translatedText || "").replace(/\s+/g, " ").trim();
+    const claimed = String(data.sourceLang || data.language || "").trim();
+    const sourceLang =
+      claimed === langB ? langB : claimed === langA ? langA : guessPairLang(sourceText, langA, langB);
+    const targetLang = sourceLang === langA ? langB : langA;
     void data.confidence;
-    void data.sourceLang;
-    void data.language;
-    return { sourceText, translatedText, sourceLang: langA, targetLang: langB };
+    return { sourceText, translatedText, sourceLang, targetLang };
   } catch {
     return null;
   }
@@ -402,6 +418,51 @@ function copiedSourceSentence(text: string, sourceText: string) {
 
 function logTranslateFail(message: string) {
   console.error(message);
+}
+
+function pickHeard(
+  hearA: { text: string; avgLogprob: number },
+  hearB: { text: string; avgLogprob: number },
+  langA: string,
+  langB: string,
+) {
+  const textA = hearA.text;
+  const textB = hearB.text;
+  if (!textA && !textB) return null;
+  if (!textA) return { text: textB, source: langB, target: langA };
+  if (!textB) return { text: textA, source: langA, target: langB };
+  const scoreA = scoreHeard(textA, langA, langB, hearA.avgLogprob);
+  const scoreB = scoreHeard(textB, langB, langA, hearB.avgLogprob);
+  if (scoreB > scoreA) return { text: textB, source: langB, target: langA };
+  return { text: textA, source: langA, target: langB };
+}
+
+function scoreHeard(text: string, lang: string, other: string, avgLogprob: number) {
+  let score = avgLogprob + Math.min(text.length, 80) / 40;
+  const mine = hasScript(text, lang);
+  const theirs = hasScript(text, other);
+  if (mine && !theirs) score += 8;
+  else if (theirs && !mine) score -= 8;
+  else if (mine && theirs) score += 1;
+  return score;
+}
+
+function guessPairLang(text: string, langA: string, langB: string) {
+  const a = hasScript(text, langA);
+  const b = hasScript(text, langB);
+  if (b && !a) return langB;
+  return langA;
+}
+
+function hasScript(text: string, lang: string) {
+  if (lang === "he") return /[\u0590-\u05FF]/.test(text);
+  if (lang === "ar" || lang === "fa" || lang === "ur") return /[\u0600-\u06FF]/.test(text);
+  if (lang === "ru" || lang === "uk" || lang === "bg") return /[\u0400-\u04FF]/.test(text);
+  if (lang === "hi" || lang === "bn" || lang === "ta") return /[\u0900-\u097F\u0980-\u09FF\u0B80-\u0BFF]/.test(text);
+  if (lang === "zh" || lang === "ja" || lang === "ko") return /[\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text);
+  if (lang === "am") return /[\u1200-\u137F]/.test(text);
+  if (lang === "ka") return /[\u10A0-\u10FF]/.test(text);
+  return /[A-Za-zÀ-ÿ]/.test(text) && !/[\u0590-\u05FF\u0600-\u06FF]/.test(text);
 }
 
 function geminiAudioMime(mime: string, ext: string) {
