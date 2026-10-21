@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { VoiceGender } from "@talk/shared";
-import { collapseRepeats, speechTag } from "./stt.service";
+import { speechTag } from "./stt.service";
 import { elevenVoicePlan } from "./tts.service";
 
 const OPENAI_VOICE: Record<VoiceGender, string> = {
@@ -111,18 +111,19 @@ export class TranslatorService {
         text?: string;
         segments?: { text?: string; no_speech_prob?: number; compression_ratio?: number; avg_logprob?: number }[];
       };
-      const kept = (data.segments || []).filter(
-        (seg) => (seg.no_speech_prob ?? 0) < 0.8 && (seg.compression_ratio ?? 1) < 2.8,
-      );
-      const text =
-        kept
-          .map((seg) => (seg.text || "").trim())
-          .filter(Boolean)
-          .join(" ")
-          .trim() || (data.text || "").replace(/\s+/g, " ").trim();
-      const probs = kept.map((seg) => seg.avg_logprob).filter((value): value is number => typeof value === "number");
+      const segments = data.segments || [];
+      const kept = segments.filter((seg) => (seg.no_speech_prob ?? 0) < 0.95);
+      const joined = kept
+        .map((seg) => (seg.text || "").trim())
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      const text = sanitizeTranscript((data.text || "").replace(/\s+/g, " ").trim() || joined);
+      const probs = (kept.length ? kept : segments)
+        .map((seg) => seg.avg_logprob)
+        .filter((value): value is number => typeof value === "number");
       const avgLogprob = probs.length ? probs.reduce((sum, value) => sum + value, 0) / probs.length : -1;
-      return { text: sanitizeTranscript(text), avgLogprob };
+      return { text, avgLogprob };
     } catch (error) {
       this.logger.warn(`translator whisper ${lang} ${(error as Error).message}`);
       return empty;
@@ -410,9 +411,7 @@ function parseTurn(raw: string, langA: string, langB: string): Turn | null {
 }
 
 function sanitizeTranscript(text: string) {
-  let t = collapseRepeats(text || "");
-  t = t.replace(/((?:[\p{L}']+\s+){1,4}[\p{L}']+)(?:[,\s]+\1)+/gu, "$1");
-  return t.replace(/\s+/g, " ").trim();
+  return (text || "").replace(/\s+/g, " ").trim();
 }
 
 function copiedSourceSentence(text: string, sourceText: string) {
@@ -437,26 +436,17 @@ function pickHeard(
   const textA = hearA.text;
   const textB = hearB.text;
   if (!textA && !textB) return null;
-  const aOnly = Boolean(textA) && hasScript(textA, langA) && !hasScript(textA, langB);
-  const bOnly = Boolean(textB) && hasScript(textB, langB) && !hasScript(textB, langA);
-  if (aOnly && !bOnly) return { text: textA, source: langA, target: langB };
-  if (bOnly && !aOnly) return { text: textB, source: langB, target: langA };
   if (!textA) return { text: textB, source: langB, target: langA };
   if (!textB) return { text: textA, source: langA, target: langB };
-  const scoreA = scoreHeard(textA, langA, langB, hearA.avgLogprob);
-  const scoreB = scoreHeard(textB, langB, langA, hearB.avgLogprob);
+  const scoreA = scoreHeard(textA, hearA.avgLogprob);
+  const scoreB = scoreHeard(textB, hearB.avgLogprob);
   if (scoreB > scoreA) return { text: textB, source: langB, target: langA };
   return { text: textA, source: langA, target: langB };
 }
 
-function scoreHeard(text: string, lang: string, other: string, avgLogprob: number) {
-  let score = avgLogprob + Math.min(text.length, 80) / 40;
-  const mine = hasScript(text, lang);
-  const theirs = hasScript(text, other);
-  if (mine && !theirs) score += 8;
-  else if (theirs && !mine) score -= 8;
-  else if (mine && theirs) score += 1;
-  return score;
+function scoreHeard(text: string, avgLogprob: number) {
+  const words = text.split(/\s+/).filter(Boolean).length;
+  return words * 4 + text.length / 8 + avgLogprob;
 }
 
 function guessPairLang(text: string, langA: string, langB: string) {
