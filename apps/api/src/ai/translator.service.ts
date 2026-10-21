@@ -15,6 +15,13 @@ const ELEVEN_VOICE: Record<VoiceGender, string> = {
   child: "FGY2WhTYpPnrIDTdsKH5",
 };
 
+const GEMINI_TRANSLATE_MODELS = [
+  "gemini-2.5-flash-lite",
+  "gemini-flash-lite-latest",
+  "gemini-2.5-flash",
+  "gemini-2.0-flash-lite",
+];
+
 type Turn = {
   sourceText: string;
   translatedText: string;
@@ -166,21 +173,28 @@ export class TranslatorService {
     const targetLang = langB;
     sourceText = sanitizeTranscript(sourceText);
     if (!sourceText) return { sourceText: "", translatedText: "", sourceLang, targetLang };
-    let translatedText = sameLanguageOutput(draft, sourceLang, targetLang) ? "" : draft;
-    if (!translatedText && sourceLang !== targetLang) {
-      translatedText = await this.translateFast(sourceText, sourceLang, targetLang);
+    if (sourceLang === targetLang) {
+      return { sourceText, translatedText: sourceText, sourceLang, targetLang };
     }
-    if (sameLanguageOutput(translatedText, sourceLang, targetLang)) {
-      translatedText = await this.translateFast(sourceText, sourceLang, targetLang, true);
+    let translatedText = copiedSourceSentence(draft, sourceText) ? "" : draft;
+    if (!translatedText) {
+      translatedText = await this.translateFast(sourceText, sourceLang, targetLang).catch((error) => {
+        logTranslateFail(`translator-translate ${sourceLang}->${targetLang} ${(error as Error).message}`);
+        return "";
+      });
     }
-    if (sameLanguageOutput(translatedText, sourceLang, targetLang)) translatedText = "";
+    if (copiedSourceSentence(translatedText, sourceText)) {
+      translatedText = await this.translateFast(sourceText, sourceLang, targetLang, true).catch((error) => {
+        logTranslateFail(`translator-translate retry ${sourceLang}->${targetLang} ${(error as Error).message}`);
+        return "";
+      });
+    }
+    if (copiedSourceSentence(translatedText, sourceText)) translatedText = "";
     this.logger.log(`translator-stt ${sourceLang}->${targetLang} ${clip(sourceText)} -> ${clip(translatedText)}`);
     return { sourceText, translatedText, sourceLang, targetLang };
   }
 
   private async translateFast(text: string, source: string, target: string, retry = false) {
-    const geminiKey = process.env.GEMINI_API_KEY;
-    if (!geminiKey) return "";
     const prompt = [
       "STATELESS standalone translation. No conversation history.",
       `Input language: ${source}. Output language: ${target}.`,
@@ -190,31 +204,97 @@ export class TranslatorService {
     ]
       .filter(Boolean)
       .join("\n");
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${encodeURIComponent(geminiKey)}`,
-      {
+    const geminiKey = process.env.GEMINI_API_KEY || "";
+    if (geminiKey) {
+      for (const model of GEMINI_TRANSLATE_MODELS) {
+        const out = await this.viaGeminiTranslate(model, prompt, geminiKey);
+        if (out) return out;
+      }
+    } else {
+      logTranslateFail("translator-translate missing GEMINI_API_KEY");
+    }
+    const openaiKey = process.env.OPENAI_API_KEY || "";
+    if (openaiKey) {
+      const out = await this.viaOpenAiTranslate(text, source, target, openaiKey);
+      if (out) return out;
+    } else {
+      logTranslateFail("translator-translate missing OPENAI_API_KEY");
+    }
+    logTranslateFail(`translator-translate all engines failed ${source}->${target}`);
+    return "";
+  }
+
+  private async viaGeminiTranslate(model: string, prompt: string, key: string) {
+    try {
+      const generationConfig: Record<string, unknown> = {
+        temperature: 0,
+        maxOutputTokens: 512,
+      };
+      if (model.includes("2.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.timeout(4000),
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig,
+          }),
+        },
+      );
+      const body = await res.text();
+      if (!res.ok) {
+        logTranslateFail(`translator-translate ${model} HTTP ${res.status} ${body.slice(0, 500)}`);
+        return "";
+      }
+      const data = JSON.parse(body || "{}") as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+      return (
+        data.candidates?.[0]?.content?.parts
+          ?.map((part) => part.text || "")
+          .join("")
+          .replace(/^["']|["']$/g, "")
+          .trim() ?? ""
+      );
+    } catch (error) {
+      logTranslateFail(`translator-translate ${model} ${(error as Error).message}`);
+      return "";
+    }
+  }
+
+  private async viaOpenAiTranslate(text: string, source: string, target: string, key: string) {
+    try {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(3500),
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        signal: AbortSignal.timeout(5000),
         body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0,
-            maxOutputTokens: 512,
-            thinkingConfig: { thinkingBudget: 0 },
-          },
+          model: "gpt-4o-mini",
+          temperature: 0,
+          max_tokens: 512,
+          messages: [
+            {
+              role: "system",
+              content: `Translate from ${source} to ${target} only. Return the translation only. Keep names and loanwords.`,
+            },
+            { role: "user", content: text },
+          ],
         }),
-      },
-    );
-    if (!res.ok) return "";
-    const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
-    return (
-      data.candidates?.[0]?.content?.parts
-        ?.map((part) => part.text || "")
-        .join("")
-        .replace(/^["']|["']$/g, "")
-        .trim() ?? ""
-    );
+      });
+      const body = await res.text();
+      if (!res.ok) {
+        logTranslateFail(`translator-translate openai HTTP ${res.status} ${body.slice(0, 500)}`);
+        return "";
+      }
+      const data = JSON.parse(body || "{}") as { choices?: { message?: { content?: string } }[] };
+      return data.choices?.[0]?.message?.content?.trim().replace(/^["']|["']$/g, "") ?? "";
+    } catch (error) {
+      logTranslateFail(`translator-translate openai ${(error as Error).message}`);
+      return "";
+    }
   }
 
   private async speakMp3(text: string, lang: string, gender: VoiceGender) {
@@ -311,44 +391,17 @@ function sanitizeTranscript(text: string) {
   return t.replace(/\s+/g, " ").trim();
 }
 
-function sameLanguageOutput(text: string, sourceLang: string, targetLang: string) {
+function copiedSourceSentence(text: string, sourceText: string) {
   const clean = (text || "").replace(/\s+/g, " ").trim();
-  if (!clean || sourceLang === targetLang) return true;
-  if (distinctiveScript(clean, sourceLang) && !distinctiveScript(clean, targetLang)) return true;
-  if (!distinctiveScript(clean, targetLang)) return true;
-  return false;
+  const source = (sourceText || "").replace(/\s+/g, " ").trim();
+  if (!clean) return true;
+  if (!source) return false;
+  if (clean !== source) return false;
+  return source.split(/\s+/).filter(Boolean).length >= 3;
 }
 
-function scriptFamily(lang: string) {
-  if (lang === "he") return "he";
-  if (lang === "ar" || lang === "fa" || lang === "ur") return "ar";
-  if (lang === "ru" || lang === "uk" || lang === "bg") return "cy";
-  if (lang === "hi" || lang === "bn" || lang === "ta") return "in";
-  if (lang === "zh" || lang === "ja" || lang === "ko") return "cjk";
-  if (lang === "am") return "am";
-  if (lang === "ka") return "ka";
-  return "latin";
-}
-
-function distinctiveScript(text: string, lang: string) {
-  const family = scriptFamily(lang);
-  const match =
-    family === "he"
-      ? /[\u0590-\u05FF]/.test(text)
-      : family === "ar"
-        ? /[\u0600-\u06FF]/.test(text)
-        : family === "cy"
-          ? /[\u0400-\u04FF]/.test(text)
-          : family === "in"
-            ? /[\u0900-\u097F\u0980-\u09FF\u0B80-\u0BFF]/.test(text)
-            : family === "cjk"
-              ? /[\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text)
-              : family === "am"
-                ? /[\u1200-\u137F]/.test(text)
-                : family === "ka"
-                  ? /[\u10A0-\u10FF]/.test(text)
-                  : /[A-Za-zÀ-ÿ]/.test(text) && !/[\u0590-\u05FF\u0600-\u06FF]/.test(text);
-  return match;
+function logTranslateFail(message: string) {
+  console.error(message);
 }
 
 function geminiAudioMime(mime: string, ext: string) {
