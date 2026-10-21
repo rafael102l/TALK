@@ -26,51 +26,31 @@ type Turn = {
 export class TranslatorService {
   private readonly logger = new Logger(TranslatorService.name);
 
-  async run(input: {
+  async transcribe(input: {
     audio?: Buffer;
     mime?: string;
     ext?: string;
     text?: string;
     langA: string;
     langB: string;
-    gender?: VoiceGender;
-  }) {
+  }): Promise<Turn> {
     const langA = input.langA || "he";
     const langB = input.langB || "en";
-    const gender = input.gender || "male";
-    const empty = {
-      sourceText: "",
-      translatedText: "",
-      sourceLang: langA,
-      targetLang: langB,
-      audioBase64: "",
-      mime: "audio/mpeg" as const,
-    };
-
-    const started = Date.now();
-    let turn: Turn | null = null;
+    const empty = { sourceText: "", translatedText: "", sourceLang: langA, targetLang: langB };
     if (input.audio?.length) {
-      turn = await this.hearAndTranslate(input.audio, input.mime || "audio/mp4", input.ext || "m4a", langA, langB);
-    } else {
-      const sourceText = (input.text || "").replace(/\s+/g, " ").trim();
-      if (!sourceText) return empty;
-      const sourceLang = clampLang(sourceText, langA, langB);
-      const targetLang = sourceLang === langA ? langB : langA;
-      const translatedText =
-        sourceLang === targetLang ? sourceText : (await this.translateFast(sourceText, sourceLang, targetLang)) || sourceText;
-      turn = { sourceText, translatedText, sourceLang, targetLang };
+      return (await this.hearAndTranslate(input.audio, input.mime || "audio/mp4", input.ext || "m4a", langA, langB)) || empty;
     }
-    if (!turn?.sourceText) return empty;
+    const sourceText = (input.text || "").replace(/\s+/g, " ").trim();
+    if (!sourceText) return empty;
+    const sourceLang = clampLang(sourceText, langA, langB);
+    const targetLang = sourceLang === langA ? langB : langA;
+    const translatedText =
+      sourceLang === targetLang ? sourceText : (await this.translateFast(sourceText, sourceLang, targetLang)) || sourceText;
+    return { sourceText, translatedText, sourceLang, targetLang };
+  }
 
-    const audio = turn.translatedText ? await this.speakMp3(turn.translatedText, turn.targetLang, gender) : null;
-    this.logger.log(
-      `translator ${turn.sourceLang}->${turn.targetLang} ${Date.now() - started}ms chars=${turn.sourceText.length} audio=${audio ? audio.length : 0}`,
-    );
-    return {
-      ...turn,
-      audioBase64: audio ? audio.toString("base64") : "",
-      mime: "audio/mpeg" as const,
-    };
+  speak(text: string, lang: string, gender: VoiceGender = "male") {
+    return this.speakMp3(text, lang, gender);
   }
 
   private async hearAndTranslate(
