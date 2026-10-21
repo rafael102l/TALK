@@ -15,3 +15,18 @@ export class TranslateDto {
   @IsIn(codes)
   target?: string;
 }
+
+export class TranslatorDto {
+  @IsString()
+  text!: string;
+
+  @IsIn(codes)
+  langA!: string;
+
+  @IsIn(codes)
+  langB!: string;
+
+  @IsOptional()
+  @IsIn(["male", "female", "child"])
+  gender?: "male" | "female" | "child";
+}
