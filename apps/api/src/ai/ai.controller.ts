@@ -31,35 +31,13 @@ export class AiController {
   )
   async translatorTurn(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: TranslatorDto) {
     const original = file?.originalname || "";
-    const langA = body.langA?.trim() || "he";
-    const langB = body.langB?.trim() || "en";
-    const turn = await this.translator.transcribe({
+    return this.translator.runTurn({
       audio: file?.buffer ? Buffer.from(file.buffer) : undefined,
       mime: file?.mimetype || "audio/mp4",
       ext: extname(original).replace(".", "") || "m4a",
-      langA,
-      langB,
+      langA: body.langA?.trim() || "he",
+      langB: body.langB?.trim() || "en",
+      gender: body.gender || "male",
     });
-    const sourceLang = turn.sourceLang === langB ? langB : langA;
-    const targetLang = sourceLang === langA ? langB : langA;
-    const sourceText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
-    const translatedText = (turn.translatedText || "").replace(/\s+/g, " ").trim();
-    let audio: Buffer | null = null;
-    try {
-      audio =
-        translatedText && translatedText !== sourceText
-          ? await this.translator.speak(translatedText, targetLang, body.gender || "male")
-          : null;
-    } catch {
-      audio = null;
-    }
-    return {
-      sourceText,
-      translatedText,
-      sourceLang,
-      targetLang,
-      audioBase64: audio ? audio.toString("base64") : "",
-      mime: "audio/mpeg" as const,
-    };
   }
 }

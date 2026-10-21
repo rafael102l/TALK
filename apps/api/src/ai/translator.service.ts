@@ -55,11 +55,48 @@ export class TranslatorService {
     return this.finishTurn(sourceText, langA, langB);
   }
 
-  speak(text: string, lang: string, gender: VoiceGender = "male") {
-    const spoken = (text || "").replace(/\s+/g, " ").trim();
-    const targetLang = (lang || "").trim();
-    if (!spoken || !targetLang) return Promise.resolve(null);
-    return this.speakMp3(spoken, targetLang, gender);
+  async runTurn(input: {
+    audio?: Buffer;
+    mime?: string;
+    ext?: string;
+    langA: string;
+    langB: string;
+    gender?: VoiceGender;
+  }) {
+    const langA = input.langA || "he";
+    const langB = input.langB || "en";
+    const turn = await this.transcribe({
+      audio: input.audio,
+      mime: input.mime,
+      ext: input.ext,
+      langA,
+      langB,
+    });
+    const sourceLang = turn.sourceLang === langB ? langB : langA;
+    const targetLang = sourceLang === langA ? langB : langA;
+    const sourceText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
+    const translatedText = (turn.translatedText || "").replace(/\s+/g, " ").trim();
+    const spoken = translatedText && translatedText !== sourceText ? translatedText : "";
+    let audio: Buffer | null = null;
+    if (spoken) {
+      try {
+        audio = await this.speakTranslation(spoken, targetLang, input.gender || "male");
+      } catch {
+        audio = null;
+      }
+    }
+    return {
+      sourceText,
+      translatedText,
+      sourceLang,
+      targetLang,
+      audioBase64: audio?.length ? audio.toString("base64") : "",
+      mime: "audio/mpeg" as const,
+    };
+  }
+
+  private speakTranslation(translatedText: string, targetLang: string, gender: VoiceGender) {
+    return this.speakMp3(translatedText, targetLang, gender);
   }
 
   private async hearAndTranslate(
@@ -186,29 +223,24 @@ export class TranslatorService {
     }
   }
 
-  private async finishTurn(sourceText: string, langA: string, langB: string, draft = "") {
-    const sourceLang = langA;
-    const targetLang = langB;
+  private async finishTurn(sourceText: string, sourceLang: string, targetLang: string) {
     sourceText = sanitizeTranscript(sourceText);
     if (!sourceText) return { sourceText: "", translatedText: "", sourceLang, targetLang };
     if (sourceLang === targetLang) {
-      return { sourceText, translatedText: sourceText, sourceLang, targetLang };
+      return { sourceText, translatedText: "", sourceLang, targetLang };
     }
-    let translatedText = copiedSourceSentence(draft, sourceText) ? "" : draft;
-    if (!translatedText) {
-      translatedText = await this.translateFast(sourceText, sourceLang, targetLang).catch((error) => {
-        logTranslateFail(`translator-translate ${sourceLang}->${targetLang} ${(error as Error).message}`);
-        return "";
-      });
-    }
-    if (copiedSourceSentence(translatedText, sourceText)) {
+    let translatedText = await this.translateFast(sourceText, sourceLang, targetLang).catch((error) => {
+      logTranslateFail(`translator-translate ${sourceLang}->${targetLang} ${(error as Error).message}`);
+      return "";
+    });
+    if (!translatedText || translatedText === sourceText) {
       translatedText = await this.translateFast(sourceText, sourceLang, targetLang, true).catch((error) => {
         logTranslateFail(`translator-translate retry ${sourceLang}->${targetLang} ${(error as Error).message}`);
         return "";
       });
     }
-    if (copiedSourceSentence(translatedText, sourceText)) translatedText = "";
-    this.logger.log(`translator-stt ${sourceLang}->${targetLang} ${clip(sourceText)} -> ${clip(translatedText)}`);
+    if (translatedText === sourceText) translatedText = "";
+    this.logger.log(`translator ${sourceLang}->${targetLang} ${clip(sourceText)} => ${clip(translatedText)}`);
     return { sourceText, translatedText, sourceLang, targetLang };
   }
 
@@ -412,15 +444,6 @@ function parseTurn(raw: string, langA: string, langB: string): Turn | null {
 
 function sanitizeTranscript(text: string) {
   return (text || "").replace(/\s+/g, " ").trim();
-}
-
-function copiedSourceSentence(text: string, sourceText: string) {
-  const clean = (text || "").replace(/\s+/g, " ").trim();
-  const source = (sourceText || "").replace(/\s+/g, " ").trim();
-  if (!clean) return true;
-  if (!source) return false;
-  if (clean !== source) return false;
-  return source.split(/\s+/).filter(Boolean).length >= 3;
 }
 
 function logTranslateFail(message: string) {
