@@ -3,7 +3,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
 import { extname } from "path";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
-import { TranslateDto, TranslatorDto } from "./translate.dto";
+import { TranslateDto, TranslatorDto, TranslatorSpeakDto } from "./translate.dto";
 import { TranslateService } from "./translate.service";
 import { TranslatorService } from "./translator.service";
 
@@ -39,5 +39,10 @@ export class AiController {
       langB: body.langB?.trim() || "en",
       gender: body.gender || "male",
     });
+  }
+
+  @Post("translator/speak")
+  async translatorSpeak(@Body() body: TranslatorSpeakDto) {
+    return this.translator.speakTurn(body.text || "", body.lang, body.gender || "male");
   }
 }

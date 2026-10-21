@@ -100,6 +100,21 @@ export class TranslatorService {
     };
   }
 
+  async speakTurn(text: string, lang: string, gender: VoiceGender = "male") {
+    const spoken = sanitizeTranscript(text);
+    if (!spoken) return { audioBase64: "", mime: "audio/mpeg" as const };
+    let audio: Buffer | null = null;
+    try {
+      audio = await this.speakTranslation(spoken, lang, gender);
+    } catch {
+      audio = null;
+    }
+    return {
+      audioBase64: audio?.length ? audio.toString("base64") : "",
+      mime: "audio/mpeg" as const,
+    };
+  }
+
   private speakTranslation(translatedText: string, targetLang: string, gender: VoiceGender) {
     return this.speakMp3(translatedText, targetLang, gender);
   }
