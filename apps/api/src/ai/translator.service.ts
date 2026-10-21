@@ -76,7 +76,10 @@ export class TranslatorService {
     const targetLang = sourceLang === langA ? langB : langA;
     const sourceText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
     const translatedText = (turn.translatedText || "").replace(/\s+/g, " ").trim();
-    const spoken = translatedText && translatedText !== sourceText ? translatedText : "";
+    const spoken =
+      translatedText && translatedText !== sourceText && !isSourceLanguageText(translatedText, sourceLang, targetLang)
+        ? translatedText
+        : "";
     let audio: Buffer | null = null;
     if (spoken) {
       try {
@@ -133,7 +136,7 @@ export class TranslatorService {
       form.append("language", lang);
       form.append("temperature", "0");
       form.append("response_format", "verbose_json");
-      form.append("prompt", `${speechTag(lang) || lang} only. Transcribe exactly.`);
+      form.append("prompt", `${speechTag(lang) || lang} only. Transcribe exactly. Do not translate.`);
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
@@ -461,15 +464,33 @@ function pickHeard(
   if (!textA && !textB) return null;
   if (!textA) return { text: textB, source: langB, target: langA };
   if (!textB) return { text: textA, source: langA, target: langB };
-  const scoreA = scoreHeard(textA, hearA.avgLogprob);
-  const scoreB = scoreHeard(textB, hearB.avgLogprob);
+  const wordsA = wordCount(textA);
+  const wordsB = wordCount(textB);
+  const aIsOriginal = hasScript(textA, langA) && !hasScript(textB, langA) && uniqueScript(langA);
+  const bIsOriginal = hasScript(textB, langB) && !hasScript(textA, langB) && uniqueScript(langB);
+  if (aIsOriginal && wordsA >= Math.max(1, wordsB * 0.5)) {
+    return { text: textA, source: langA, target: langB };
+  }
+  if (bIsOriginal && wordsB >= Math.max(1, wordsA * 0.5)) {
+    return { text: textB, source: langB, target: langA };
+  }
+  const scoreA = wordsA * 4 + textA.length / 8 + hearA.avgLogprob;
+  const scoreB = wordsB * 4 + textB.length / 8 + hearB.avgLogprob;
   if (scoreB > scoreA) return { text: textB, source: langB, target: langA };
   return { text: textA, source: langA, target: langB };
 }
 
-function scoreHeard(text: string, avgLogprob: number) {
-  const words = text.split(/\s+/).filter(Boolean).length;
-  return words * 4 + text.length / 8 + avgLogprob;
+function wordCount(text: string) {
+  return text.split(/\s+/).filter(Boolean).length;
+}
+
+function uniqueScript(lang: string) {
+  return ["he", "ar", "fa", "ur", "ru", "uk", "bg", "hi", "bn", "ta", "zh", "ja", "ko", "am", "ka"].includes(lang);
+}
+
+function isSourceLanguageText(text: string, sourceLang: string, targetLang: string) {
+  if (!text || sourceLang === targetLang || !uniqueScript(sourceLang)) return false;
+  return hasScript(text, sourceLang) && !hasScript(text, targetLang);
 }
 
 function guessPairLang(text: string, langA: string, langB: string) {
