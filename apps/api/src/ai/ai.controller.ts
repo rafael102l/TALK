@@ -38,11 +38,11 @@ export class AiController {
       langA: body.langA?.trim() || "he",
       langB: body.langB?.trim() || "en",
     });
+    const spoken = (turn.translatedText || "").replace(/\s+/g, " ").trim();
+    const targetLang = (turn.targetLang || body.langB || "en").trim();
     let audio: Buffer | null = null;
     try {
-      audio = turn.translatedText
-        ? await this.translator.speak(turn.translatedText, turn.targetLang, body.gender || "male")
-        : null;
+      audio = spoken ? await this.translator.speak(spoken, targetLang, body.gender || "male") : null;
     } catch {
       audio = null;
     }

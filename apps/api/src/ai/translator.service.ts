@@ -56,7 +56,10 @@ export class TranslatorService {
   }
 
   speak(text: string, lang: string, gender: VoiceGender = "male") {
-    return this.speakMp3(text, lang, gender);
+    const spoken = (text || "").replace(/\s+/g, " ").trim();
+    const targetLang = (lang || "").trim();
+    if (!spoken || !targetLang) return Promise.resolve(null);
+    return this.speakMp3(spoken, targetLang, gender);
   }
 
   private async hearAndTranslate(
@@ -312,6 +315,12 @@ export class TranslatorService {
   }
 
   private async speakMp3(text: string, lang: string, gender: VoiceGender) {
+    const plan = elevenVoicePlan(lang);
+    if (plan.code) {
+      const native = await this.viaElevenMp3(text, lang, gender);
+      if (native?.length) return native;
+      return this.viaOpenAiMp3(text, gender);
+    }
     const jobs = [this.viaOpenAiMp3(text, gender), this.viaElevenMp3(text, lang, gender)];
     try {
       return await Promise.any(
