@@ -1,6 +1,5 @@
-import { Body, Controller, Post, Res, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { Body, Controller, Post, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import type { Response } from "express";
 import { memoryStorage } from "multer";
 import { extname } from "path";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
@@ -30,11 +29,7 @@ export class AiController {
   @UseInterceptors(
     FileInterceptor("audio", { storage: memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } }),
   )
-  async translatorTurn(
-    @UploadedFile() file: Express.Multer.File | undefined,
-    @Body() body: TranslatorDto,
-    @Res() res: Response,
-  ) {
+  async translatorTurn(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: TranslatorDto) {
     const original = file?.originalname || "";
     const turn = await this.translator.transcribe({
       audio: file?.buffer ? Buffer.from(file.buffer) : undefined,
@@ -43,14 +38,6 @@ export class AiController {
       langA: body.langA?.trim() || "he",
       langB: body.langB?.trim() || "en",
     });
-    res.status(200);
-    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("X-Accel-Buffering", "no");
-    res.socket?.setNoDelay(true);
-    res.write(JSON.stringify({ event: "text", ...turn }) + "\n");
-    const flushed = res as Response & { flush?: () => void };
-    flushed.flush?.();
     let audio: Buffer | null = null;
     try {
       audio = turn.translatedText
@@ -59,13 +46,10 @@ export class AiController {
     } catch {
       audio = null;
     }
-    res.write(
-      JSON.stringify({
-        event: "audio",
-        mime: "audio/mpeg",
-        audioBase64: audio ? audio.toString("base64") : "",
-      }) + "\n",
-    );
-    res.end();
+    return {
+      ...turn,
+      audioBase64: audio ? audio.toString("base64") : "",
+      mime: "audio/mpeg" as const,
+    };
   }
 }

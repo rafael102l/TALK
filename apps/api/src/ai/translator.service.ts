@@ -92,9 +92,8 @@ export class TranslatorService {
         segments?: { text?: string; no_speech_prob?: number; compression_ratio?: number; avg_logprob?: number }[];
       };
       const pieces = (data.segments || [])
-        .filter((seg) => (seg.no_speech_prob ?? 0) < 0.6)
-        .filter((seg) => (seg.compression_ratio ?? 0) < 2.4)
-        .filter((seg) => (seg.avg_logprob ?? 0) > -1)
+        .filter((seg) => (seg.no_speech_prob ?? 0) < 0.8)
+        .filter((seg) => (seg.compression_ratio ?? 1) < 2.8)
         .map((seg) => (seg.text || "").trim())
         .filter(Boolean);
       return pieces.join(" ").trim() || (data.text || "").replace(/\s+/g, " ").trim();
@@ -137,7 +136,6 @@ export class TranslatorService {
             ],
             generationConfig: {
               temperature: 0,
-              seed: 1,
               maxOutputTokens: 640,
               responseMimeType: "application/json",
               thinkingConfig: { thinkingBudget: 0 },
@@ -202,7 +200,6 @@ export class TranslatorService {
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0,
-            seed: 1,
             maxOutputTokens: 512,
             thinkingConfig: { thinkingBudget: 0 },
           },
