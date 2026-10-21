@@ -42,11 +42,7 @@ export class TranslatorService {
     }
     const sourceText = (input.text || "").replace(/\s+/g, " ").trim();
     if (!sourceText) return empty;
-    const sourceLang = clampLang(sourceText, langA, langB);
-    const targetLang = sourceLang === langA ? langB : langA;
-    const translatedText =
-      sourceLang === targetLang ? sourceText : (await this.translateFast(sourceText, sourceLang, targetLang)) || sourceText;
-    return { sourceText, translatedText, sourceLang, targetLang };
+    return this.finishTurn(sourceText, langA, langB);
   }
 
   speak(text: string, lang: string, gender: VoiceGender = "male") {
@@ -65,12 +61,13 @@ export class TranslatorService {
     const key = process.env.GEMINI_API_KEY;
     if (!key) return null;
     const prompt = [
-      `Two-language interpreter. ALLOWED LANGUAGES ONLY: ${tagA} (${langA}) and ${tagB} (${langB}).`,
-      "The speaker used exactly one of those two. Never detect, guess, or transcribe any other language.",
-      "Write the transcript in that language's native script. Never transliterate Hebrew/Arabic into Latin letters.",
-      "Then translate into the OTHER allowed language only.",
-      `Return JSON: {"sourceLang":"${langA}"|"${langB}","sourceText":"...","translatedText":"...","confidence":{"${langA}":0,"${langB}":0}}`,
-      `sourceLang MUST be ${langA} or ${langB}. confidence is 0-1 for those two languages only.`,
+      "STATELESS standalone request. This is a brand-new isolated utterance.",
+      "Do not use conversation history, prior turns, memory, or cached translations.",
+      `STT LOCK: transcribe ONLY in ${tagA} (${langA}). Do not decode as ${tagB} or any other language.`,
+      `Write sourceText in ${langA} native script. Never transliterate.`,
+      `TRANSLATE LOCK: Input ${langA} → Output ${langB} only. translatedText MUST be ${tagB}.`,
+      `It is forbidden for translatedText to be in ${langA}. Never copy sourceText into translatedText.`,
+      `Return JSON: {"sourceLang":"${langA}","sourceText":"...","targetLang":"${langB}","translatedText":"..."}`,
     ].join(" ");
     try {
       const res = await fetch(
@@ -91,6 +88,7 @@ export class TranslatorService {
             ],
             generationConfig: {
               temperature: 0,
+              seed: 1,
               maxOutputTokens: 640,
               responseMimeType: "application/json",
               thinkingConfig: { thinkingBudget: 0 },
@@ -110,23 +108,40 @@ export class TranslatorService {
           .trim() ?? "";
       const parsed = parseTurn(raw, langA, langB);
       if (!parsed?.sourceText) return null;
-      if (!parsed.translatedText && parsed.sourceLang !== parsed.targetLang) {
-        parsed.translatedText = (await this.translateFast(parsed.sourceText, parsed.sourceLang, parsed.targetLang)) || "";
-      }
-      this.logger.log(
-        `translator-stt ${parsed.sourceLang} conf=${clip(JSON.stringify(parsed.sourceText))} -> ${clip(parsed.translatedText)}`,
-      );
-      return parsed;
+      return this.finishTurn(parsed.sourceText, langA, langB, parsed.translatedText);
     } catch (error) {
       this.logger.warn(`translator gemini ${(error as Error).message}`);
       return null;
     }
   }
 
-  private async translateFast(text: string, source: string, target: string) {
+  private async finishTurn(sourceText: string, langA: string, langB: string, draft = "") {
+    const sourceLang = langA;
+    const targetLang = langB;
+    let translatedText = sameLanguageOutput(draft, sourceLang, targetLang) ? "" : draft;
+    if (!translatedText && sourceLang !== targetLang) {
+      translatedText = await this.translateFast(sourceText, sourceLang, targetLang);
+    }
+    if (sameLanguageOutput(translatedText, sourceLang, targetLang)) {
+      translatedText = await this.translateFast(sourceText, sourceLang, targetLang, true);
+    }
+    if (sameLanguageOutput(translatedText, sourceLang, targetLang)) translatedText = "";
+    this.logger.log(`translator-stt ${sourceLang}->${targetLang} ${clip(sourceText)} -> ${clip(translatedText)}`);
+    return { sourceText, translatedText, sourceLang, targetLang };
+  }
+
+  private async translateFast(text: string, source: string, target: string, retry = false) {
     const geminiKey = process.env.GEMINI_API_KEY;
     if (!geminiKey) return "";
-    const prompt = `Translate from ${source} to ${target}. Reply with only the translation. No quotes, notes, or transliteration.\n\n${text}`;
+    const prompt = [
+      "STATELESS standalone translation. No conversation history.",
+      `Input language: ${source}. Output language: ${target}.`,
+      `Translate into ${target} only. Do not write ${source}. Do not repeat the input.`,
+      retry ? `The previous output was still in ${source}. Return ${target} only.` : "",
+      text,
+    ]
+      .filter(Boolean)
+      .join("\n");
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${encodeURIComponent(geminiKey)}`,
       {
@@ -137,6 +152,7 @@ export class TranslatorService {
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0,
+            seed: 1,
             maxOutputTokens: 512,
             thinkingConfig: { thinkingBudget: 0 },
           },
@@ -232,22 +248,22 @@ function parseTurn(raw: string, langA: string, langB: string): Turn | null {
     };
     const sourceText = String(data.sourceText || data.text || "").replace(/\s+/g, " ").trim();
     if (!sourceText) return null;
-    const sourceLang = clampLang(sourceText, langA, langB, data.sourceLang || data.language);
-    const targetLang = sourceLang === langA ? langB : langA;
     const translatedText = String(data.translatedText || "").replace(/\s+/g, " ").trim();
     void data.confidence;
-    return { sourceText, translatedText, sourceLang, targetLang };
+    void data.sourceLang;
+    void data.language;
+    return { sourceText, translatedText, sourceLang: langA, targetLang: langB };
   } catch {
     return null;
   }
 }
 
-function clampLang(text: string, langA: string, langB: string, claimed?: string) {
-  const claim = String(claimed || "").slice(0, 2).toLowerCase();
-  if (distinctiveScript(text, langA) && !distinctiveScript(text, langB)) return langA;
-  if (distinctiveScript(text, langB) && !distinctiveScript(text, langA)) return langB;
-  if (claim === langA || claim === langB) return claim;
-  return langA;
+function sameLanguageOutput(text: string, sourceLang: string, targetLang: string) {
+  const clean = (text || "").replace(/\s+/g, " ").trim();
+  if (!clean || sourceLang === targetLang) return true;
+  if (distinctiveScript(clean, sourceLang) && !distinctiveScript(clean, targetLang)) return true;
+  if (!distinctiveScript(clean, targetLang)) return true;
+  return false;
 }
 
 function scriptFamily(lang: string) {

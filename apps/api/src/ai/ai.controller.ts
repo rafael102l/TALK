@@ -37,10 +37,9 @@ export class AiController {
   ) {
     const original = file?.originalname || "";
     const turn = await this.translator.transcribe({
-      audio: file?.buffer,
+      audio: file?.buffer ? Buffer.from(file.buffer) : undefined,
       mime: file?.mimetype || "audio/mp4",
       ext: extname(original).replace(".", "") || "m4a",
-      text: body.text?.trim() ?? "",
       langA: body.langA?.trim() || "he",
       langB: body.langB?.trim() || "en",
     });
