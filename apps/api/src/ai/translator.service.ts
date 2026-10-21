@@ -52,9 +52,8 @@ export class TranslatorService {
     }
     const sourceText = (input.text || "").replace(/\s+/g, " ").trim();
     if (!sourceText) return empty;
-    const { hebrew, other } = hebrewPair(langA, langB);
-    const sourceLang = hasHebrew(sourceText) ? hebrew : other;
-    const targetLang = sourceLang === hebrew ? other : hebrew;
+    const sourceLang = pickSpoken(null, "", sourceText, langA, langB);
+    const targetLang = sourceLang === langA ? langB : langA;
     return this.finishTurn(sourceText, sourceLang, targetLang);
   }
 
@@ -68,7 +67,6 @@ export class TranslatorService {
   }) {
     const langA = input.langA || "he";
     const langB = input.langB || "en";
-    const { hebrew, other } = hebrewPair(langA, langB);
     const turn = await this.transcribe({
       audio: input.audio,
       mime: input.mime,
@@ -76,8 +74,8 @@ export class TranslatorService {
       langA,
       langB,
     });
-    const sourceLang = turn.sourceLang === other ? other : hebrew;
-    const targetLang = sourceLang === hebrew ? other : hebrew;
+    const sourceLang = turn.sourceLang === langB ? langB : langA;
+    const targetLang = sourceLang === langA ? langB : langA;
     const sourceText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
     const translatedText = (turn.translatedText || "").replace(/\s+/g, " ").trim();
     const spoken =
@@ -113,36 +111,31 @@ export class TranslatorService {
     langA: string,
     langB: string,
   ): Promise<Turn | null> {
-    const { hebrew, other } = hebrewPair(langA, langB);
-    const [spokeHebrewDetect, auto] = await Promise.all([
-      this.detectSpokeHebrew(audio, mime, ext, other),
+    const [detected, auto] = await Promise.all([
+      this.detectSpokenLang(audio, mime, ext, langA, langB),
       this.whisperAuto(audio, mime, ext),
     ]);
-    const spokeHebrew =
-      spokeHebrewDetect ?? (hasHebrew(auto.text) || whisperLangCode(auto.language) === "he");
-    const sourceLang = spokeHebrew ? hebrew : other;
-    const targetLang = spokeHebrew ? other : hebrew;
+    const sourceLang = pickSpoken(detected, auto.language, auto.text, langA, langB);
+    const targetLang = sourceLang === langA ? langB : langA;
     let text = auto.text;
-    if (spokeHebrew && !hasHebrew(text)) {
-      const locked = await this.whisperFor(audio, hebrew, mime, ext);
-      if (hasHebrew(locked.text)) text = locked.text;
-    } else if (!spokeHebrew && (hasHebrew(text) || !text)) {
-      const locked = await this.whisperFor(audio, other, mime, ext);
-      if (locked.text && !hasHebrew(locked.text)) text = locked.text;
+    if (!textMatchesLang(text, sourceLang, targetLang)) {
+      const locked = await this.whisperFor(audio, sourceLang, mime, ext);
+      if (textMatchesLang(locked.text, sourceLang, targetLang)) text = locked.text;
     }
     if (!text) return null;
-    this.logger.log(`translator-detect ${spokeHebrew ? "he" : other} => ${sourceLang}->${targetLang} ${clip(text)}`);
+    this.logger.log(`translator-detect ${detected || auto.language || "?"} => ${sourceLang}->${targetLang} ${clip(text)}`);
     return this.finishTurn(text, sourceLang, targetLang);
   }
 
-  private async detectSpokeHebrew(audio: Buffer, mime: string, ext: string, other: string) {
+  private async detectSpokenLang(audio: Buffer, mime: string, ext: string, langA: string, langB: string) {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return null;
-    const tag = speechTag(other) || other;
+    const tagA = speechTag(langA) || langA;
+    const tagB = speechTag(langB) || langB;
     const prompt = [
-      `The speaker used either Hebrew or ${tag}.`,
-      "Was the spoken language Hebrew?",
-      `Return JSON: {"hebrew": true} if Hebrew, {"hebrew": false} if ${tag}.`,
+      `The speaker used either ${langA} (${tagA}) or ${langB} (${tagB}). Never any other language.`,
+      `Which of these two languages was spoken?`,
+      `Return JSON: {"lang":"${langA}"} or {"lang":"${langB}"}.`,
       "Do not transcribe. Do not translate.",
     ].join(" ");
     try {
@@ -184,9 +177,11 @@ export class TranslatorService {
       const start = raw.indexOf("{");
       const end = raw.lastIndexOf("}");
       if (start < 0 || end <= start) return null;
-      const parsed = JSON.parse(raw.slice(start, end + 1)) as { hebrew?: boolean };
-      if (typeof parsed.hebrew !== "boolean") return null;
-      return parsed.hebrew;
+      const parsed = JSON.parse(raw.slice(start, end + 1)) as { lang?: string };
+      const lang = whisperLangCode(String(parsed.lang || ""));
+      if (lang === langB) return langB;
+      if (lang === langA) return langA;
+      return null;
     } catch (error) {
       this.logger.warn(`translator detect ${(error as Error).message}`);
       return null;
@@ -454,29 +449,83 @@ function logTranslateFail(message: string) {
   console.error(message);
 }
 
-function hebrewPair(langA: string, langB: string) {
-  const a = langA || "he";
-  const b = langB || "en";
-  if (a === "he") return { hebrew: a, other: b === "he" ? "en" : b };
-  if (b === "he") return { hebrew: b, other: a };
-  return { hebrew: a, other: b };
+function pickSpoken(detected: string | null, autoLang: string, text: string, langA: string, langB: string) {
+  if (detected === langB) return langB;
+  if (detected === langA) return langA;
+  const code = whisperLangCode(autoLang);
+  if (code === langB) return langB;
+  if (code === langA) return langA;
+  const aScript = uniqueScript(langA) && hasScript(text, langA);
+  const bScript = uniqueScript(langB) && hasScript(text, langB);
+  if (bScript && !aScript) return langB;
+  if (aScript && !bScript) return langA;
+  if (hasScript(text, langB) && !hasScript(text, langA)) return langB;
+  if (hasScript(text, langA) && !hasScript(text, langB)) return langA;
+  return langA;
 }
 
-function hasHebrew(text: string) {
-  return /[\u0590-\u05FF]/.test(text || "");
+function textMatchesLang(text: string, lang: string, otherLang: string) {
+  if (!text) return false;
+  if (uniqueScript(lang)) return hasScript(text, lang);
+  if (uniqueScript(otherLang)) return !hasScript(text, otherLang);
+  return true;
 }
 
 function canSpeakTranslation(text: string, sourceLang: string, targetLang: string) {
   if (!text || sourceLang === targetLang) return false;
-  if (targetLang === "he") return hasHebrew(text);
-  if (sourceLang === "he") return !hasHebrew(text);
+  if (uniqueScript(targetLang) && !hasScript(text, targetLang)) return false;
+  if (uniqueScript(sourceLang) && hasScript(text, sourceLang) && !hasScript(text, targetLang)) return false;
   return true;
+}
+
+function uniqueScript(lang: string) {
+  return ["he", "ar", "fa", "ur", "ru", "uk", "bg", "hi", "bn", "ta", "zh", "ja", "ko", "am", "ka", "th", "el"].includes(
+    lang,
+  );
+}
+
+function hasScript(text: string, lang: string) {
+  if (lang === "he") return /[\u0590-\u05FF]/.test(text);
+  if (lang === "ar" || lang === "fa" || lang === "ur") return /[\u0600-\u06FF]/.test(text);
+  if (lang === "ru" || lang === "uk" || lang === "bg") return /[\u0400-\u04FF]/.test(text);
+  if (lang === "hi" || lang === "bn" || lang === "ta") return /[\u0900-\u097F\u0980-\u09FF\u0B80-\u0BFF]/.test(text);
+  if (lang === "zh" || lang === "ja" || lang === "ko") return /[\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/.test(text);
+  if (lang === "am") return /[\u1200-\u137F]/.test(text);
+  if (lang === "ka") return /[\u10A0-\u10FF]/.test(text);
+  if (lang === "th") return /[\u0E00-\u0E7F]/.test(text);
+  if (lang === "el") return /[\u0370-\u03FF]/.test(text);
+  return /[A-Za-zÀ-ÿ]/.test(text) && !/[\u0590-\u05FF\u0600-\u06FF]/.test(text);
 }
 
 function whisperLangCode(raw: string) {
   const value = (raw || "").trim().toLowerCase();
-  if (value === "he" || value === "hebrew") return "he";
-  return value.length === 2 ? value : value.slice(0, 2);
+  if (value.length === 2) return value;
+  const names: Record<string, string> = {
+    hebrew: "he",
+    english: "en",
+    arabic: "ar",
+    russian: "ru",
+    french: "fr",
+    spanish: "es",
+    german: "de",
+    italian: "it",
+    portuguese: "pt",
+    turkish: "tr",
+    persian: "fa",
+    hindi: "hi",
+    chinese: "zh",
+    japanese: "ja",
+    korean: "ko",
+    ukrainian: "uk",
+    amharic: "am",
+    georgian: "ka",
+    dutch: "nl",
+    polish: "pl",
+    romanian: "ro",
+    thai: "th",
+    greek: "el",
+  };
+  return names[value] || value.slice(0, 2);
 }
 
 function geminiAudioMime(mime: string, ext: string) {
