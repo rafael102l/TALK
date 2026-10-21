@@ -30,20 +30,4 @@ export class TranslatorDto {
   @IsOptional()
   @IsIn(["male", "female", "child"])
   gender?: "male" | "female" | "child";
-
-  @IsOptional()
-  @IsString()
-  speak?: string;
-}
-
-export class TranslatorSpeakDto {
-  @IsString()
-  text!: string;
-
-  @IsIn(codes)
-  lang!: string;
-
-  @IsOptional()
-  @IsIn(["male", "female", "child"])
-  gender?: "male" | "female" | "child";
 }
