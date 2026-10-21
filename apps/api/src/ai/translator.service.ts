@@ -64,6 +64,7 @@ export class TranslatorService {
     langA: string;
     langB: string;
     gender?: VoiceGender;
+    speak?: boolean;
   }) {
     const langA = input.langA || "he";
     const langB = input.langB || "en";
@@ -83,7 +84,7 @@ export class TranslatorService {
         ? translatedText
         : "";
     let audio: Buffer | null = null;
-    if (spoken) {
+    if (spoken && input.speak !== false) {
       try {
         audio = await this.speakTranslation(spoken, targetLang, input.gender || "male");
       } catch {
@@ -100,6 +101,21 @@ export class TranslatorService {
     };
   }
 
+  async speakTurn(text: string, lang: string, gender: VoiceGender = "male") {
+    const spoken = sanitizeTranscript(text);
+    if (!spoken) return { audioBase64: "", mime: "audio/mpeg" as const };
+    let audio: Buffer | null = null;
+    try {
+      audio = await this.speakTranslation(spoken, lang, gender);
+    } catch {
+      audio = null;
+    }
+    return {
+      audioBase64: audio?.length ? audio.toString("base64") : "",
+      mime: "audio/mpeg" as const,
+    };
+  }
+
   private speakTranslation(translatedText: string, targetLang: string, gender: VoiceGender) {
     return this.speakMp3(translatedText, targetLang, gender);
   }
@@ -111,11 +127,18 @@ export class TranslatorService {
     langA: string,
     langB: string,
   ): Promise<Turn | null> {
-    const [detected, auto] = await Promise.all([
-      this.detectSpokenLang(audio, mime, ext, langA, langB),
-      this.whisperAuto(audio, mime, ext),
-    ]);
-    const sourceLang = pickSpoken(detected, auto.language, auto.text, langA, langB);
+    const detectJob = this.detectSpokenLang(audio, mime, ext, langA, langB);
+    const auto = await this.whisperAuto(audio, mime, ext);
+    const aOnly =
+      uniqueScript(langA) && hasScript(auto.text, langA) && !(uniqueScript(langB) && hasScript(auto.text, langB));
+    const bOnly =
+      uniqueScript(langB) && hasScript(auto.text, langB) && !(uniqueScript(langA) && hasScript(auto.text, langA));
+    let detected: string | null = null;
+    let sourceLang = aOnly ? langA : bOnly ? langB : "";
+    if (!sourceLang) {
+      detected = await detectJob;
+      sourceLang = pickSpoken(detected, auto.language, auto.text, langA, langB);
+    }
     const targetLang = sourceLang === langA ? langB : langA;
     let text = auto.text;
     if (!textMatchesLang(text, sourceLang, targetLang)) {
@@ -144,7 +167,7 @@ export class TranslatorService {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(3500),
           body: JSON.stringify({
             contents: [
               {
@@ -198,7 +221,10 @@ export class TranslatorService {
       form.append("model", "whisper-1");
       form.append("temperature", "0");
       form.append("response_format", "verbose_json");
-      form.append("prompt", "Transcribe exactly what was spoken. Do not translate.");
+      form.append(
+        "prompt",
+        "Transcribe only the spoken words. Ignore background noise and silence. Do not translate. Do not invent words.",
+      );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
@@ -231,7 +257,10 @@ export class TranslatorService {
       form.append("language", lang);
       form.append("temperature", "0");
       form.append("response_format", "verbose_json");
-      form.append("prompt", `${speechTag(lang) || lang} only. Transcribe exactly. Do not translate.`);
+      form.append(
+        "prompt",
+        `${speechTag(lang) || lang} only. Transcribe the spoken words. Ignore background noise and silence. Do not translate. Do not invent words.`,
+      );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
@@ -281,20 +310,31 @@ export class TranslatorService {
       .filter(Boolean)
       .join("\n");
     const geminiKey = process.env.GEMINI_API_KEY || "";
+    const openaiKey = process.env.OPENAI_API_KEY || "";
+    const raced: Promise<string>[] = [];
+    if (geminiKey) raced.push(this.viaGeminiTranslate(GEMINI_TRANSLATE_MODELS[0], prompt, geminiKey));
+    if (openaiKey) raced.push(this.viaOpenAiTranslate(text, source, target, openaiKey));
+    if (raced.length) {
+      try {
+        const out = await Promise.any(
+          raced.map(async (job) => {
+            const value = await job;
+            if (!value) throw new Error("empty");
+            return value;
+          }),
+        );
+        if (out) return out;
+      } catch {
+        /* try remaining Gemini models */
+      }
+    } else {
+      logTranslateFail("translator-translate missing GEMINI_API_KEY and OPENAI_API_KEY");
+    }
     if (geminiKey) {
-      for (const model of GEMINI_TRANSLATE_MODELS) {
+      for (const model of GEMINI_TRANSLATE_MODELS.slice(1)) {
         const out = await this.viaGeminiTranslate(model, prompt, geminiKey);
         if (out) return out;
       }
-    } else {
-      logTranslateFail("translator-translate missing GEMINI_API_KEY");
-    }
-    const openaiKey = process.env.OPENAI_API_KEY || "";
-    if (openaiKey) {
-      const out = await this.viaOpenAiTranslate(text, source, target, openaiKey);
-      if (out) return out;
-    } else {
-      logTranslateFail("translator-translate missing OPENAI_API_KEY");
     }
     logTranslateFail(`translator-translate all engines failed ${source}->${target}`);
     return "";
@@ -374,12 +414,6 @@ export class TranslatorService {
   }
 
   private async speakMp3(text: string, lang: string, gender: VoiceGender) {
-    const plan = elevenVoicePlan(lang);
-    if (plan.code) {
-      const native = await this.viaElevenMp3(text, lang, gender);
-      if (native?.length) return native;
-      return this.viaOpenAiMp3(text, gender);
-    }
     const jobs = [this.viaOpenAiMp3(text, gender), this.viaElevenMp3(text, lang, gender)];
     try {
       return await Promise.any(
@@ -442,7 +476,11 @@ export class TranslatorService {
 }
 
 function sanitizeTranscript(text: string) {
-  return (text || "").replace(/\s+/g, " ").trim();
+  return (text || "")
+    .replace(/\s+/g, " ")
+    .replace(/^(thank you for watching|thanks for watching|thanks for listening)[\s.,!]*/i, "")
+    .replace(/[\s.,!]*(thank you for watching|thanks for watching|thanks for listening)$/i, "")
+    .trim();
 }
 
 function logTranslateFail(message: string) {

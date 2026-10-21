@@ -3,7 +3,7 @@ import { FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
 import { extname } from "path";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
-import { TranslateDto, TranslatorDto } from "./translate.dto";
+import { TranslateDto, TranslatorDto, TranslatorSpeakDto } from "./translate.dto";
 import { TranslateService } from "./translate.service";
 import { TranslatorService } from "./translator.service";
 
@@ -31,6 +31,7 @@ export class AiController {
   )
   async translatorTurn(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: TranslatorDto) {
     const original = file?.originalname || "";
+    const speak = body.speak !== "0" && body.speak !== "false";
     return this.translator.runTurn({
       audio: file?.buffer ? Buffer.from(file.buffer) : undefined,
       mime: file?.mimetype || "audio/mp4",
@@ -38,6 +39,12 @@ export class AiController {
       langA: body.langA?.trim() || "he",
       langB: body.langB?.trim() || "en",
       gender: body.gender || "male",
+      speak,
     });
+  }
+
+  @Post("translator/speak")
+  async translatorSpeak(@Body() body: TranslatorSpeakDto) {
+    return this.translator.speakTurn(body.text || "", body.lang, body.gender || "male");
   }
 }
