@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { VoiceGender } from "@talk/shared";
-import { speechTag } from "./stt.service";
+import { collapseRepeats, speechTag } from "./stt.service";
 import { elevenVoicePlan } from "./tts.service";
 
 const OPENAI_VOICE: Record<VoiceGender, string> = {
@@ -56,18 +56,67 @@ export class TranslatorService {
     langA: string,
     langB: string,
   ): Promise<Turn | null> {
+    const heard =
+      sanitizeTranscript(await this.whisperLocked(audio, langA, mime, ext)) ||
+      sanitizeTranscript(await this.geminiHear(audio, mime, ext, langA, langB));
+    if (!heard) return null;
+    return this.finishTurn(heard, langA, langB);
+  }
+
+  private async whisperLocked(audio: Buffer, lang: string, mime: string, ext: string) {
+    const key = process.env.OPENAI_API_KEY;
+    if (!key || !audio.length) return "";
+    try {
+      const form = new FormData();
+      form.append("file", new Blob([new Uint8Array(audio)], { type: mime }), `speech.${ext || "m4a"}`);
+      form.append("model", "whisper-1");
+      form.append("language", lang);
+      form.append("temperature", "0");
+      form.append("response_format", "verbose_json");
+      form.append(
+        "prompt",
+        "Transcribe exactly what was spoken. Do not invent names. Do not complete cut-off words. Do not repeat phrases.",
+      );
+      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}` },
+        body: form,
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!res.ok) {
+        this.logger.warn(`translator whisper ${lang} failed: ${res.status}`);
+        return "";
+      }
+      const data = (await res.json()) as {
+        text?: string;
+        segments?: { text?: string; no_speech_prob?: number; compression_ratio?: number; avg_logprob?: number }[];
+      };
+      const pieces = (data.segments || [])
+        .filter((seg) => (seg.no_speech_prob ?? 0) < 0.6)
+        .filter((seg) => (seg.compression_ratio ?? 0) < 2.4)
+        .filter((seg) => (seg.avg_logprob ?? 0) > -1)
+        .map((seg) => (seg.text || "").trim())
+        .filter(Boolean);
+      return pieces.join(" ").trim() || (data.text || "").replace(/\s+/g, " ").trim();
+    } catch (error) {
+      this.logger.warn(`translator whisper ${lang} ${(error as Error).message}`);
+      return "";
+    }
+  }
+
+  private async geminiHear(audio: Buffer, mime: string, ext: string, langA: string, langB: string) {
     const tagA = speechTag(langA) || langA;
     const tagB = speechTag(langB) || langB;
     const key = process.env.GEMINI_API_KEY;
-    if (!key) return null;
+    if (!key) return "";
     const prompt = [
       "STATELESS standalone request. This is a brand-new isolated utterance.",
       "Do not use conversation history, prior turns, memory, or cached translations.",
       `STT LOCK: transcribe ONLY in ${tagA} (${langA}). Do not decode as ${tagB} or any other language.`,
       `Write sourceText in ${langA} native script. Never transliterate.`,
-      `TRANSLATE LOCK: Input ${langA} → Output ${langB} only. translatedText MUST be ${tagB}.`,
-      `It is forbidden for translatedText to be in ${langA}. Never copy sourceText into translatedText.`,
-      `Return JSON: {"sourceLang":"${langA}","sourceText":"...","targetLang":"${langB}","translatedText":"..."}`,
+      "Do not invent names. Do not complete cut-off words. Do not repeat the same phrase.",
+      "Transcribe only words that were fully spoken. If the ending is unclear, omit the unfinished word.",
+      `Return JSON: {"sourceText":"..."}`,
     ].join(" ");
     try {
       const res = await fetch(
@@ -98,7 +147,7 @@ export class TranslatorService {
       );
       if (!res.ok) {
         this.logger.warn(`translator gemini ${res.status}`);
-        return null;
+        return "";
       }
       const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
       const raw =
@@ -107,17 +156,18 @@ export class TranslatorService {
           .join("")
           .trim() ?? "";
       const parsed = parseTurn(raw, langA, langB);
-      if (!parsed?.sourceText) return null;
-      return this.finishTurn(parsed.sourceText, langA, langB, parsed.translatedText);
+      return parsed?.sourceText || "";
     } catch (error) {
       this.logger.warn(`translator gemini ${(error as Error).message}`);
-      return null;
+      return "";
     }
   }
 
   private async finishTurn(sourceText: string, langA: string, langB: string, draft = "") {
     const sourceLang = langA;
     const targetLang = langB;
+    sourceText = sanitizeTranscript(sourceText);
+    if (!sourceText) return { sourceText: "", translatedText: "", sourceLang, targetLang };
     let translatedText = sameLanguageOutput(draft, sourceLang, targetLang) ? "" : draft;
     if (!translatedText && sourceLang !== targetLang) {
       translatedText = await this.translateFast(sourceText, sourceLang, targetLang);
@@ -256,6 +306,12 @@ function parseTurn(raw: string, langA: string, langB: string): Turn | null {
   } catch {
     return null;
   }
+}
+
+function sanitizeTranscript(text: string) {
+  let t = collapseRepeats(text || "");
+  t = t.replace(/((?:[\p{L}']+\s+){1,4}[\p{L}']+)(?:[,\s]+\1)+/gu, "$1");
+  return t.replace(/\s+/g, " ").trim();
 }
 
 function sameLanguageOutput(text: string, sourceLang: string, targetLang: string) {
