@@ -17,8 +17,9 @@ export class TranslateDto {
 }
 
 export class TranslatorDto {
+  @IsOptional()
   @IsString()
-  text!: string;
+  text?: string;
 
   @IsIn(codes)
   langA!: string;

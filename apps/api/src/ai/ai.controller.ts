@@ -1,4 +1,7 @@
-import { Body, Controller, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Post, UploadedFile, UseGuards, UseInterceptors } from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { memoryStorage } from "multer";
+import { extname } from "path";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { TranslateDto, TranslatorDto } from "./translate.dto";
 import { TranslateService } from "./translate.service";
@@ -23,13 +26,19 @@ export class AiController {
   }
 
   @Post("translator")
-  async translatorTurn(@Body() body: TranslatorDto) {
-    return this.translator.run(
-      body.text?.trim() ?? "",
-      body.langA?.trim() || "he",
-      body.langB?.trim() || "en",
-      body.gender || "male",
-    );
+  @UseInterceptors(
+    FileInterceptor("audio", { storage: memoryStorage(), limits: { fileSize: 3 * 1024 * 1024 } }),
+  )
+  async translatorTurn(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: TranslatorDto) {
+    const original = file?.originalname || "";
+    return this.translator.run({
+      audio: file?.buffer,
+      mime: file?.mimetype || "audio/mp4",
+      ext: extname(original).replace(".", "") || "m4a",
+      text: body.text?.trim() ?? "",
+      langA: body.langA?.trim() || "he",
+      langB: body.langB?.trim() || "en",
+      gender: body.gender || "male",
+    });
   }
 }
-
