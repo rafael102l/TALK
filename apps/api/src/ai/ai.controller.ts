@@ -38,18 +38,31 @@ export class AiController {
       langA: body.langA?.trim() || "he",
       langB: body.langB?.trim() || "en",
     });
-    let audio: Buffer | null = null;
-    try {
-      audio = turn.translatedText
-        ? await this.translator.speak(turn.translatedText, turn.targetLang, body.gender || "male")
-        : null;
-    } catch {
-      audio = null;
-    }
+    const audio = turn.translatedText
+      ? await firstSettled(
+          this.translator.speak(turn.translatedText, turn.targetLang, body.gender || "male"),
+          450,
+        )
+      : null;
     return {
       ...turn,
-      audioBase64: audio ? audio.toString("base64") : "",
+      audioBase64: audio?.length ? audio.toString("base64") : "",
       mime: "audio/mpeg" as const,
     };
   }
+}
+
+function firstSettled(job: Promise<Buffer | null>, ms: number) {
+  return new Promise<Buffer | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    job
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value?.length ? value : null);
+      })
+      .catch(() => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+  });
 }

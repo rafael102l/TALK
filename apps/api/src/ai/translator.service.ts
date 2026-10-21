@@ -73,15 +73,12 @@ export class TranslatorService {
       form.append("language", lang);
       form.append("temperature", "0");
       form.append("response_format", "verbose_json");
-      form.append(
-        "prompt",
-        "Transcribe exactly what was spoken. Do not invent names. Do not complete cut-off words. Do not repeat phrases.",
-      );
+      form.append("prompt", `${speechTag(lang) || lang} only.`);
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
         body: form,
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(3000),
       });
       if (!res.ok) {
         this.logger.warn(`translator whisper ${lang} failed: ${res.status}`);
@@ -123,7 +120,7 @@ export class TranslatorService {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(7000),
+          signal: AbortSignal.timeout(2500),
           body: JSON.stringify({
             contents: [
               {
@@ -195,7 +192,7 @@ export class TranslatorService {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(3500),
+        signal: AbortSignal.timeout(2500),
         body: JSON.stringify({
           contents: [{ role: "user", parts: [{ text: prompt }] }],
           generationConfig: {
