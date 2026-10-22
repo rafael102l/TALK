@@ -23,7 +23,7 @@ const GEMINI_TRANSLATE_MODELS = [
 ];
 
 const STRICT_TRANSLATE =
-  "You are a strict word-for-word translator. Translate ONLY the user's spoken input into the target language. Do NOT add any pleasantries, notes, context, corrections, or explanations. Return ONLY the direct translation.";
+  "You are an absolute word-for-word TRANSLATOR, NOT a conversational assistant. Your ONLY job is to translate the input sentence into the target language. If the user asks a question (e.g., 'How do I say X in Hebrew?'), DO NOT answer the question. Translate the question itself directly (e.g., 'איך אומרים X בעברית?'). NEVER output just the answer. Do NOT add pleasantries, notes, context, corrections, or explanations. Return ONLY the direct translation of the input.";
 
 type Turn = {
   sourceText: string;
@@ -289,8 +289,9 @@ export class TranslatorService {
     const prompt = [
       STRICT_TRANSLATE,
       `Input language: ${source}. Output language: ${target}.`,
-      `Translate into ${target} only. Do not write ${source}. Do not repeat the input.`,
-      retry ? `The previous output was still in ${source}. Return ${target} only.` : "",
+      `Translate the whole input into ${target} only. Do not write ${source}. Do not repeat the input.`,
+      "Do not answer questions. If the input is a question, translate the question itself.",
+      retry ? `The previous output was still in ${source}. Translate the original sentence into ${target} only. Do not answer it.` : "",
       text,
     ]
       .filter(Boolean)
