@@ -11,8 +11,8 @@ async function bootstrap() {
   app.enableCors({ origin: true, credentials: true });
   // Log every upload attempt before guards — proves whether phones reach the API.
   app.use((req: { method?: string; url?: string; socket?: { remoteAddress?: string }; headers?: Record<string, unknown> }, _res: unknown, next: () => void) => {
-    if (req.method === "POST" && (req.url === "/transmissions" || req.url?.startsWith("/transmissions?"))) {
-      console.log(`[HIT] POST /transmissions from ${req.socket?.remoteAddress} ct=${String(req.headers?.["content-type"] || "?")}`);
+    if (req.method === "POST" && (req.url === "/transmissions" || req.url?.startsWith("/transmissions?") || req.url === "/transmissions/text" || req.url === "/transmissions/read")) {
+      console.log(`[HIT] ${req.method} ${req.url} from ${req.socket?.remoteAddress} ct=${String(req.headers?.["content-type"] || "?")}`);
     }
     next();
   });

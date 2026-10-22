@@ -378,6 +378,7 @@ export class TransmissionsService {
         await this.contacts.ensureMutualTalk(sender, target);
       }),
     );
+    this.logger.log(`TEXT ${transmission.id} from=${sender.id} to=${targetIds.join(",")}`);
     return { id: transmission.id, status: "PROCESSING" as const, channelId: channel.id };
   }
 
@@ -588,6 +589,7 @@ export class TransmissionsService {
           expiresAt: transmission.expiresAt?.toISOString() || null,
         };
         const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+        this.logger.log(`Deliver ${delivery} ${transmission.id} -> ${target.userId} reached=${reached}`);
         if (delivery === "walkie") {
           void this.prisma.transmissionTarget.update({
             where: { id: target.id },
@@ -608,7 +610,7 @@ export class TransmissionsService {
               ? "שידור חדש הגיע"
               : "יש שידור שמחכה — לחצו כדי לשמוע"
             : (payload.translatedText || originalText || "הודעה קולית").slice(0, 180);
-        if (!this.presence.isSocketLive(target.userId)) void this.push.notifyUsers(
+        if (!reached) void this.push.notifyUsers(
           [target.userId],
           title,
           body,

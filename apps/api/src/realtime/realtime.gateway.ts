@@ -116,6 +116,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       void this.sendUnplayedWalkies(userId).catch((error: Error) => {
         this.logger.warn(`Walkie replay failed: ${error.message}`);
       });
+      void this.sendMissedChat(userId).catch((error: Error) => {
+        this.logger.warn(`Chat replay failed: ${error.message}`);
+      });
     }, 800);
   }
 
@@ -183,6 +186,62 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (delivered) this.logger.debug(`Walkie replay user=${userId} count=${delivered}`);
   }
 
+  private async sendMissedChat(userId: string) {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const rows = await this.prisma.transmissionTarget.findMany({
+      where: {
+        userId,
+        playedAt: null,
+        transmission: {
+          senderId: { not: userId },
+          kind: { in: ["text", "voice"] },
+          status: "READY",
+          createdAt: { gte: since },
+        },
+      },
+      include: { transmission: { include: { sender: true, renders: true } } },
+      orderBy: { transmission: { createdAt: "asc" } },
+      take: 40,
+    });
+    if (!rows.length) return;
+    let delivered = 0;
+    for (const row of rows) {
+      const tx = row.transmission;
+      const sender = toPublicUser(tx.sender);
+      const hear = (row.language || tx.sender.listenLang || "he").slice(0, 2).toLowerCase();
+      const sourceLang = (tx.sender.speakLang || tx.sender.listenLang || "he").slice(0, 2).toLowerCase();
+      const sameLang = hear === sourceLang;
+      const render = tx.renders.find((item) => item.language === hear);
+      const kind = (tx.kind === "voice" ? "voice" : "text") as "text" | "voice";
+      const payload = {
+        transmissionId: tx.id,
+        channelId: tx.channelId,
+        senderId: tx.senderId,
+        senderName: sender.displayName || tx.sender.phoneE164,
+        language: hear,
+        speakLang: sourceLang,
+        mode: sender.plan === "PLUS" ? "plus" : "free",
+        audioUrl: kind === "voice" ? this.storage.publicUrl(tx.originalAudioUrl) : null,
+        originalText: tx.originalText || "",
+        translatedText: sameLang ? tx.originalText || "" : render?.translatedText || tx.originalText || "",
+        durationMs: tx.durationMs,
+        usedOriginalVoice: sameLang,
+        needsAccept: false,
+        live: false,
+        senderPhone: tx.sender.phoneE164,
+        senderAvatarUrl: sender.avatarUrl,
+        voiceGender: sender.voiceGender ?? "male",
+        kind,
+        viewOnce: Boolean(tx.viewOnce),
+        readyAt: tx.createdAt.getTime(),
+        releasedAt: tx.createdAt.getTime(),
+      };
+      if (!this.emitToUser(userId, SOCKET_EVENTS.TRANSMISSION_READY, payload, false)) break;
+      delivered += 1;
+    }
+    if (delivered) this.logger.log(`Chat replay user=${userId} count=${delivered}`);
+  }
+
   async handleDisconnect(client: AuthedSocket) {
     this.liveDub.finish(client.id);
     if (!client.userId) return;
@@ -216,10 +275,13 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     @MessageBody() body: { online?: boolean },
   ) {
     if (!client.userId) return { ok: false };
-    const lastSeen = await this.presence.setAppActive(client.userId, Boolean(body?.online));
+    const active = Boolean(body?.online);
+    const lastSeen = await this.presence.setAppActive(client.userId, active);
+    const online = this.presence.isChatOnline(client.userId);
+    if (active && !online) return { ok: true };
     this.server.emit(SOCKET_EVENTS.PRESENCE, {
       userId: client.userId,
-      online: this.presence.isChatOnline(client.userId),
+      online,
       lastSeen: lastSeen || undefined,
     });
     return { ok: true };
