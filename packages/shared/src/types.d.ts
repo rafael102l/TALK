@@ -61,4 +61,5 @@ export type HistoryItem = {
     replyToId?: string | null;
     replyToName?: string | null;
     replyToText?: string | null;
+    receipt?: "sent" | "delivered" | "read";
 };

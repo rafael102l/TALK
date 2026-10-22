@@ -4,30 +4,27 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { IncomingOverlay } from "../../src/components/IncomingOverlay";
-import { LabeledAction } from "../../src/components/MirsControls";
+import { BottomNav } from "../../src/components/BottomNav";
 import { SelectedRoster, type RosterPerson } from "../../src/components/SelectedRoster";
-import {
-  HistoryIcon,
-  PeopleIcon,
-  SearchIcon,
-  SpeakerIcon,
-} from "../../src/components/MirsIcons";
+import { SearchIcon } from "../../src/components/MirsIcons";
 import { PttButton } from "../../src/components/PttButton";
 import { useI18n } from "../../src/i18n";
 import { api } from "../../src/lib/api";
-import { isMicRecording, startRecording, stopPlayback, stopRecording, setLoudSpeaker } from "../../src/lib/audio";
+import { isMicRecording, prefetchAudio, startRecording, stopPlayback, stopRecording } from "../../src/lib/audio";
+import { ensureMicForRecord, hasMicPermission } from "../../src/lib/permissions";
+import { armLivePress, beginLivePtt, bindLiveSocket, cancelLiveOpen, currentPressId, deleteWavFile, emitWavClip, endLivePtt, heardLiveFrom, isOriginalBlocked, onDubCaption, prepareLiveMic, setLiveMuted, setLiveSelf, setOriginalBlocked, writeWavFile } from "../../src/lib/liveTalk";
 import { useAuth } from "../../src/lib/auth";
 import { clockLog } from "../../src/lib/clock";
 import { holdDiscovery } from "../../src/lib/discover";
 import { MAX_PTT_MS } from "../../src/lib/config";
 import { registerPushToken, attachNotificationListeners, takeLastNotification } from "../../src/lib/notifications";
 import { playReceived } from "../../src/lib/receive";
-import { stopRobot } from "../../src/lib/onDeviceAi";
-import { SOCKET_EVENTS, ensureSocket, getSocket } from "../../src/lib/socket";
-import { autoSyncContacts, cachedTalkContacts, fetchTalkContacts } from "../../src/lib/syncContacts";
+import { onTtsVoiceMissing, openVoiceInstaller, refreshTtsVoices, stopRobot } from "../../src/lib/onDeviceAi";
+import { SOCKET_EVENTS, ensureSocket, getSocket, resumeSocket } from "../../src/lib/socket";
+import { autoSyncContacts, cachedTalkContacts, fetchTalkContacts, loadSavedTalkContacts } from "../../src/lib/syncContacts";
 import { useTargets } from "../../src/lib/targets";
 import { colors } from "../../src/lib/theme";
-import { fetchUnread, fetchWaitingWalkies, isInboxMessage, markPeerTextRead } from "../../src/lib/unread";
+import { ackDelivered, fetchUnread, fetchWaitingWalkies, isInboxMessage, markPeerTextRead } from "../../src/lib/unread";
 import { enqueueVoice, loadPendingVoice, takePendingVoice } from "../../src/lib/pendingVoice";
 import { isInPhoneCall, subscribePhoneCall } from "../../src/lib/phoneCall";
 import { playWalkieExclusive } from "../../src/lib/walkiePlay";
@@ -57,20 +54,27 @@ export default function HomeScreen() {
   const [talking, setTalking] = useState(false);
   const [busyName, setBusyName] = useState<string | null>(null);
   const [status, setStatus] = useState("");
-  const [written, setWritten] = useState("");
+  const [voiceMissing, setVoiceMissing] = useState(false);
+  const [lastTransmission, setLastTransmission] = useState<{
+    sttText: string;
+    translatedText: string;
+    mine: boolean;
+  } | null>(null);
   const [incoming, setIncoming] = useState<TransmissionReadyPayload | null>(null);
   const [liveSpeaker, setLiveSpeaker] = useState<RosterPerson | null>(null);
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [recordingFromId, setRecordingFromId] = useState<string | null>(null);
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
-  const [speakerOn, setSpeakerOn] = useState(true);
   const [unreadTotal, setUnreadTotal] = useState(0);
   const [pendingBySender, setPendingBySender] = useState<Record<string, TransmissionReadyPayload[]>>({});
   const [onlineMap, setOnlineMap] = useState<Record<string, boolean>>({});
   const [sessionUnlocked, setSessionUnlocked] = useState<Record<string, boolean>>({});
   const [muted, setMuted] = useState<Record<string, boolean>>({});
   const talkingRef = useRef(false);
+  const livePttRef = useRef(false);
+  const startingRef = useRef(false);
+  const endingRef = useRef(false);
   const wantEndRef = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const speakClear = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -81,6 +85,9 @@ export default function HomeScreen() {
   const queueWaitingRef = useRef<(payload: TransmissionReadyPayload) => void>(() => undefined);
   const hearOneRef = useRef<(payload: TransmissionReadyPayload) => Promise<void>>(async () => undefined);
   const heardIdsRef = useRef(new Set<string>());
+  const setContactsRef = useRef(setContacts);
+  setContactsRef.current = setContacts;
+  const heldWalkieRef = useRef<TransmissionReadyPayload | null>(null);
   const sendingIds = useRef<string[]>([]);
   const clockRef = useRef<{ press: number; release?: number } | null>(null);
   const playCtx = useRef({
@@ -97,6 +104,8 @@ export default function HomeScreen() {
   pendingBySenderRef.current = pendingBySender;
   sessionUnlockedRef.current = sessionUnlocked;
   mutedRef.current = muted;
+  setLiveMuted(muted);
+  if (user?.id) setLiveSelf(user.id);
 
   const pendingSenderIds = useMemo(() => Object.keys(pendingBySender).filter((id) => pendingBySender[id]?.length), [pendingBySender]);
   const pendingCounts = useMemo(() => {
@@ -158,6 +167,19 @@ export default function HomeScreen() {
     listedLen.current = n;
   }, [listedIds, pendingSenderIds]);
 
+  useEffect(() => onDubCaption((line) => {
+    const mine = Boolean(line.mine);
+    setLastTransmission({
+      sttText: mine ? line.sttText || "" : "",
+      translatedText: line.translatedText || line.text || "",
+      mine,
+    });
+  }), []);
+  useEffect(() => {
+    prepareLiveMic();
+  }, []);
+  useEffect(() => onTtsVoiceMissing(setVoiceMissing), []);
+
   useEffect(() => {
     if (!everyone) return;
     const ids = talkPeople
@@ -174,9 +196,12 @@ export default function HomeScreen() {
   useFocusEffect(
     useCallback(() => {
       const cached = cachedTalkContacts();
-      if (cached.length) setContacts(cached);
+      if (cached.length) setContactsRef.current(cached);
+      void loadSavedTalkContacts().then((list) => {
+        if (list.length) setContactsRef.current(list.filter((c) => c.matchedUser));
+      });
       if (!token) return;
-      void autoSyncContacts(token, true, (list) => setContacts(list.filter((c) => c.matchedUser)), true).catch(
+      void autoSyncContacts(token, false, (list) => setContactsRef.current(list.filter((c) => c.matchedUser)), false).catch(
         () => undefined,
       );
       void fetchWaitingWalkies(token)
@@ -184,7 +209,7 @@ export default function HomeScreen() {
           for (const row of rows) queueWaitingRef.current(row);
         })
         .catch(() => undefined);
-    }, [setContacts, token]),
+    }, [token]),
   );
 
   useEffect(() => {
@@ -196,8 +221,11 @@ export default function HomeScreen() {
   useEffect(() => {
     if (!token) return;
     const socket = ensureSocket(token);
+    bindLiveSocket(socket);
     const onSpeaking = (payload: PttSpeakingPayload) => {
       if (payload.speakerId === playCtx.current.user?.id) return;
+      if (typeof payload.translate === "boolean") setOriginalBlocked(payload.speakerId, payload.translate);
+      if (!payload.speakerName && typeof payload.translate === "boolean") return;
       // Cyan pulse while they hold PTT — green only during playback (speakingId).
       setRecordingFromId(payload.speakerId);
       setOnlineMap((current) => ({ ...current, [payload.speakerId]: true }));
@@ -237,10 +265,9 @@ export default function HomeScreen() {
       const { token: tok, user: me, t: tr, pathname: path } = playCtx.current;
       if (payload.senderId === me?.id) {
         setStatus(tr("delivered"));
-        const line = (payload.translatedText || "").trim();
-        if (line) setWritten(line);
         return;
       }
+      ackDelivered(tok, payload, me?.id);
       if (isInboxMessage(payload)) {
         // Put sender on the home board so Redmi/Galaxy both see each other after a text.
         select(payload.senderId, {
@@ -269,73 +296,45 @@ export default function HomeScreen() {
         return;
       }
       const walkie = (payload.kind || "walkie") === "walkie";
-      const onTalk = path === "/home" || path === "/" || path.endsWith("/home");
-      if (walkie && (AppState.currentState !== "active" || !onTalk)) {
-        queueWaiting(payload);
-        return;
-      }
-      const onBoard =
-        playCtx.current.selectedIds.includes(payload.senderId) ||
-        playCtx.current.focusedId === payload.senderId;
-      const alreadyOpen = Boolean(sessionUnlockedRef.current[payload.senderId]) && onBoard;
-      const mutedSender = Boolean(mutedRef.current[payload.senderId]);
-      if (
-        walkie &&
-        (AppState.currentState !== "active" || !alreadyOpen || mutedSender || (await isInPhoneCall()))
-      ) {
-        queueWaiting(payload);
-        return;
-      }
       if (walkie) {
-        sessionUnlockedRef.current = { ...sessionUnlockedRef.current, [payload.senderId]: true };
-        setSessionUnlocked((current) => ({ ...current, [payload.senderId]: true }));
-        dropPending(payload.senderId);
-      }
-      pinSender(payload);
-      select(payload.senderId, {
-        id: payload.senderId,
-        name: payload.senderName,
-        photo: payload.senderAvatarUrl,
-        gender: payload.voiceGender ?? "male",
-      });
-      const playVoice = async (cancelled: () => boolean) => {
-        if (cancelled()) return;
-        setRecordingFromId(null);
-        setSpeakingId(payload.senderId);
-        setOnlineMap((current) => ({ ...current, [payload.senderId]: true }));
-        setLiveSpeaker({
-          id: payload.senderId,
-          name: payload.senderName,
-          photo: payload.senderAvatarUrl ?? null,
-          gender: payload.voiceGender ?? "male",
-        });
-        const line = (payload.translatedText || payload.originalText || "").trim();
-        if (line) setWritten(line);
-        setStatus("");
-        try {
-          await playReceived(payload, hearLang(me, payload.language), tok);
-          if (cancelled()) return;
+        if (payload.transmissionId && heardIdsRef.current.has(payload.transmissionId)) return;
+        if (mutedRef.current[payload.senderId]) return;
+        if (payload.transmissionId) {
+          heardIdsRef.current.add(payload.transmissionId);
           if (tok) {
             void api(`/transmissions/${payload.transmissionId}/played`, { method: "POST", token: tok });
           }
-        } catch {
-          if (cancelled()) return;
-          await enqueueVoice(payload);
-          setStatus(tr("willPlayAfterCall"));
-        } finally {
-          if (!cancelled()) {
-            if (speakClear.current) clearTimeout(speakClear.current);
-            setSpeakingId(null);
-          }
         }
-      };
-      await playWalkieExclusive(async (cancelled) => {
-        if (cancelled()) {
-          queueWaitingRef.current(payload);
+        pinSender(payload);
+        select(payload.senderId, {
+          id: payload.senderId,
+          name: payload.senderName,
+          photo: payload.senderAvatarUrl,
+          gender: payload.voiceGender ?? "male",
+        });
+        const mineLang = (me?.listenLang || me?.speakLang || "").slice(0, 2).toLowerCase();
+        const sourceLang = (payload.speakLang || payload.language || "").slice(0, 2).toLowerCase();
+        const crossLang = Boolean(mineLang && sourceLang && mineLang !== sourceLang);
+        const dubbed = Boolean(payload.audioUrl) && payload.usedOriginalVoice === false;
+        if (dubbed && !isOriginalBlocked(payload.senderId) && !heardLiveFrom(payload.senderId)) {
+          if (talkingRef.current || isMicRecording()) {
+            heldWalkieRef.current = payload;
+            return;
+          }
+          void playOne(payload, true);
           return;
         }
-        await playVoice(cancelled);
-      });
+        if (payload.suppressOriginal || crossLang || isOriginalBlocked(payload.senderId) || heardLiveFrom(payload.senderId)) {
+          console.log(`[live dub] skip original file sender=${payload.senderId}`);
+          return;
+        }
+        if (talkingRef.current || isMicRecording()) {
+          heldWalkieRef.current = payload;
+          return;
+        }
+        void playOne(payload, true);
+        return;
+      }
     };
     onReadyRef.current = onReady;
     const onProcessing = (payload?: { senderId?: string }) => {
@@ -357,9 +356,6 @@ export default function HomeScreen() {
         });
       }
       if (tok) {
-        void autoSyncContacts(tok, true, (list) => setContacts(list.filter((c) => c.matchedUser)), true).catch(
-          () => undefined,
-        );
         void fetchTalkContacts(tok).then(setContacts).catch(() => undefined);
       }
     };
@@ -382,7 +378,7 @@ export default function HomeScreen() {
     socket.on(SOCKET_EVENTS.CONTACT_ACCEPTED, onContactChange);
     const onPresence = (payload: { userId?: string; online?: boolean }) => {
       if (!payload.userId) return;
-      setOnlineMap((current) => ({ ...current, [payload.userId!]: Boolean(payload.online) }));
+      setOnlineMap((current) => ({ ...current, [String(payload.userId)]: Boolean(payload.online) }));
     };
     socket.on(SOCKET_EVENTS.PRESENCE, onPresence);
     return () => {
@@ -411,11 +407,12 @@ export default function HomeScreen() {
     });
     const subApp = AppState.addEventListener("change", (state) => {
       if (state !== "active") return;
+      refreshTtsVoices();
       void flush();
       const tok = playCtx.current.token;
       if (!tok) return;
-      const sock = ensureSocket(tok);
-      if (!sock.connected) sock.connect();
+      ensureSocket(tok);
+      resumeSocket();
       void fetchWaitingWalkies(tok)
         .then((rows) => {
           for (const row of rows) queueWaitingRef.current(row);
@@ -527,7 +524,7 @@ export default function HomeScreen() {
     });
     setStatus(tr("voicesWaiting", { count: String(count) }));
     if (payload.audioUrl) {
-      void fetch(payload.audioUrl).catch(() => undefined);
+      void prefetchAudio(payload.audioUrl).catch(() => undefined);
     }
   }
   queueWaitingRef.current = queueWaiting;
@@ -546,8 +543,19 @@ export default function HomeScreen() {
     setPendingBySender(stored);
   }
 
-  async function playOne(payload: TransmissionReadyPayload): Promise<boolean> {
-    if (isMicRecording()) return false;
+  async function playOne(payload: TransmissionReadyPayload, alreadyClaimed = false): Promise<boolean> {
+    if (payload.transmissionId && !alreadyClaimed) {
+      if (heardIdsRef.current.has(payload.transmissionId)) return true;
+      heardIdsRef.current.add(payload.transmissionId);
+      const tokNow = playCtx.current.token;
+      if (tokNow) {
+        void api(`/transmissions/${payload.transmissionId}/played`, { method: "POST", token: tokNow });
+      }
+    }
+    if (isMicRecording() || talkingRef.current) {
+      heldWalkieRef.current = payload;
+      return false;
+    }
     const { token: tok, user: me, t: tr } = playCtx.current;
     sessionUnlockedRef.current = { ...sessionUnlockedRef.current, [payload.senderId]: true };
     setSessionUnlocked((current) => ({ ...current, [payload.senderId]: true }));
@@ -567,8 +575,10 @@ export default function HomeScreen() {
       gender: payload.voiceGender ?? "male",
       pendingCount: pendingBySenderRef.current[payload.senderId]?.length ?? 0,
     });
-    const line = (payload.translatedText || payload.originalText || "").trim();
-    if (line) setWritten(line);
+    const heard = (payload.originalText || "").trim();
+    const translated = (payload.translatedText || "").trim();
+    const shown = translated || heard;
+    if (shown) setLastTransmission({ sttText: "", translatedText: shown, mine: false });
     setStatus("");
     let ok = false;
     try {
@@ -576,10 +586,6 @@ export default function HomeScreen() {
         if (cancelled()) return;
         await playReceived(payload, hearLang(me, payload.language), tok);
         if (cancelled()) return;
-        if (tok && payload.transmissionId) {
-          void api(`/transmissions/${payload.transmissionId}/played`, { method: "POST", token: tok });
-        }
-        if (payload.transmissionId) heardIdsRef.current.add(payload.transmissionId);
       });
       ok = true;
       return true;
@@ -611,34 +617,75 @@ export default function HomeScreen() {
   hearOneRef.current = hearNotified;
 
   async function begin() {
-    if (talkingRef.current) return;
+    if (talkingRef.current || endingRef.current) return;
     const ids = talkIds;
     if (!ids.length) {
       setStatus(t("pickPeople"));
       return;
     }
+    if (!(await hasMicPermission())) {
+      const allowed = await ensureMicForRecord();
+      if (!allowed) setStatus(t("permNeedMic"));
+      return;
+    }
     try {
       wantEndRef.current = false;
       talkingRef.current = true;
+      startingRef.current = true;
       holdDiscovery(true);
       sendingIds.current = ids;
       setTalking(true);
       setStatus(t("tx"));
+      setLastTransmission(null);
       clockRef.current = { press: Date.now() };
-      getSocket()?.emit(SOCKET_EVENTS.PTT_START, {
+      if (!getSocket() && token) ensureSocket(token);
+      const sock = getSocket();
+      console.log(`[live sock] press self=${user?.id ?? "?"} connected=${Boolean(sock?.connected)} sid=${sock?.id ?? "-"} targets=${ids.join(",")}`);
+      if (!sock?.connected) {
+        console.log("[live sock] reopen");
+        resumeSocket();
+      }
+      const pressId = armLivePress();
+      const livePromise = beginLivePtt(() => undefined);
+      const startBody = {
+        pressId,
         targetUserIds: ids,
         speakerName: user?.displayName || "",
         speakerAvatarUrl: user?.avatarUrl ?? null,
         voiceGender: user?.voiceGender ?? "male",
+        speakLang: user?.speakLang || user?.listenLang || "",
+      };
+      getSocket()?.timeout(2500).emit(SOCKET_EVENTS.PTT_START, startBody, (err: Error | null, ack?: { ok?: boolean; rooms?: string }) => {
+        if (err) console.log(`[live sock] start NO-ACK id=${pressId} self=${user?.id ?? "?"} targets=${ids.join(",")}`);
+        else console.log(`[live sock] start ACK id=${pressId} ok=${String(ack?.ok)} rooms=${ack?.rooms || "-"}`);
       });
-      await startRecording();
+      const live = await livePromise;
+      console.log(`[live out] capture=${live}`);
+      livePttRef.current = live;
+      startingRef.current = false;
       if (wantEndRef.current) {
-        await end();
+        if (live) await end();
+        else {
+          talkingRef.current = false;
+          holdDiscovery(false);
+          setTalking(false);
+          setStatus("");
+        }
         return;
       }
-      getSocket()?.emit(SOCKET_EVENTS.PTT_START, { targetUserIds: sendingIds.current });
+      if (!live) await startRecording();
+      getSocket()?.emit(SOCKET_EVENTS.PTT_START, {
+        pressId: currentPressId(),
+        targetUserIds: sendingIds.current,
+        voiceGender: user?.voiceGender ?? "male",
+        gender: user?.voiceGender === "female" || user?.voiceGender === "child" ? "female" : "male",
+        speakLang: user?.speakLang || user?.listenLang || "",
+      });
       timer.current = setTimeout(() => void end(), MAX_PTT_MS);
     } catch (e) {
+      startingRef.current = false;
+      if (livePttRef.current) await endLivePtt();
+      livePttRef.current = false;
       talkingRef.current = false;
       holdDiscovery(false);
       setTalking(false);
@@ -657,17 +704,51 @@ export default function HomeScreen() {
   async function end() {
     wantEndRef.current = true;
     if (!talkingRef.current) return;
-    talkingRef.current = false;
+    if (startingRef.current) {
+      cancelLiveOpen();
+      return;
+    }
+    if (endingRef.current) return;
+    endingRef.current = true;
+    const wasLive = livePttRef.current;
+    livePttRef.current = false;
     holdDiscovery(false);
     if (timer.current) clearTimeout(timer.current);
     setTalking(false);
-    setStatus("");
+    setStatus(t("tx"));
     const release = Date.now();
     const holdMs = clockRef.current ? release - clockRef.current.press : 0;
     if (clockRef.current) clockRef.current.release = release;
     clockLog("release", { holdMs });
     const ids = sendingIds.current.length ? sendingIds.current : talkIds;
-    getSocket()?.emit(SOCKET_EVENTS.PTT_RELEASED, { targetUserIds: ids });
+    const releaseId = currentPressId();
+    try {
+    if (wasLive) {
+      const ended = await endLivePtt();
+      talkingRef.current = false;
+      const clipId = releaseId || ended.pressId;
+      const ms = ended.durationMs || holdMs;
+      const uri = ended.chunks.length ? await writeWavFile(ended.chunks) : null;
+      if (!uri) console.log("[PTT SEND] file size: 0 bytes");
+      const speakerGender = user?.voiceGender === "female" || user?.voiceGender === "child" ? "female" : "male";
+      const speakerLang = user?.speakLang || user?.listenLang || "";
+      if (uri) await emitWavClip(getSocket(), uri, ids, clipId, speakerGender, speakerLang);
+      getSocket()?.emit(SOCKET_EVENTS.PTT_RELEASED, { pressId: clipId, targetUserIds: ids });
+      console.log(`[live out] release id=${clipId || "-"} bytes=${ended.bytes} sec=${(ms / 1000).toFixed(2)}`);
+      const held = heldWalkieRef.current;
+      heldWalkieRef.current = null;
+      if (held) void playOne(held, true);
+      if (uri && token) {
+        try {
+          await sendWalkie({ uri, durationMs: ms, peakDb: 0 }, ids, release);
+        } finally {
+          await deleteWavFile(uri);
+        }
+      }
+      setStatus(uri ? t("sent") : "");
+      return;
+    }
+    getSocket()?.emit(SOCKET_EVENTS.PTT_RELEASED, { pressId: releaseId, targetUserIds: ids });
     let recorded: { uri: string; durationMs: number; peakDb: number } | null = null;
     try {
       recorded = await stopRecording();
@@ -675,12 +756,20 @@ export default function HomeScreen() {
       setStatus((e as Error).message || t("txFail"));
       return;
     }
+    talkingRef.current = false;
     if (!recorded?.uri || !token) {
       setStatus(t("txFail"));
       return;
     }
     if (!recorded.durationMs && holdMs > 0) recorded.durationMs = holdMs;
+    const held = heldWalkieRef.current;
+    heldWalkieRef.current = null;
+    if (held) void playOne(held, true);
     void sendWalkie(recorded, ids, release);
+    } finally {
+      talkingRef.current = false;
+      endingRef.current = false;
+    }
   }
 
   async function sendWalkie(
@@ -700,6 +789,11 @@ export default function HomeScreen() {
     form.append("targetUserIds", JSON.stringify(ids));
     form.append("kind", "walkie");
     form.append("releasedAt", String(release));
+    const speakerLang = user?.speakLang || user?.listenLang || "";
+    if (speakerLang) {
+      form.append("speakLang", speakerLang);
+      form.append("sourceLanguage", speakerLang);
+    }
     try {
       const uploadMark = Date.now();
       await api("/transmissions", { method: "POST", token, body: form });
@@ -772,11 +866,6 @@ export default function HomeScreen() {
       </View>
 
       <View style={styles.stage} pointerEvents="box-none">
-        <PttButton
-          talking={talking}
-          onPressIn={() => void begin()}
-          onPressOut={() => void end()}
-        />
         <SelectedRoster
           speakingId={speakingId}
           focusedId={focusedId}
@@ -868,9 +957,23 @@ export default function HomeScreen() {
             }
           }}
         />
+        <View style={styles.pttDock} pointerEvents="box-none">
+          <PttButton
+            talking={talking}
+            onPressIn={() => void begin()}
+            onPressOut={() => void end()}
+          />
+          {lastTransmission ? (
+            <View style={styles.sentBox} pointerEvents="none">
+              {lastTransmission.mine ? (
+                <Text style={styles.heard}>{t("heardText")}: {lastTransmission.sttText || "—"}</Text>
+              ) : null}
+              <Text style={styles.caption}>{t("sentTranslation")}: {lastTransmission.translatedText || "—"}</Text>
+            </View>
+          ) : null}
+        </View>
       </View>
 
-      {written ? <Text style={styles.written}>{written}</Text> : null}
       {busyName ? (
         <Text style={styles.status}>{t("speaking", { name: busyName })}</Text>
       ) : (
@@ -878,38 +981,16 @@ export default function HomeScreen() {
           {status || (unreadTotal ? t("newMessageWaiting") : t("holdMic"))}
         </Text>
       )}
+      {voiceMissing ? (
+        <View style={styles.voiceBanner}>
+          <Text style={styles.voiceBannerText}>{t("voicePackMissing")}</Text>
+          <Pressable style={styles.installVoice} onPress={() => openVoiceInstaller()}>
+            <Text style={styles.installVoiceText}>{t("installVoice")}</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
-      <View style={styles.bottomBar}>
-        <LabeledAction size={58} label={t("people")} onPress={() => router.push("/search")}>
-          <PeopleIcon size={26} />
-        </LabeledAction>
-        <LabeledAction size={58} label={t("everyone")} active={everyone} onPress={() => setEveryone(!everyone)} />
-        <LabeledAction
-          size={58}
-          label={t("messages")}
-          badge={unreadTotal}
-          onPress={() => {
-            if (token) prefetchHistory(token);
-            router.push("/history");
-          }}
-        >
-          <HistoryIcon size={24} />
-        </LabeledAction>
-        <LabeledAction
-          size={58}
-          label={speakerOn ? t("speaker") : t("quiet")}
-          active={speakerOn}
-          onPress={() => {
-            setSpeakerOn((on) => {
-              const next = !on;
-              void setLoudSpeaker(next);
-              return next;
-            });
-          }}
-        >
-          <SpeakerIcon size={24} color={speakerOn ? "#FFFFFF" : "#B8D4FF"} />
-        </LabeledAction>
-      </View>
+      <BottomNav />
 
       <Modal visible={menu} transparent animationType="fade" onRequestClose={() => setMenu(false)}>
         <Pressable style={styles.menuBackdrop} onPress={() => setMenu(false)}>
@@ -1003,6 +1084,12 @@ const styles = StyleSheet.create({
     position: "relative",
     direction: "ltr",
   },
+  pttDock: {
+    width: "100%",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 20,
+  },
   bottomBar: {
     flexDirection: "row",
     justifyContent: "space-around",
@@ -1013,16 +1100,40 @@ const styles = StyleSheet.create({
     direction: "ltr",
     zIndex: 8,
   },
-  status: { color: colors.ring, textAlign: "center", fontSize: 15, fontWeight: "700", marginBottom: 8 },
-  written: {
+  caption: {
     color: colors.text,
     textAlign: "center",
-    fontSize: 20,
-    fontWeight: "800",
-    marginHorizontal: 24,
-    marginBottom: 10,
-    lineHeight: 28,
+    fontSize: 22,
+    fontWeight: "700",
+    marginHorizontal: 18,
+    marginBottom: 8,
   },
+  sentBox: {
+    position: "absolute",
+    top: "100%",
+    left: 12,
+    right: 12,
+    marginTop: -48,
+    alignItems: "center",
+  },
+  heard: {
+    color: colors.muted,
+    textAlign: "center",
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  status: { color: colors.ring, textAlign: "center", fontSize: 15, fontWeight: "700", marginBottom: 8 },
+  voiceBanner: { alignItems: "center", marginBottom: 8, paddingHorizontal: 16, zIndex: 30 },
+  voiceBannerText: { color: colors.text, textAlign: "center", fontSize: 14, fontWeight: "700", marginBottom: 6 },
+  installVoice: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: colors.ring,
+  },
+  installVoiceText: { color: colors.ring, fontSize: 15, fontWeight: "800" },
   hint: { color: colors.muted, textAlign: "center", fontSize: 14, marginBottom: 8 },
   menuBackdrop: {
     flex: 1,

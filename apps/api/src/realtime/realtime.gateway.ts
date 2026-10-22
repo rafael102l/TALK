@@ -90,6 +90,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       client.displayName = user.displayName;
       client.sessionVersion = fresh.sessionVersion;
       await this.presence.setOnline(user.id, client.id);
+      this.logger.log(`socket ready user=${user.id} sid=${client.id} room=${this.roomCount(user.id)}`);
       const channelIds = await loadChannelIds(this.prisma, user.id);
       for (const channelId of channelIds) client.join(`channel:${channelId}`);
       const chatOnline = this.presence.isChatOnline(user.id);
@@ -533,7 +534,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         retry &&
         (event === SOCKET_EVENTS.TRANSMISSION_READY ||
           event === SOCKET_EVENTS.CHAT_REACTION ||
-          event === SOCKET_EVENTS.TRANSMISSION_REMOVED)
+          event === SOCKET_EVENTS.CHAT_RECEIPT ||
+          event === SOCKET_EVENTS.TRANSMISSION_REMOVED ||
+          event === SOCKET_EVENTS.END_CALL ||
+          event === SOCKET_EVENTS.REJECT_CALL)
       ) {
         setTimeout(() => this.emitToUser(userId, event, payload, false), 2000);
         setTimeout(() => this.emitToUser(userId, event, payload, false), 8000);
@@ -577,6 +581,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (!caller) return { ok: false };
     const incoming = this.incomingBody(callId, client.userId, caller, Boolean(body?.video));
     const socketLive = this.connectedCount(targetUserId) > 0;
+    this.logger.log(
+      `call-user from=${client.userId} sid=${client.id} to=${targetUserId} callId=${callId} calleeSocket=${String(socketLive)} calleeRoom=${this.roomCount(targetUserId)}`,
+    );
     if (!socketLive) void this.push.notifyIncomingCall(targetUserId, incoming);
     const timer = setTimeout(() => this.expireCall(callId), 45_000);
     this.calls.open({
@@ -613,7 +620,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (!call) return { ok: false };
     const other = call.callerId === client.userId ? call.calleeId : call.callerId;
     this.calls.end(call.callId);
-    this.emitToUser(other, SOCKET_EVENTS.REJECT_CALL, { callId: call.callId }, false);
+    this.logger.log(`call reject id=${call.callId} by=${client.userId} other=${other}`);
+    this.emitToUser(other, SOCKET_EVENTS.REJECT_CALL, { callId: call.callId }, true);
+    this.emitToUser(other, SOCKET_EVENTS.END_CALL, { callId: call.callId, reason: "cancelled" }, false);
     return { ok: true };
   }
 
@@ -622,12 +631,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody() body: { callId?: string; reason?: string },
   ) {
-    const call = this.liveCallFor(client.userId, body?.callId);
-    if (!call) return { ok: false };
+    const call = this.liveCallFor(client.userId, body?.callId) ?? this.calls.get((body?.callId || "").slice(0, 80));
+    if (!call || (call.callerId !== client.userId && call.calleeId !== client.userId)) return { ok: false };
     const other = call.callerId === client.userId ? call.calleeId : call.callerId;
     const reason = call.accepted ? "ended" : body?.reason || "cancelled";
     this.calls.end(call.callId);
-    this.emitToUser(other, SOCKET_EVENTS.END_CALL, { callId: call.callId, reason }, false);
+    this.logger.log(`call end id=${call.callId} by=${client.userId} other=${other}`);
+    this.emitToUser(other, SOCKET_EVENTS.END_CALL, { callId: call.callId, reason }, true);
+    this.emitToUser(other, SOCKET_EVENTS.REJECT_CALL, { callId: call.callId, reason }, false);
     return { ok: true };
   }
 

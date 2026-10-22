@@ -61,6 +61,8 @@ export type ChannelSummary = {
   members: ChannelMember[];
 };
 
+export type MessageReceipt = "sent" | "delivered" | "read";
+
 export type HistoryItem = {
   id: string;
   senderName: string;
@@ -83,4 +85,5 @@ export type HistoryItem = {
   replyToId?: string | null;
   replyToName?: string | null;
   replyToText?: string | null;
+  receipt?: MessageReceipt;
 };

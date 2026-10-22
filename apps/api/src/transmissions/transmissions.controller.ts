@@ -66,6 +66,11 @@ export class TransmissionsController {
     return this.transmissions.closeViewOnce(user, id);
   }
 
+  @Post(":id/delivered")
+  delivered(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.transmissions.markDelivered(user, id);
+  }
+
   @Post(":id/played")
   played(@CurrentUser() user: User, @Param("id") id: string) {
     return this.transmissions.markPlayed(user, id);

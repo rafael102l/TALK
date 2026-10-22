@@ -1,16 +1,27 @@
 import { HistoryItem, TransmissionReadyPayload, VoiceGender } from "@talk/shared";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { I18nManager, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "../../src/components/Avatar";
-import { BackBar } from "../../src/components/BackBar";
+import { BottomNav } from "../../src/components/BottomNav";
+import { SearchIcon } from "../../src/components/MirsIcons";
 import { useI18n } from "../../src/i18n";
 import { useAuth } from "../../src/lib/auth";
 import { peekHistoryCache, refreshHistory, seedHistoryCache } from "../../src/lib/historyCache";
 import { SOCKET_EVENTS, getSocket } from "../../src/lib/socket";
 import { colors } from "../../src/lib/theme";
-import { EMPTY_UNREAD, fetchUnread, type UnreadInfo } from "../../src/lib/unread";
+import { useTargets } from "../../src/lib/targets";
+import { ackDelivered, EMPTY_UNREAD, fetchUnread, type UnreadInfo } from "../../src/lib/unread";
+
+const CHATS = {
+  bg: "#F8F9FA",
+  ink: "#202124",
+  mute: "#5F6368",
+  card: "#FFFFFF",
+  search: "#EEF1F4",
+  line: "#DADCE0",
+};
 
 type Thread = {
   peerId: string;
@@ -27,6 +38,26 @@ function itemKind(item: HistoryItem) {
   return "text";
 }
 
+function lastWhen(iso: string, locale: string) {
+  if (!iso) return "";
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const now = new Date();
+  const sameDay =
+    at.getFullYear() === now.getFullYear() &&
+    at.getMonth() === now.getMonth() &&
+    at.getDate() === now.getDate();
+  if (sameDay) {
+    return at.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+  }
+  const sameYear = at.getFullYear() === now.getFullYear();
+  return at.toLocaleDateString(locale, {
+    day: "numeric",
+    month: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+}
+
 function previewText(item: HistoryItem, t: (key: "voiceClip" | "walkieClip") => string) {
   if (item.viewOnce) return "1";
   const kind = itemKind(item);
@@ -37,15 +68,18 @@ function previewText(item: HistoryItem, t: (key: "voiceClip" | "walkieClip") => 
 
 export default function HistoryScreen() {
   const router = useRouter();
-  const { token } = useAuth();
-  const { t, align, lang, row } = useI18n();
+  const insets = useSafeAreaInsets();
+  const { token, user } = useAuth();
+  const { t, align, lang } = useI18n();
+  const { contacts, snapshots } = useTargets();
   const [items, setItems] = useState<HistoryItem[]>(() => peekHistoryCache());
   const [unread, setUnread] = useState<UnreadInfo>(EMPTY_UNREAD);
   const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
 
   const refreshUnread = useCallback(() => {
     if (!token) return;
-    void fetchUnread(token).then(setUnread).catch(() => undefined);
+    void fetchUnread(token, 20_000).then(setUnread).catch(() => undefined);
   }, [token]);
 
   useFocusEffect(
@@ -53,7 +87,7 @@ export default function HistoryScreen() {
       if (!token) return;
       const cached = peekHistoryCache();
       if (cached.length) setItems(cached);
-      void refreshHistory(token, { maxAgeMs: 8_000 })
+      void refreshHistory(token, { maxAgeMs: 30_000 })
         .then((rows) => {
           setItems(rows);
           setError("");
@@ -70,6 +104,7 @@ export default function HistoryScreen() {
     if (!socket) return;
     const onReady = (payload: TransmissionReadyPayload) => {
       if (!payload.senderId || !token) return;
+      ackDelivered(token, payload, user?.id);
       void refreshHistory(token)
         .then(setItems)
         .catch(() => undefined);
@@ -77,7 +112,9 @@ export default function HistoryScreen() {
     };
     const onRemoved = () => {
       if (!token) return;
-      void refreshHistory(token).then(setItems).catch(() => undefined);
+      void refreshHistory(token)
+        .then(setItems)
+        .catch(() => undefined);
       refreshUnread();
     };
     socket.on(SOCKET_EVENTS.TRANSMISSION_READY, onReady);
@@ -86,7 +123,7 @@ export default function HistoryScreen() {
       socket.off(SOCKET_EVENTS.TRANSMISSION_READY, onReady);
       socket.off(SOCKET_EVENTS.TRANSMISSION_REMOVED, onRemoved);
     };
-  }, [refreshUnread, token]);
+  }, [refreshUnread, token, user?.id]);
 
   const threads = useMemo(() => {
     const map = new Map<string, Thread>();
@@ -113,73 +150,174 @@ export default function HistoryScreen() {
     });
   }, [items, t]);
 
+  const people = useMemo(
+    () => contacts.filter((contact) => contact.matchedUser && (contact.status === "ACCEPTED" || !contact.status)),
+    [contacts],
+  );
+
+  const shown = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const recent = threads.filter((thread) => {
+      if (!needle) return true;
+      return thread.peerName.toLowerCase().includes(needle) || thread.lastText.toLowerCase().includes(needle);
+    });
+    if (!needle) return recent;
+    const known = new Set(threads.map((thread) => thread.peerId));
+    const extra: Thread[] = [];
+    for (const contact of people) {
+      const person = contact.matchedUser!;
+      if (known.has(person.id)) continue;
+      const name = person.displayName || contact.displayName || "";
+      const phone = contact.phoneE164 || person.phoneE164 || "";
+      if (!name.toLowerCase().includes(needle) && !phone.includes(needle)) continue;
+      extra.push({
+        peerId: person.id,
+        peerName: name,
+        peerAvatar: person.avatarUrl ?? null,
+        peerGender: person.voiceGender ?? "male",
+        lastText: "",
+        lastAt: "",
+      });
+    }
+    return [...recent, ...extra];
+  }, [threads, query, people]);
+
+  function photoFor(thread: Thread) {
+    const contact = contacts.find((row) => row.matchedUser?.id === thread.peerId);
+    return contact?.matchedUser?.avatarUrl || snapshots[thread.peerId]?.photo || thread.peerAvatar || null;
+  }
+
+  function phoneFor(thread: Thread) {
+    const contact = contacts.find((row) => row.matchedUser?.id === thread.peerId);
+    return contact?.matchedUser?.phoneE164 || contact?.phoneE164 || "";
+  }
+
+  function openChat(thread: Thread) {
+    if (items.length) seedHistoryCache(items);
+    router.push({
+      pathname: "/conversation/[userId]",
+      params: { userId: thread.peerId, name: thread.peerName },
+    });
+  }
+
+  function openCard(thread: Thread) {
+    router.push({
+      pathname: "/contact/[userId]",
+      params: {
+        userId: thread.peerId,
+        name: thread.peerName,
+        avatarUrl: photoFor(thread) || "",
+        phone: phoneFor(thread),
+        gender: thread.peerGender,
+      },
+    });
+  }
+
+  function statusLine(thread: Thread) {
+    return thread.lastText || "";
+  }
+
+  const waiting = (peerId: string) => unread.byPeer[peerId] || 0;
+
   return (
-    <SafeAreaView style={styles.page}>
-      <BackBar title={t("messages")} />
-      {error ? <Text style={[styles.error, { textAlign: align }]}>{error}</Text> : null}
-      <ScrollView contentContainerStyle={{ gap: 8, paddingBottom: 32 }}>
-        {threads.map((thread) => (
-          <Pressable
-            key={thread.peerId}
-            style={[styles.card, { flexDirection: row }]}
-            onPress={() => {
-              if (items.length) seedHistoryCache(items);
-              router.push({
-                pathname: "/conversation/[userId]",
-                params: { userId: thread.peerId, name: thread.peerName },
-              });
-            }}
-          >
-            <View style={styles.avatarWrap}>
-              <Avatar
-                uri={thread.peerAvatar}
-                name={thread.peerName}
-                size={48}
-                gender={thread.peerGender}
-              />
-              {(unread.byPeer[thread.peerId] || 0) > 0 ? (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>
-                    {unread.byPeer[thread.peerId] > 99 ? "99+" : String(unread.byPeer[thread.peerId])}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
-            <View style={styles.body}>
-              <Text style={[styles.name, { textAlign: align }]}>{thread.peerName}</Text>
-              <Text style={[styles.text, { textAlign: align }]} numberOfLines={2}>
-                {thread.lastText}
+    <SafeAreaView style={styles.page} edges={["top"]}>
+      <Text style={[styles.title, { textAlign: align }]}>{t("navChats")}</Text>
+      <View style={[styles.search, { flexDirection: I18nManager.isRTL ? "row-reverse" : "row" }]}>
+        <SearchIcon size={18} color={CHATS.mute} />
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder={t("searchPlaceholder")}
+          placeholderTextColor={CHATS.mute}
+          style={[styles.input, { textAlign: align === "right" ? (I18nManager.isRTL ? "left" : "right") : I18nManager.isRTL ? "right" : "left" }]}
+        />
+      </View>
+      {error ? <Text style={[styles.note, { textAlign: align }]}>{error}</Text> : null}
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.list}>
+        {shown.map((thread) => (
+          <View key={thread.peerId} style={[styles.row, { flexDirection: I18nManager.isRTL ? "row-reverse" : "row" }]}>
+            <Pressable style={styles.whenWrap} onPress={() => openChat(thread)}>
+              <Text style={styles.when}>{lastWhen(thread.lastAt, lang)}</Text>
+            </Pressable>
+            <Pressable style={styles.mid} onPress={() => openChat(thread)}>
+              <Text
+                style={[styles.name, { textAlign: I18nManager.isRTL ? "left" : "right" }]}
+                numberOfLines={1}
+              >
+                {thread.peerName}
               </Text>
-              <Text style={[styles.meta, { textAlign: align }]}>
-                {thread.lastAt ? new Date(thread.lastAt).toLocaleString(lang) : ""}
+              <Text
+                style={[styles.status, { textAlign: I18nManager.isRTL ? "left" : "right" }]}
+                numberOfLines={1}
+              >
+                {statusLine(thread)}
               </Text>
-            </View>
-          </Pressable>
+            </Pressable>
+            <Pressable onPress={() => openCard(thread)} hitSlop={6}>
+              <View style={styles.avatarWrap}>
+                <Avatar uri={photoFor(thread)} name={thread.peerName} size={48} gender={thread.peerGender} />
+                {waiting(thread.peerId) > 0 ? (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>
+                      {waiting(thread.peerId) > 99 ? "99+" : String(waiting(thread.peerId))}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            </Pressable>
+          </View>
         ))}
-        {!threads.length ? <Text style={styles.empty}>{t("noHistory")}</Text> : null}
+        {!shown.length ? <Text style={styles.empty}>{t("noHistory")}</Text> : null}
       </ScrollView>
+      <View style={[styles.navBar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
+        <BottomNav />
+      </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.bg, padding: 20 },
-  card: {
-    backgroundColor: colors.panel,
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: colors.line,
+  page: { flex: 1, backgroundColor: CHATS.bg, paddingHorizontal: 16 },
+  title: { color: CHATS.ink, fontSize: 26, fontWeight: "800", marginTop: 8 },
+  search: {
     alignItems: "center",
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: CHATS.line,
+    backgroundColor: CHATS.search,
+    borderRadius: 22,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  input: { flex: 1, color: CHATS.ink, fontSize: 16, paddingVertical: 2 },
+  note: { color: "#B06000", marginBottom: 6 },
+  scroll: { flex: 1 },
+  list: { paddingBottom: 12 },
+  row: {
+    alignItems: "center",
+    backgroundColor: CHATS.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: CHATS.line,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    marginBottom: 8,
     gap: 12,
   },
-  body: { flex: 1 },
+  whenWrap: {
+    minWidth: 52,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  when: { color: CHATS.mute, fontSize: 12, fontWeight: "600" },
+  mid: { flex: 1 },
+  name: { color: CHATS.ink, fontSize: 17, fontWeight: "700" },
+  status: { color: CHATS.mute, marginTop: 2, fontSize: 13 },
+  empty: { color: CHATS.mute, textAlign: "center", marginTop: 36 },
   avatarWrap: { width: 48, height: 48 },
-  name: { color: colors.amber, fontWeight: "700", fontSize: 17 },
-  text: { color: colors.text, marginTop: 4 },
-  meta: { color: colors.muted, marginTop: 6, fontSize: 12 },
-  empty: { color: colors.muted, textAlign: "center", marginTop: 40 },
-  error: { color: colors.red },
+  navBar: { backgroundColor: colors.bg, marginHorizontal: -16 },
   badge: {
     position: "absolute",
     top: -4,

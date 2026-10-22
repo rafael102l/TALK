@@ -16,6 +16,7 @@ export const SOCKET_EVENTS = {
   PRESENCE_APP: "presence:app",
   CHAT_TYPING: "chat:typing",
   CHAT_REACTION: "chat:reaction",
+  CHAT_RECEIPT: "chat:receipt",
   INCOMING: "incoming:transmission",
   CONTACT_REQUEST: "contact:request",
   CONTACT_ACCEPTED: "contact:accepted",
@@ -117,4 +118,11 @@ export type TransmissionReadyPayload = {
   replyToId?: string | null;
   replyToName?: string | null;
   replyToText?: string | null;
+  receipt?: "sent" | "delivered" | "read";
+};
+
+export type ChatReceiptPayload = {
+  transmissionId: string;
+  peerId: string;
+  receipt: "delivered" | "read";
 };

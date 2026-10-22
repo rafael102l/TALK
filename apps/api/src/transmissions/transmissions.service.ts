@@ -582,11 +582,15 @@ export class TransmissionsService {
           releasedAt: clientRelease,
           readyAt: Date.now(),
         };
-        this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
-        void this.prisma.transmissionTarget.update({
-          where: { id: target.id },
-          data: { deliveredAt: new Date() },
-        });
+        const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+        if (delivery === "walkie") {
+          void this.prisma.transmissionTarget.update({
+            where: { id: target.id },
+            data: { deliveredAt: new Date() },
+          });
+        } else if (reached) {
+          void this.noteDelivered(target.id, sender.id, transmission.id, target.userId);
+        }
         const title = first
           ? sender.displayName?.trim() || sender.phoneE164
           : sender.displayName || "TALK";
@@ -815,6 +819,7 @@ export class TransmissionsService {
           viewOnce: Boolean(transmission.viewOnce),
           releasedAt: clientRelease,
           readyAt: Date.now(),
+          receipt: "sent",
         });
       }
 
@@ -888,6 +893,7 @@ export class TransmissionsService {
               durationMs: textOnly ? null : transmission.durationMs,
               kind: delivery,
               viewOnce: Boolean(transmission.viewOnce),
+              receipt: "sent",
             },
           ];
         }),
@@ -902,6 +908,9 @@ export class TransmissionsService {
   async history(user: User) {
     // Local DB first — never block the inbox on Firebase round-trips.
     const local = await this.localHistory(user);
+    void this.markInboxDelivered(user.id).catch((error) => {
+      this.logger.warn(`Inbox delivered: ${(error as Error).message}`);
+    });
     void this.syncHistoryCloud(user.id, local).catch((error) => {
       this.logger.warn(`History cloud sync: ${(error as Error).message}`);
     });
@@ -1002,6 +1011,7 @@ export class TransmissionsService {
           durationMs: tx.durationMs,
           kind: tx.kind || (tx.originalAudioUrl ? "walkie" : "text"),
           viewOnce: Boolean(tx.viewOnce),
+          receipt: target.playedAt ? "read" : target.deliveredAt ? "delivered" : "sent",
         });
       }
     }
@@ -1111,7 +1121,7 @@ export class TransmissionsService {
 
   async markPeerTextRead(user: User, peerId: string) {
     if (!peerId) return { ok: true };
-    await this.prisma.transmissionTarget.updateMany({
+    const pending = await this.prisma.transmissionTarget.findMany({
       where: {
         userId: user.id,
         playedAt: null,
@@ -1120,9 +1130,94 @@ export class TransmissionsService {
           OR: [{ kind: { in: ["text", "voice"] } }, { originalAudioUrl: "" }],
         },
       },
-      data: { playedAt: new Date() },
+      select: { id: true, transmissionId: true, deliveredAt: true },
+    });
+    if (!pending.length) return { ok: true };
+    const now = new Date();
+    await this.prisma.transmissionTarget.updateMany({
+      where: { id: { in: pending.map((row) => row.id) } },
+      data: { playedAt: now },
+    });
+    const undelivered = pending.filter((row) => !row.deliveredAt).map((row) => row.id);
+    if (undelivered.length) {
+      await this.prisma.transmissionTarget.updateMany({
+        where: { id: { in: undelivered } },
+        data: { deliveredAt: now },
+      });
+    }
+    for (const row of pending) {
+      this.realtime.emitToUser(peerId, SOCKET_EVENTS.CHAT_RECEIPT, {
+        transmissionId: row.transmissionId,
+        peerId: user.id,
+        receipt: "read",
+      });
+    }
+    return { ok: true };
+  }
+
+  async markDelivered(user: User, transmissionId: string) {
+    if (!transmissionId) return { ok: true };
+    const row = await this.prisma.transmissionTarget.findFirst({
+      where: { transmissionId, userId: user.id },
+      include: { transmission: { select: { senderId: true, kind: true } } },
+    });
+    if (!row || row.transmission.kind === "walkie" || row.deliveredAt) return { ok: true };
+    await this.prisma.transmissionTarget.update({
+      where: { id: row.id },
+      data: { deliveredAt: new Date() },
+    });
+    this.realtime.emitToUser(row.transmission.senderId, SOCKET_EVENTS.CHAT_RECEIPT, {
+      transmissionId,
+      peerId: user.id,
+      receipt: row.playedAt ? "read" : "delivered",
     });
     return { ok: true };
+  }
+
+  private async noteDelivered(targetRowId: string, senderId: string, transmissionId: string, peerId: string) {
+    const updated = await this.prisma.transmissionTarget.updateMany({
+      where: { id: targetRowId, deliveredAt: null },
+      data: { deliveredAt: new Date() },
+    });
+    if (!updated.count) return;
+    this.realtime.emitToUser(senderId, SOCKET_EVENTS.CHAT_RECEIPT, {
+      transmissionId,
+      peerId,
+      receipt: "delivered",
+    });
+  }
+
+  private async markInboxDelivered(userId: string) {
+    const rows = await this.prisma.transmissionTarget.findMany({
+      where: {
+        userId,
+        deliveredAt: null,
+        transmission: {
+          senderId: { not: userId },
+          status: "READY",
+          OR: [{ kind: { in: ["text", "voice"] } }, { originalAudioUrl: "" }],
+        },
+      },
+      select: {
+        id: true,
+        transmissionId: true,
+        playedAt: true,
+        transmission: { select: { senderId: true } },
+      },
+      take: 80,
+    });
+    if (!rows.length) return;
+    await this.prisma.transmissionTarget.updateMany({
+      where: { id: { in: rows.map((row) => row.id) } },
+      data: { deliveredAt: new Date() },
+    });
+    for (const row of rows) {
+      this.realtime.emitToUser(row.transmission.senderId, SOCKET_EVENTS.CHAT_RECEIPT, {
+        transmissionId: row.transmissionId,
+        peerId: userId,
+        receipt: row.playedAt ? "read" : "delivered",
+      });
+    }
   }
 
   async markPlayed(user: User, transmissionId: string) {
