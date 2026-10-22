@@ -104,13 +104,15 @@ model Contact {
 }
 
 model Channel {
-  id            String          @id @default(cuid())
-  type          ChannelType
-  name          String?
-  ownerId       String?
-  createdAt     DateTime        @default(now())
-  members       ChannelMember[]
-  transmissions Transmission[]
+  id                 String          @id @default(cuid())
+  type               ChannelType
+  name               String?
+  avatarUrl          String?
+  ownerId            String?
+  disappearAfterSec  Int             @default(0)
+  createdAt          DateTime        @default(now())
+  members            ChannelMember[]
+  transmissions      Transmission[]
 }
 
 model ChannelMember {
@@ -134,6 +136,7 @@ model Transmission {
   kind             String               @default("walkie")
   viewOnce         Boolean              @default(false)
   status           TransmissionStatus   @default(PROCESSING)
+  expiresAt        DateTime?
   createdAt        DateTime             @default(now())
   sender           User                 @relation(fields: [senderId], references: [id])
   channel          Channel              @relation(fields: [channelId], references: [id])
