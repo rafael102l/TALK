@@ -5,9 +5,11 @@ import { AppState } from "react-native";
 import { api, isAuthFailure } from "./api";
 import { ensureApiBase } from "./discover";
 import { clearHistoryCache } from "./historyCache";
+import { bindChatDelivery } from "./unread";
 import { clearRecents } from "./recents";
 import { clearTalkContactsCache } from "./syncContacts";
-import { connectSocket, disconnectSocket, ensureSocket, getSocket, socketAuthToken } from "./socket";
+import { startCallAlive, stopCallAlive } from "./phoneCall";
+import { connectSocket, disconnectSocket, ensureSocket, getSocket, resumeSocket, socketAuthToken } from "./socket";
 
 const TOKEN_KEY = "talk.jwt";
 const USER_KEY = "talk.user";
@@ -37,6 +39,7 @@ function runSession(task: () => Promise<void>) {
 
 async function clearLocalSession() {
   await runSession(async () => {
+    stopCallAlive();
     disconnectSocket();
     await SecureStore.deleteItemAsync(TOKEN_KEY);
     await SecureStore.deleteItemAsync(USER_KEY);
@@ -117,11 +120,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
-      if (state === "active" && token) {
-        void ensureApiBase().then(() => {
-          const sock = ensureSocket(token);
-          if (!sock.connected) sock.connect();
-        });
+      if (!token) return;
+      try {
+        const sock = ensureSocket(token);
+        sock.emit(SOCKET_EVENTS.PRESENCE_APP, { online: state === "active" });
+        if (state !== "active" && state !== "background") return;
+        startCallAlive();
+        void ensureApiBase()
+          .then(() => {
+            ensureSocket(token);
+            resumeSocket();
+          })
+          .catch((error: Error) => console.log(`[auth] resume ${error.message}`));
+      } catch (error) {
+        console.log(`[auth] background ${(error as Error).message}`);
       }
     });
     return () => sub.remove();
@@ -129,6 +141,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!token) return;
+    startCallAlive();
+    const pingServer = () => {
+      if (AppState.currentState !== "active") return;
+      void api("/health", { timeoutMs: 45000, once: true }).catch(() => undefined);
+    };
+    pingServer();
+    const keepAlive = setInterval(pingServer, 4 * 60 * 1000);
     const sock = ensureSocket(token);
     const onReplaced = () => {
       const authedAs = socketAuthToken(sock);
@@ -158,10 +177,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
     };
     sock.on(SOCKET_EVENTS.SESSION_REPLACED, onReplaced);
+    const unbindDelivery = user?.id ? bindChatDelivery(sock, token, user.id) : () => undefined;
     return () => {
+      clearInterval(keepAlive);
       sock.off(SOCKET_EVENTS.SESSION_REPLACED, onReplaced);
+      unbindDelivery();
     };
-  }, [token]);
+  }, [token, user?.id]);
 
   const value = useMemo<AuthState>(
     () => ({

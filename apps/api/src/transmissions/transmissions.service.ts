@@ -118,6 +118,7 @@ export class TransmissionsService {
         kind,
         viewOnce: kind === "voice" && Boolean(input.viewOnce),
         status: "PROCESSING",
+        expiresAt: await this.expiryFor(channel.id),
         targets: {
           create: users.map((user) => ({
             userId: user.id,
@@ -351,6 +352,7 @@ export class TransmissionsService {
         durationMs: null,
         kind: "text",
         status: "PROCESSING",
+        expiresAt: await this.expiryFor(channel.id),
         targets: {
           create: users.map((user) => ({
             userId: user.id,
@@ -388,6 +390,7 @@ export class TransmissionsService {
       durationMs: number | null;
       kind?: string;
       viewOnce?: boolean;
+      expiresAt?: Date | null;
       targets: { id: string; userId: string; language: string }[];
     },
     sender: User,
@@ -536,6 +539,7 @@ export class TransmissionsService {
       const senderPublic = toPublicUser(sender);
       const originalAudio = textOnly ? null : this.storage.publicUrl(transmission.originalAudioUrl);
       const senderMode = sender.plan === "PLUS" ? "plus" : "free";
+      const deliveredJobs: Promise<void>[] = [];
 
       const emitTarget = (
         target: { id: string; userId: string; language: string },
@@ -581,6 +585,7 @@ export class TransmissionsService {
           viewOnce: Boolean(transmission.viewOnce),
           releasedAt: clientRelease,
           readyAt: Date.now(),
+          expiresAt: transmission.expiresAt?.toISOString() || null,
         };
         const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
         if (delivery === "walkie") {
@@ -589,7 +594,7 @@ export class TransmissionsService {
             data: { deliveredAt: new Date() },
           });
         } else if (reached) {
-          void this.noteDelivered(target.id, sender.id, transmission.id, target.userId);
+          deliveredJobs.push(this.noteDelivered(target.id, sender.id, transmission.id, target.userId));
         }
         const title = first
           ? sender.displayName?.trim() || sender.phoneE164
@@ -797,6 +802,16 @@ export class TransmissionsService {
       );
 
       if (delivery === "walkie" || delivery === "voice" || delivery === "text") {
+        await Promise.all(deliveredJobs);
+        const targetRows = await this.prisma.transmissionTarget.findMany({
+          where: { transmissionId: transmission.id },
+          select: { deliveredAt: true, playedAt: true },
+        });
+        const senderReceipt = targetRows.length && targetRows.every((row) => row.playedAt)
+          ? "read"
+          : targetRows.some((row) => row.deliveredAt)
+            ? "delivered"
+            : "sent";
         // Sender always gets the source-language transcript back (their language).
         this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, {
           transmissionId: transmission.id,
@@ -819,7 +834,8 @@ export class TransmissionsService {
           viewOnce: Boolean(transmission.viewOnce),
           releasedAt: clientRelease,
           readyAt: Date.now(),
-          receipt: "sent",
+          receipt: senderReceipt,
+          expiresAt: transmission.expiresAt?.toISOString() || null,
         });
       }
 
@@ -930,13 +946,13 @@ export class TransmissionsService {
     const [received, sent] = await Promise.all([
       this.prisma.transmissionTarget.findMany({
         where: { userId: user.id },
-        include: { transmission: { include: { sender: true, renders: true } } },
+        include: { transmission: { include: { sender: true, renders: true, channel: true } } },
         orderBy: { transmission: { createdAt: "desc" } },
         take: 80,
       }),
       this.prisma.transmission.findMany({
         where: { senderId: user.id },
-        include: { targets: { include: { user: true } }, renders: true },
+        include: { targets: { include: { user: true } }, renders: true, channel: true },
         orderBy: { createdAt: "desc" },
         take: 80,
       }),
@@ -945,6 +961,8 @@ export class TransmissionsService {
     for (const row of received) {
       const tx = row.transmission;
       if (tx.senderId === user.id) continue;
+      if (tx.expiresAt && tx.expiresAt.getTime() < Date.now()) continue;
+      const group = tx.channel?.type === "GROUP" || tx.channel?.type === "BROADCAST";
       const senderPublic = toPublicUser(tx.sender);
       const kind = tx.kind || (tx.originalAudioUrl ? "walkie" : "text");
       const quoted = decodeReply(tx.originalText);
@@ -963,9 +981,10 @@ export class TransmissionsService {
         senderName: tx.sender.displayName,
         senderId: tx.senderId,
         mine: false,
-        peerId: tx.senderId,
-        peerName: tx.sender.displayName,
-        peerAvatar: senderPublic.avatarUrl,
+        peerId: group ? tx.channelId : tx.senderId,
+        peerName: group ? tx.channel?.name || tx.sender.displayName : tx.sender.displayName,
+        peerAvatar: group ? tx.channel?.avatarUrl || senderPublic.avatarUrl : senderPublic.avatarUrl,
+        channelId: tx.channelId,
         peerGender: senderPublic.voiceGender,
         originalText: quoted.text || tx.originalText,
         translatedText: (langRender?.translatedText ?? quoted.text) || tx.originalText,
@@ -980,9 +999,51 @@ export class TransmissionsService {
         durationMs: tx.durationMs,
         kind,
         viewOnce: Boolean(tx.viewOnce),
+        expiresAt: tx.expiresAt?.toISOString() || null,
       });
     }
+    const grouped = new Set<string>();
     for (const tx of sent) {
+      if (tx.expiresAt && tx.expiresAt.getTime() < Date.now()) continue;
+      const group = tx.channel?.type === "GROUP" || tx.channel?.type === "BROADCAST";
+      if (group) {
+        if (grouped.has(tx.id)) continue;
+        grouped.add(tx.id);
+        const quoted = decodeReply(tx.originalText);
+        const sourceLang = detectLang(quoted.text) || user.speakLang || user.listenLang;
+        const targets = tx.targets.filter((row) => row.userId !== user.id);
+        const receipt = targets.every((row) => row.playedAt)
+          ? "read"
+          : targets.some((row) => row.deliveredAt)
+            ? "delivered"
+            : "sent";
+        items.push({
+          id: tx.id,
+          senderName: user.displayName,
+          senderId: user.id,
+          mine: true,
+          peerId: tx.channelId,
+          peerName: tx.channel?.name || "",
+          peerAvatar: tx.channel?.avatarUrl || null,
+          channelId: tx.channelId,
+          originalText: quoted.text || tx.originalText,
+          translatedText: quoted.text || tx.originalText,
+          replyToId: quoted.reply?.id || null,
+          replyToName: quoted.reply?.name || null,
+          replyToText: quoted.reply?.text || null,
+          audioUrl: publicMedia(this.storage, tx.originalAudioUrl),
+          language: sourceLang,
+          speakLang: sourceLang,
+          mode: "free",
+          createdAt: tx.createdAt.toISOString(),
+          durationMs: tx.durationMs,
+          kind: tx.kind || (tx.originalAudioUrl ? "walkie" : "text"),
+          viewOnce: Boolean(tx.viewOnce),
+          receipt,
+          expiresAt: tx.expiresAt?.toISOString() || null,
+        });
+        continue;
+      }
       for (const target of tx.targets) {
         if (target.userId === user.id) continue;
         const peer = toPublicUser(target.user);
@@ -1012,6 +1073,8 @@ export class TransmissionsService {
           kind: tx.kind || (tx.originalAudioUrl ? "walkie" : "text"),
           viewOnce: Boolean(tx.viewOnce),
           receipt: target.playedAt ? "read" : target.deliveredAt ? "delivered" : "sent",
+          channelId: tx.channelId,
+          expiresAt: tx.expiresAt?.toISOString() || null,
         });
       }
     }
@@ -1146,7 +1209,7 @@ export class TransmissionsService {
       });
     }
     for (const row of pending) {
-      this.realtime.emitToUser(peerId, SOCKET_EVENTS.CHAT_RECEIPT, {
+      this.realtime.emitToUser(peerId, "chat:receipt", {
         transmissionId: row.transmissionId,
         peerId: user.id,
         receipt: "read",
@@ -1166,7 +1229,7 @@ export class TransmissionsService {
       where: { id: row.id },
       data: { deliveredAt: new Date() },
     });
-    this.realtime.emitToUser(row.transmission.senderId, SOCKET_EVENTS.CHAT_RECEIPT, {
+    this.realtime.emitToUser(row.transmission.senderId, "chat:receipt", {
       transmissionId,
       peerId: user.id,
       receipt: row.playedAt ? "read" : "delivered",
@@ -1180,7 +1243,7 @@ export class TransmissionsService {
       data: { deliveredAt: new Date() },
     });
     if (!updated.count) return;
-    this.realtime.emitToUser(senderId, SOCKET_EVENTS.CHAT_RECEIPT, {
+    this.realtime.emitToUser(senderId, "chat:receipt", {
       transmissionId,
       peerId,
       receipt: "delivered",
@@ -1212,7 +1275,7 @@ export class TransmissionsService {
       data: { deliveredAt: new Date() },
     });
     for (const row of rows) {
-      this.realtime.emitToUser(row.transmission.senderId, SOCKET_EVENTS.CHAT_RECEIPT, {
+      this.realtime.emitToUser(row.transmission.senderId, "chat:receipt", {
         transmissionId: row.transmissionId,
         peerId: userId,
         receipt: row.playedAt ? "read" : "delivered",
@@ -1265,6 +1328,20 @@ export class TransmissionsService {
       this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_REMOVED, { transmissionId: tx.id }, true);
     }
     return { ok: true };
+  }
+
+  private async expiryFor(channelId: string) {
+    try {
+      const row = await this.prisma.channel.findUnique({
+        where: { id: channelId },
+        select: { disappearAfterSec: true },
+      });
+      const sec = row?.disappearAfterSec || 0;
+      if (sec <= 0) return null;
+      return new Date(Date.now() + sec * 1000);
+    } catch {
+      return null;
+    }
   }
 
   private async resolveTargets(

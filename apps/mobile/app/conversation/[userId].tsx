@@ -1,4 +1,4 @@
-import { ChatReceiptPayload, decodeReply, HistoryItem, MessageReceipt, TransmissionReadyPayload } from "@talk/shared";
+import { decodeReply, HistoryItem, MessageReceipt, TransmissionReadyPayload } from "@talk/shared";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -20,13 +20,16 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { ChatHeader } from "../../src/components/ChatHeader";
+import { ChatOverflowMenu } from "../../src/components/ChatOverflowMenu";
+import { HighlightText } from "../../src/components/HighlightText";
+import { MuteSheet, type MuteChoice } from "../../src/components/MuteSheet";
 import { ChatWallpaper } from "../../src/components/ChatWallpaper";
 import { EmojiPicker, EMOJIS } from "../../src/components/EmojiPicker";
 import { ReactionBar } from "../../src/components/ReactionBar";
 import { SelectionHeader } from "../../src/components/SelectionHeader";
 import { QuoteBox } from "../../src/components/QuoteBox";
 import { SwipeToReply } from "../../src/components/SwipeToReply";
-import { MicIcon, SendArrowIcon } from "../../src/components/MirsIcons";
+import { BackChevronIcon, MicIcon, SendArrowIcon } from "../../src/components/MirsIcons";
 import { RecordDock } from "../../src/components/RecordDock";
 import { ViewOncePlayer } from "../../src/components/ViewOncePlayer";
 import { ReceiptTicks } from "../../src/components/ReceiptTicks";
@@ -51,9 +54,11 @@ import { fetchPresence, isCachedOnline, knownLastSeen, rememberLastSeen, subscri
 import { loadReactions, setReaction } from "../../src/lib/reactions";
 import {
   isHistoryFresh,
+  onChatReceipt,
   peekHistoryCache,
   refreshHistory,
   seedHistoryCache,
+  takePendingReceipt,
 } from "../../src/lib/historyCache";
 import { copyText, showCopied } from "../../src/lib/clipboard";
 import { SOCKET_EVENTS, ensureSocket, getSocket } from "../../src/lib/socket";
@@ -61,6 +66,8 @@ import { useTargets } from "../../src/lib/targets";
 import { colors } from "../../src/lib/theme";
 import { ackDelivered, markPeerTextRead } from "../../src/lib/unread";
 import { startOutgoing } from "../../src/lib/voiceCall";
+import { MUTE_ALWAYS, getDisappearAfterSec, isPeerMuted, setPeerMuteUntil } from "../../src/lib/contactPrefs";
+import { loadGroups, type TalkGroup } from "../../src/lib/groups";
 
 function txIdOf(id: string) {
   return id.split(":")[0];
@@ -128,8 +135,9 @@ function sortMessages(rows: HistoryItem[]) {
 
 export default function ConversationScreen() {
   const router = useRouter();
-  const { userId: userIdParam, name } = useLocalSearchParams<{ userId: string; name?: string }>();
+  const { userId: userIdParam, name, group } = useLocalSearchParams<{ userId: string; name?: string; group?: string }>();
   const userId = Array.isArray(userIdParam) ? userIdParam[0] || "" : userIdParam || "";
+  const isGroup = group === "1";
   const { token, user } = useAuth();
   const { t, align, lang, rtl } = useI18n();
   const { contacts, snapshots } = useTargets();
@@ -160,6 +168,14 @@ export default function ConversationScreen() {
   const onceRef = useRef<HistoryItem | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const msgScroll = useRef<FlatList<ChatRow>>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [muteOpen, setMuteOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [muted, setMuted] = useState(false);
+  const [groupMembers, setGroupMembers] = useState<string[]>([]);
+  const [groupInfo, setGroupInfo] = useState<TalkGroup | null>(null);
+  const [disappearSec, setDisappearSec] = useState(0);
 
   const load = useCallback(
     (opts?: { immediate?: boolean }) => {
@@ -196,6 +212,17 @@ export default function ConversationScreen() {
       if (cached.length) setItems(sortMessages(cached));
       load();
       void primeConversationMic();
+      void isPeerMuted(userId).then(setMuted);
+      void getDisappearAfterSec(userId).then(setDisappearSec);
+      if (isGroup) {
+        void loadGroups().then((list) => {
+          const found = list.find((row) => row.id === userId);
+          if (found) {
+            setGroupMembers(found.memberIds);
+            setGroupInfo(found);
+          }
+        });
+      }
       let cancelled = false;
       InteractionManager.runAfterInteractions(() => {
         if (cancelled || !token || !userId) return;
@@ -214,14 +241,17 @@ export default function ConversationScreen() {
         }
         void releaseStandbyMic();
       };
-    }, [load, token, userId]),
+    }, [load, token, userId, isGroup]),
   );
 
   useEffect(() => {
     if (!token) return;
     const socket = ensureSocket(token);
     const onReady = (payload: TransmissionReadyPayload) => {
-      if (payload.senderId !== userId && payload.senderId !== user?.id) return;
+      const forThis = isGroup
+        ? payload.channelId === userId
+        : payload.senderId === userId || payload.senderId === user?.id;
+      if (!forThis) return;
       if (!payload.transmissionId) return;
       const mine = payload.senderId === user?.id;
       if (!mine) ackDelivered(token, payload, user?.id);
@@ -252,7 +282,11 @@ export default function ConversationScreen() {
         replyToId: payload.replyToId || packed.reply?.id || null,
         replyToName: payload.replyToName || packed.reply?.name || null,
         replyToText: payload.replyToText || packed.reply?.text || null,
-        receipt: mine ? payload.receipt || "sent" : undefined,
+        receipt: mine
+          ? mergeReceipt(payload.receipt || "sent", takePendingReceipt(payload.transmissionId)) || "sent"
+          : undefined,
+        channelId: payload.channelId || (isGroup ? userId : null),
+        expiresAt: payload.expiresAt || null,
       });
       if (row.audioUrl) void prefetchAudio(row.audioUrl);
       setItems((current) => {
@@ -282,31 +316,34 @@ export default function ConversationScreen() {
         setOnceItem(null);
       }
     };
-    const onReceipt = (payload: ChatReceiptPayload) => {
-      if (!payload?.transmissionId || payload.peerId !== userId) return;
+    socket.on(SOCKET_EVENTS.TRANSMISSION_READY, onReady);
+    socket.on(SOCKET_EVENTS.TRANSMISSION_REMOVED, onRemoved);
+    return () => {
+      socket.off(SOCKET_EVENTS.TRANSMISSION_READY, onReady);
+      socket.off(SOCKET_EVENTS.TRANSMISSION_REMOVED, onRemoved);
+    };
+  }, [user?.id, user?.avatarUrl, userId, token, isGroup]);
+
+  useEffect(() => {
+    return onChatReceipt((transmissionId, receipt) => {
       setItems((current) => {
         let changed = false;
         const next = current.map((item) => {
-          if (!item.mine || txIdOf(item.id) !== payload.transmissionId) return item;
-          const receipt = mergeReceipt(item.receipt, payload.receipt);
-          if (receipt === item.receipt) return item;
+          if (!item.mine) return item;
+          const sameTx = txIdOf(item.id) === transmissionId;
+          const sameLocal = item.id.startsWith("local-") && item.peerId === userId;
+          if (!sameTx && !sameLocal) return item;
+          const nextReceipt = mergeReceipt(item.receipt, receipt);
+          if (nextReceipt === item.receipt) return item;
           changed = true;
-          return { ...item, receipt };
+          return { ...item, receipt: nextReceipt };
         });
         if (!changed) return current;
         seedHistoryCache(next);
         return next;
       });
-    };
-    socket.on(SOCKET_EVENTS.TRANSMISSION_READY, onReady);
-    socket.on(SOCKET_EVENTS.TRANSMISSION_REMOVED, onRemoved);
-    socket.on(SOCKET_EVENTS.CHAT_RECEIPT, onReceipt);
-    return () => {
-      socket.off(SOCKET_EVENTS.TRANSMISSION_READY, onReady);
-      socket.off(SOCKET_EVENTS.TRANSMISSION_REMOVED, onRemoved);
-      socket.off(SOCKET_EVENTS.CHAT_RECEIPT, onReceipt);
-    };
-  }, [user?.id, user?.avatarUrl, userId, token]);
+    });
+  }, [userId]);
 
   useEffect(() => {
     void loadReactions().then(setReactions);
@@ -396,8 +433,15 @@ export default function ConversationScreen() {
   }, [recording]);
 
   const peerItems = useMemo(() => {
-    return sortMessages(items.filter((item) => (item.peerId || (!item.mine && item.senderId)) === userId));
-  }, [items, userId]);
+    const now = Date.now();
+    return sortMessages(
+      items.filter((item) => {
+        if (item.expiresAt && Date.parse(item.expiresAt) && Date.parse(item.expiresAt) < now) return false;
+        if (isGroup) return item.channelId === userId || item.peerId === userId;
+        return (item.peerId || (!item.mine && item.senderId)) === userId;
+      }),
+    );
+  }, [items, userId, isGroup]);
 
   const messageThread = useMemo(() => {
     const rows = peerItems.filter((item) => itemKind(item) !== "walkie");
@@ -423,11 +467,11 @@ export default function ConversationScreen() {
     const snap = userId ? snapshots[userId] : undefined;
     const incoming = peerItems.find((item) => !item.mine);
     return {
-      name: name || matched?.displayName || snap?.name || incoming?.peerName || incoming?.senderName || t("messages"),
-      avatarUrl: matched?.avatarUrl || snap?.photo || incoming?.peerAvatar || null,
+      name: groupInfo?.name || name || matched?.displayName || snap?.name || incoming?.peerName || incoming?.senderName || t("messages"),
+      avatarUrl: groupInfo?.avatarUrl || matched?.avatarUrl || snap?.photo || incoming?.peerAvatar || null,
       gender: matched?.voiceGender || snap?.gender || incoming?.peerGender || "male",
     };
-  }, [contacts, snapshots, userId, name, peerItems, t]);
+  }, [contacts, snapshots, userId, name, peerItems, t, groupInfo]);
 
   function stopTyping() {
     if (typingStopRef.current) clearTimeout(typingStopRef.current);
@@ -460,13 +504,18 @@ export default function ConversationScreen() {
   const selecting = selectedCount > 0;
 
   useEffect(() => {
-    if (!selecting) return;
+    if (!selecting && !searching) return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      clearSelect();
+      if (selecting) {
+        clearSelect();
+        return true;
+      }
+      setSearching(false);
+      setSearchQuery("");
       return true;
     });
     return () => sub.remove();
-  }, [selecting]);
+  }, [selecting, searching]);
 
   function clearSelect() {
     setSelected({});
@@ -619,6 +668,8 @@ export default function ConversationScreen() {
       replyToName: quoted?.name || null,
       replyToText: quoted?.text || null,
       receipt: "sent",
+      channelId: isGroup ? userId : null,
+      expiresAt: disappearSec ? new Date(Date.now() + disappearSec * 1000).toISOString() : null,
     };
     setItems((current) => {
       const next = sortMessages([optimistic, ...current]);
@@ -632,16 +683,20 @@ export default function ConversationScreen() {
         timeoutMs: 45000,
         body: JSON.stringify({
           originalText: text,
-          targetUserIds: [userId],
+          targetUserIds: isGroup ? groupMembers.filter((id) => id !== user?.id) : [userId],
+          channelId: isGroup ? userId : undefined,
           replyToId: quoted?.id,
           replyToName: quoted?.name,
           replyToText: quoted?.text,
         }),
       });
       if (saved?.id) {
+        const pending = takePendingReceipt(saved.id);
         setItems((current) => {
           const next = current.map((item) =>
-            item.id === optimistic.id ? { ...item, id: `${saved.id}:${userId}`, receipt: item.receipt || "sent" } : item,
+            item.id === optimistic.id
+              ? { ...item, id: `${saved.id}:${userId}`, receipt: mergeReceipt(item.receipt || "sent", pending) || "sent" }
+              : item,
           );
           seedHistoryCache(next);
           return next;
@@ -734,6 +789,8 @@ export default function ConversationScreen() {
       replyToName: quoted?.name || null,
       replyToText: quoted?.text || null,
       receipt: "sent",
+      channelId: isGroup ? userId : null,
+      expiresAt: disappearSec ? new Date(Date.now() + disappearSec * 1000).toISOString() : null,
     };
     setItems((current) => {
       const next = sortMessages([optimistic, ...current]);
@@ -747,7 +804,8 @@ export default function ConversationScreen() {
       type: "audio/m4a",
     } as unknown as Blob);
     form.append("durationMs", String(recorded.durationMs ?? 0));
-    form.append("targetUserIds", JSON.stringify([userId]));
+    form.append("targetUserIds", JSON.stringify(isGroup ? groupMembers.filter((id) => id !== user?.id) : [userId]));
+    if (isGroup) form.append("channelId", userId);
     form.append("kind", "voice");
     form.append("viewOnce", viewOnce ? "true" : "false");
     if (quoted?.id) {
@@ -758,9 +816,12 @@ export default function ConversationScreen() {
     try {
       const saved = await api<{ id?: string }>("/transmissions", { method: "POST", token, body: form, timeoutMs: 45000 });
       if (saved?.id) {
+        const pending = takePendingReceipt(saved.id);
         setItems((current) => {
           const next = current.map((item) =>
-            item.id === optimistic.id ? { ...item, id: `${saved.id}:${userId}`, receipt: item.receipt || "sent" } : item,
+            item.id === optimistic.id
+              ? { ...item, id: `${saved.id}:${userId}`, receipt: mergeReceipt(item.receipt || "sent", pending) || "sent" }
+              : item,
           );
           seedHistoryCache(next);
           return next;
@@ -892,7 +953,11 @@ export default function ConversationScreen() {
           <View style={[styles.bubble, mine ? styles.mine : styles.theirs, reaction ? styles.bubbleReact : null]}>
             {quotedName || quotedText ? <QuoteBox name={quotedName} text={quotedText} compact /> : null}
             {messageText(item, mine) ? (
-              <Text style={[styles.text, mine ? styles.mineText : styles.theirText]}>{messageText(item, mine)}</Text>
+              <HighlightText
+                text={messageText(item, mine)}
+                query={searchQuery}
+                style={[styles.text, mine ? styles.mineText : styles.theirText]}
+              />
             ) : null}
             {time || mine ? (
               <View style={styles.metaRow}>
@@ -934,6 +999,31 @@ export default function ConversationScreen() {
     );
   }
 
+  async function addToPhonebook() {
+    const contact = contacts.find((row) => row.matchedUser?.id === userId);
+    const phone = contact?.matchedUser?.phoneE164 || contact?.phoneE164 || "";
+    try {
+      const Contacts = require("expo-contacts") as typeof import("expo-contacts");
+      const perm = await Contacts.requestPermissionsAsync();
+      if (!perm.granted) return;
+      await Contacts.addContactAsync({
+        name: peer.name,
+        contactType: Contacts.ContactTypes.Person,
+        phoneNumbers: phone ? [{ label: "mobile", number: phone }] : [],
+      });
+      Alert.alert(t("contactAdded"));
+    } catch {
+      Alert.alert(t("addToContacts"), phone || peer.name);
+    }
+  }
+
+  async function applyMute(choice: MuteChoice) {
+    const until =
+      choice === "always" ? MUTE_ALWAYS : choice === "week" ? Date.now() + 7 * 86400000 : Date.now() + 8 * 3600000;
+    await setPeerMuteUntil(userId, until);
+    setMuted(true);
+  }
+
   return (
     <SafeAreaView style={styles.page}>
       <KeyboardAvoidingView
@@ -941,7 +1031,27 @@ export default function ConversationScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "padding"}
         keyboardVerticalOffset={8}
       >
-        {selectedCount ? (
+        {searching ? (
+          <View style={[styles.searchBar, { flexDirection: rtl ? "row-reverse" : "row" }]}>
+            <Pressable
+              onPress={() => {
+                setSearching(false);
+                setSearchQuery("");
+              }}
+              style={styles.searchIcon}
+            >
+              <BackChevronIcon size={20} color="#111B21" rtl={false} />
+            </Pressable>
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder={t("searchInChat")}
+              placeholderTextColor="rgba(17,27,33,0.45)"
+              autoFocus
+              style={[styles.searchInput, { textAlign: align }]}
+            />
+          </View>
+        ) : selectedCount ? (
           <SelectionHeader
             count={selectedCount}
             onClose={clearSelect}
@@ -960,7 +1070,7 @@ export default function ConversationScreen() {
           typing={peerTyping}
           lastSeen={peerLastSeen}
           onOpenProfile={() => {
-            if (!userId) return;
+            if (!userId || isGroup) return;
             const contact = contacts.find((row) => row.matchedUser?.id === userId);
             router.push({
               pathname: "/contact/[userId]",
@@ -973,25 +1083,34 @@ export default function ConversationScreen() {
               },
             });
           }}
-          onVideo={() => {
-            if (!userId) return;
-            startOutgoing({
-              userId,
-              name: peer.name,
-              avatarUrl: peer.avatarUrl,
-              gender: peer.gender,
-              video: true,
-            });
-          }}
-          onCall={() => {
-            if (!userId) return;
-            startOutgoing({
-              userId,
-              name: peer.name,
-              avatarUrl: peer.avatarUrl,
-              gender: peer.gender,
-            });
-          }}
+          onMenu={() => setMenuOpen(true)}
+          onVideo={
+            isGroup
+              ? undefined
+              : () => {
+                  if (!userId) return;
+                  startOutgoing({
+                    userId,
+                    name: peer.name,
+                    avatarUrl: peer.avatarUrl,
+                    gender: peer.gender,
+                    video: true,
+                  });
+                }
+          }
+          onCall={
+            isGroup
+              ? undefined
+              : () => {
+                  if (!userId) return;
+                  startOutgoing({
+                    userId,
+                    name: peer.name,
+                    avatarUrl: peer.avatarUrl,
+                    gender: peer.gender,
+                  });
+                }
+          }
         />
         )}
         <View style={styles.body}>
@@ -1002,7 +1121,7 @@ export default function ConversationScreen() {
               ref={msgScroll}
               style={styles.flex}
               data={chatRows}
-              extraData={`${selectedCount}:${selecting}:${Object.keys(selected).join()}:${Object.values(reactions).join()}`}
+              extraData={`${selectedCount}:${selecting}:${searchQuery}:${peerItems.map((item) => item.receipt || "").join()}:${Object.keys(selected).join()}:${Object.values(reactions).join()}`}
               keyExtractor={(row) => row.key}
               renderItem={renderChatRow}
               contentContainerStyle={styles.list}
@@ -1137,6 +1256,39 @@ export default function ConversationScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+      <ChatOverflowMenu
+        open={menuOpen}
+        muted={muted}
+        isGroup={isGroup}
+        onClose={() => setMenuOpen(false)}
+        onAddContact={() => void addToPhonebook()}
+        onSearch={() => setSearching(true)}
+        onMute={() => {
+          if (muted) {
+            void setPeerMuteUntil(userId, 0);
+            setMuted(false);
+            return;
+          }
+          setMuteOpen(true);
+        }}
+        onDisappear={() =>
+          router.push({
+            pathname: "/disappear/[userId]",
+            params: { userId, channelId: isGroup ? userId : "", name: peer.name },
+          })
+        }
+        onNewGroup={() =>
+          router.push({
+            pathname: "/group/new",
+            params: { seed: isGroup ? "" : userId },
+          })
+        }
+      />
+      <MuteSheet
+        open={muteOpen}
+        onClose={() => setMuteOpen(false)}
+        onPick={(choice) => void applyMute(choice)}
+      />
     </SafeAreaView>
   );
 }
@@ -1144,6 +1296,17 @@ export default function ConversationScreen() {
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: "#FFFFFF" },
   flex: { flex: 1 },
+  searchBar: {
+    height: 48,
+    alignItems: "center",
+    paddingHorizontal: 4,
+    backgroundColor: "#FFFFFF",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "rgba(17,27,33,0.08)",
+    gap: 4,
+  },
+  searchIcon: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
+  searchInput: { flex: 1, color: "#111B21", fontSize: 16, paddingVertical: 8 },
   body: { flex: 1, paddingTop: 4, backgroundColor: CHAT_BG },
   chatStage: { flex: 1, overflow: "hidden" },
   list: {

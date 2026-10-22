@@ -535,6 +535,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         (event === SOCKET_EVENTS.TRANSMISSION_READY ||
           event === SOCKET_EVENTS.CHAT_REACTION ||
           event === SOCKET_EVENTS.CHAT_RECEIPT ||
+          event === "chat:receipt" ||
           event === SOCKET_EVENTS.TRANSMISSION_REMOVED ||
           event === SOCKET_EVENTS.END_CALL ||
           event === SOCKET_EVENTS.REJECT_CALL)

@@ -119,6 +119,7 @@ export type TransmissionReadyPayload = {
   replyToName?: string | null;
   replyToText?: string | null;
   receipt?: "sent" | "delivered" | "read";
+  expiresAt?: string | null;
 };
 
 export type ChatReceiptPayload = {
