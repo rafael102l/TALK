@@ -8,7 +8,9 @@ import { BottomNav } from "../../src/components/BottomNav";
 import { SearchIcon } from "../../src/components/MirsIcons";
 import { useI18n } from "../../src/i18n";
 import { useAuth } from "../../src/lib/auth";
+import { api } from "../../src/lib/api";
 import { peekHistoryCache, refreshHistory, seedHistoryCache } from "../../src/lib/historyCache";
+import { loadGroups, onGroups, upsertGroup, type TalkGroup } from "../../src/lib/groups";
 import { SOCKET_EVENTS, getSocket } from "../../src/lib/socket";
 import { colors } from "../../src/lib/theme";
 import { useTargets } from "../../src/lib/targets";
@@ -30,10 +32,13 @@ type Thread = {
   peerGender: VoiceGender;
   lastText: string;
   lastAt: string;
+  isGroup?: boolean;
 };
 
 function itemKind(item: HistoryItem) {
-  if (item.kind === "text" || item.kind === "voice" || item.kind === "walkie") return item.kind;
+  if (item.kind === "text" || item.kind === "voice" || item.kind === "walkie" || item.kind === "image" || item.kind === "video") {
+    return item.kind;
+  }
   if (item.audioUrl || item.durationMs) return "walkie";
   return "text";
 }
@@ -58,11 +63,13 @@ function lastWhen(iso: string, locale: string) {
   });
 }
 
-function previewText(item: HistoryItem, t: (key: "voiceClip" | "walkieClip") => string) {
+function previewText(item: HistoryItem, t: (key: "voiceClip" | "walkieClip" | "photoClip" | "videoClip") => string) {
   if (item.viewOnce) return "1";
   const kind = itemKind(item);
   if (kind === "walkie") return item.translatedText || item.originalText || t("walkieClip");
   if (kind === "voice") return item.translatedText || item.originalText || t("voiceClip");
+  if (kind === "image") return t("photoClip");
+  if (kind === "video") return t("videoClip");
   return item.translatedText || item.originalText || "";
 }
 
@@ -76,6 +83,7 @@ export default function HistoryScreen() {
   const [unread, setUnread] = useState<UnreadInfo>(EMPTY_UNREAD);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [groups, setGroups] = useState<TalkGroup[]>([]);
 
   const refreshUnread = useCallback(() => {
     if (!token) return;
@@ -96,6 +104,28 @@ export default function HistoryScreen() {
           if (!peekHistoryCache().length) setError((e as Error).message);
         });
       refreshUnread();
+      void loadGroups().then(setGroups);
+      void api<Array<{ id: string; type: string; name?: string | null; avatarUrl?: string | null; members?: { userId: string }[]; disappearAfterSec?: number }>>(
+        "/channels",
+        { token, once: true, timeoutMs: 8000 },
+      )
+        .then(async (list) => {
+          for (const channel of list || []) {
+            if (channel.type !== "GROUP" && channel.type !== "BROADCAST") continue;
+            await upsertGroup({
+              id: channel.id,
+              name: channel.name || t("newGroup"),
+              avatarUrl: channel.avatarUrl || null,
+              memberIds: (channel.members || []).map((row) => row.userId),
+              disappearAfterSec: channel.disappearAfterSec || 0,
+            });
+          }
+          setGroups(await loadGroups());
+        })
+        .catch(() => undefined);
+      return onGroups(() => {
+        void loadGroups().then(setGroups);
+      });
     }, [token, refreshUnread]),
   );
 
@@ -140,7 +170,26 @@ export default function HistoryScreen() {
           peerGender: item.peerGender ?? "male",
           lastText,
           lastAt: item.createdAt,
+          isGroup: Boolean(item.channelId && item.channelId === item.peerId),
         });
+      }
+    }
+    for (const group of groups) {
+      const existing = map.get(group.id);
+      if (!existing) {
+        map.set(group.id, {
+          peerId: group.id,
+          peerName: group.name,
+          peerAvatar: group.avatarUrl,
+          peerGender: "male",
+          lastText: "",
+          lastAt: "",
+          isGroup: true,
+        });
+      } else {
+        existing.isGroup = true;
+        existing.peerName = group.name || existing.peerName;
+        existing.peerAvatar = group.avatarUrl || existing.peerAvatar;
       }
     }
     return [...map.values()].sort((a, b) => {
@@ -148,7 +197,7 @@ export default function HistoryScreen() {
       const bTime = Date.parse(b.lastAt) || 0;
       return bTime - aTime;
     });
-  }, [items, t]);
+  }, [items, t, groups]);
 
   const people = useMemo(
     () => contacts.filter((contact) => contact.matchedUser && (contact.status === "ACCEPTED" || !contact.status)),
@@ -196,7 +245,7 @@ export default function HistoryScreen() {
     if (items.length) seedHistoryCache(items);
     router.push({
       pathname: "/conversation/[userId]",
-      params: { userId: thread.peerId, name: thread.peerName },
+      params: { userId: thread.peerId, name: thread.peerName, group: thread.isGroup ? "1" : "" },
     });
   }
 
@@ -253,7 +302,7 @@ export default function HistoryScreen() {
                 {statusLine(thread)}
               </Text>
             </Pressable>
-            <Pressable onPress={() => openCard(thread)} hitSlop={6}>
+            <Pressable onPress={() => (thread.isGroup ? openChat(thread) : openCard(thread))} hitSlop={6}>
               <View style={styles.avatarWrap}>
                 <Avatar uri={photoFor(thread)} name={thread.peerName} size={48} gender={thread.peerGender} />
                 {waiting(thread.peerId) > 0 ? (

@@ -29,7 +29,10 @@ import { ReactionBar } from "../../src/components/ReactionBar";
 import { SelectionHeader } from "../../src/components/SelectionHeader";
 import { QuoteBox } from "../../src/components/QuoteBox";
 import { SwipeToReply } from "../../src/components/SwipeToReply";
-import { BackChevronIcon, MicIcon, SendArrowIcon } from "../../src/components/MirsIcons";
+import { BackChevronIcon, CameraIcon, MicIcon, SendArrowIcon } from "../../src/components/MirsIcons";
+import { CapturePreview } from "../../src/components/CapturePreview";
+import { MediaBubble } from "../../src/components/MediaBubble";
+import { MediaViewer } from "../../src/components/MediaViewer";
 import { RecordDock } from "../../src/components/RecordDock";
 import { ViewOncePlayer } from "../../src/components/ViewOncePlayer";
 import { ReceiptTicks } from "../../src/components/ReceiptTicks";
@@ -65,6 +68,7 @@ import { SOCKET_EVENTS, ensureSocket, getSocket } from "../../src/lib/socket";
 import { useTargets } from "../../src/lib/targets";
 import { colors } from "../../src/lib/theme";
 import { ackDelivered, markPeerTextRead } from "../../src/lib/unread";
+import { captureChatMedia, type ChatCapture } from "../../src/lib/capture";
 import { startOutgoing } from "../../src/lib/voiceCall";
 import { MUTE_ALWAYS, getDisappearAfterSec, isPeerMuted, setPeerMuteUntil } from "../../src/lib/contactPrefs";
 import { loadGroups, type TalkGroup } from "../../src/lib/groups";
@@ -86,8 +90,10 @@ function mergeReceipt(a?: MessageReceipt | null, b?: MessageReceipt | null): Mes
   return receiptRank(a) >= receiptRank(b) ? a : b;
 }
 
-function itemKind(item: HistoryItem): "walkie" | "voice" | "text" {
-  if (item.kind === "text" || item.kind === "voice" || item.kind === "walkie") return item.kind;
+function itemKind(item: HistoryItem): "walkie" | "voice" | "text" | "image" | "video" {
+  if (item.kind === "text" || item.kind === "voice" || item.kind === "walkie" || item.kind === "image" || item.kind === "video") {
+    return item.kind;
+  }
   if (item.audioUrl || item.durationMs) return "walkie";
   return "text";
 }
@@ -149,6 +155,8 @@ export default function ConversationScreen() {
   const [reactions, setReactions] = useState<Record<string, string>>({});
   const [reactSheet, setReactSheet] = useState(false);
   const [replyTo, setReplyTo] = useState<HistoryItem | null>(null);
+  const [capture, setCapture] = useState<ChatCapture | null>(null);
+  const inputRef = useRef<TextInput>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const typingOnRef = useRef(false);
   const typingStopRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -288,7 +296,7 @@ export default function ConversationScreen() {
         channelId: payload.channelId || (isGroup ? userId : null),
         expiresAt: payload.expiresAt || null,
       });
-      if (row.audioUrl) void prefetchAudio(row.audioUrl);
+      if (row.audioUrl && kind !== "image" && kind !== "video") void prefetchAudio(row.audioUrl);
       setItems((current) => {
         const existing = current.find(
           (item) => txIdOf(item.id) === payload.transmissionId || (item.id.startsWith("local-") && item.mine === mine && itemKind(item) === kind),
@@ -567,6 +575,7 @@ export default function ConversationScreen() {
   function replyToItem(item: HistoryItem) {
     setReplyTo(item);
     clearSelect();
+    requestAnimationFrame(() => inputRef.current?.focus());
   }
 
   function replySelected() {
@@ -637,7 +646,15 @@ export default function ConversationScreen() {
     return {
       id: item.id,
       name: owned ? user?.displayName || "" : peer.name,
-      text: text || (itemKind(item) === "voice" ? t("voiceClip") : ""),
+      text:
+        text ||
+        (itemKind(item) === "voice"
+          ? t("voiceClip")
+          : itemKind(item) === "image"
+            ? t("photoClip")
+            : itemKind(item) === "video"
+              ? t("videoClip")
+              : ""),
     };
   }
 
@@ -833,6 +850,87 @@ export default function ConversationScreen() {
     }
   }
 
+  async function openCamera() {
+    if (sending || recordingRef.current) return;
+    setEmojiOpen(false);
+    try {
+      const taken = await captureChatMedia();
+      if (taken) setCapture(taken);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function sendCapture(viewOnce: boolean) {
+    const taken = capture;
+    setCapture(null);
+    if (!taken || !token || !userId) return;
+    const quoted = replyTo ? quotePreview(replyTo) : null;
+    setReplyTo(null);
+    setError("");
+    const optimistic: HistoryItem = {
+      id: `local-${Date.now()}`,
+      senderName: user?.displayName || "",
+      senderId: user?.id || "",
+      originalText: null,
+      translatedText: null,
+      audioUrl: taken.uri,
+      language: user?.speakLang || lang,
+      createdAt: new Date().toISOString(),
+      durationMs: taken.durationMs || null,
+      mine: true,
+      peerId: userId,
+      peerAvatar: user?.avatarUrl,
+      kind: taken.kind,
+      viewOnce,
+      replyToId: quoted?.id || null,
+      replyToName: quoted?.name || null,
+      replyToText: quoted?.text || null,
+      receipt: "sent",
+      channelId: isGroup ? userId : null,
+      expiresAt: disappearSec ? new Date(Date.now() + disappearSec * 1000).toISOString() : null,
+    };
+    setItems((current) => {
+      const next = sortMessages([optimistic, ...current]);
+      seedHistoryCache(next);
+      return next;
+    });
+    const form = new FormData();
+    form.append("audio", {
+      uri: taken.uri,
+      name: taken.name,
+      type: taken.mime,
+    } as unknown as Blob);
+    form.append("kind", taken.kind);
+    form.append("viewOnce", viewOnce ? "true" : "false");
+    form.append("durationMs", String(taken.durationMs || 0));
+    form.append("targetUserIds", JSON.stringify(isGroup ? groupMembers.filter((id) => id !== user?.id) : [userId]));
+    if (isGroup) form.append("channelId", userId);
+    if (quoted?.id) {
+      form.append("replyToId", quoted.id);
+      form.append("replyToName", quoted.name);
+      form.append("replyToText", quoted.text);
+    }
+    try {
+      const saved = await api<{ id?: string }>("/transmissions", { method: "POST", token, body: form, timeoutMs: 120000 });
+      if (saved?.id) {
+        const pending = takePendingReceipt(saved.id);
+        setItems((current) => {
+          const next = current.map((item) =>
+            item.id === optimistic.id
+              ? { ...item, id: `${saved.id}:${userId}`, receipt: mergeReceipt(item.receipt || "sent", pending) || "sent" }
+              : item,
+          );
+          seedHistoryCache(next);
+          return next;
+        });
+      }
+    } catch (e) {
+      setError((e as Error).message);
+      setItems((current) => current.filter((item) => item.id !== optimistic.id));
+    }
+  }
+
   async function closeOnce() {
     const item = onceRef.current;
     onceRef.current = null;
@@ -916,7 +1014,30 @@ export default function ConversationScreen() {
         />
       ) : null;
     const node =
-      kind === "voice" ? (
+      kind === "image" || kind === "video" ? (
+        <MediaBubble
+          uri={item.audioUrl}
+          kind={kind}
+          durationMs={item.durationMs}
+          mine={mine}
+          locked={Boolean(item.viewOnce && !mine)}
+          viewOnce={item.viewOnce}
+          time={time}
+          receipt={mine ? item.receipt || "sent" : undefined}
+          selected={picking}
+          selecting={selecting}
+          quoteName={quotedName}
+          quoteText={quotedText}
+          photoLabel={t("photoClip")}
+          videoLabel={t("videoClip")}
+          onOpen={() => {
+            onceRef.current = item;
+            setOnceItem(item);
+          }}
+          onLongPress={() => beginSelect(item.id)}
+          onSelect={() => toggleSelect(item.id)}
+        />
+      ) : kind === "voice" ? (
         <VoiceBubble
           uri={item.audioUrl}
           durationMs={item.durationMs}
@@ -1151,39 +1272,45 @@ export default function ConversationScreen() {
               />
             </View>
           ) : (
-            <View>
-              {replyTo ? (
-                <View style={styles.replyBar}>
+            <View style={styles.composer}>
+              <View style={styles.pill}>
+                {replyTo ? (
                   <QuoteBox
                     name={quotePreview(replyTo).name}
                     text={quotePreview(replyTo).text}
+                    inset
                     onClose={() => setReplyTo(null)}
                   />
+                ) : null}
+                <View style={styles.pillRow}>
+                  <Pressable
+                    onPress={() => setEmojiOpen((open) => !open)}
+                    hitSlop={8}
+                    style={styles.emojiBtn}
+                  >
+                    <Text style={[styles.pillIcon, emojiOpen && styles.pillIconOn]}>😊</Text>
+                  </Pressable>
+                  <TextInput
+                    ref={inputRef}
+                    style={[styles.input, { textAlign: align }]}
+                    value={draft}
+                    onChangeText={(value) => {
+                      setDraft(value);
+                      pulseTyping(value);
+                      if (emojiOpen && value.length === 0) setEmojiOpen(false);
+                    }}
+                    onFocus={() => setEmojiOpen(false)}
+                    placeholder={t("typeMessage")}
+                    placeholderTextColor="#7A99C4"
+                    multiline
+                    underlineColorAndroid="transparent"
+                  />
+                  {hasDraft ? null : (
+                    <Pressable onPress={() => void openCamera()} hitSlop={8} style={styles.camBtn}>
+                      <CameraIcon size={22} color="#54656F" />
+                    </Pressable>
+                  )}
                 </View>
-              ) : null}
-            <View style={styles.composer}>
-              <View style={styles.pill}>
-                <Pressable
-                  onPress={() => setEmojiOpen((open) => !open)}
-                  hitSlop={8}
-                  style={styles.emojiBtn}
-                >
-                  <Text style={[styles.pillIcon, emojiOpen && styles.pillIconOn]}>😊</Text>
-                </Pressable>
-                <TextInput
-                  style={[styles.input, { textAlign: align }]}
-                  value={draft}
-                  onChangeText={(value) => {
-                    setDraft(value);
-                    pulseTyping(value);
-                    if (emojiOpen && value.length === 0) setEmojiOpen(false);
-                  }}
-                  onFocus={() => setEmojiOpen(false)}
-                  placeholder={t("typeMessage")}
-                  placeholderTextColor="#7A99C4"
-                  multiline
-                  underlineColorAndroid="transparent"
-                />
               </View>
               <Pressable
                 onPress={() => {
@@ -1201,15 +1328,27 @@ export default function ConversationScreen() {
                 )}
               </Pressable>
             </View>
-            </View>
           )}
         </View>
       </KeyboardAvoidingView>
       <ViewOncePlayer
-        visible={Boolean(onceItem)}
+        visible={Boolean(onceItem && itemKind(onceItem) === "voice")}
         uri={onceItem?.audioUrl || null}
         durationMs={onceItem?.durationMs || null}
         onClose={() => void closeOnce()}
+      />
+      <MediaViewer
+        visible={Boolean(onceItem && (itemKind(onceItem) === "image" || itemKind(onceItem) === "video"))}
+        uri={onceItem?.audioUrl || null}
+        kind={onceItem && itemKind(onceItem) === "video" ? "video" : "image"}
+        viewOnce={Boolean(onceItem?.viewOnce && !onceItem?.mine && onceItem?.senderId !== user?.id)}
+        onClose={() => void closeOnce()}
+      />
+      <CapturePreview
+        capture={capture}
+        onSend={() => void sendCapture(false)}
+        onOnce={() => void sendCapture(true)}
+        onCancel={() => setCapture(null)}
       />
       <Modal visible={deleteOpen} transparent animationType="fade" onRequestClose={() => setDeleteOpen(false)}>
         <Pressable style={styles.deleteOverlay} onPress={() => setDeleteOpen(false)}>
@@ -1359,10 +1498,11 @@ const styles = StyleSheet.create({
   reactionMine: { left: 10 },
   reactionTheirs: { right: 10 },
   reactionTxt: { fontSize: 14 },
-  replyBar: {
-    backgroundColor: "#EFEAF6",
-    paddingHorizontal: 12,
-    paddingTop: 8,
+  camBtn: {
+    minWidth: 32,
+    minHeight: 32,
+    alignItems: "center",
+    justifyContent: "center",
     paddingBottom: 2,
   },
   reactOverlay: {
@@ -1457,16 +1597,23 @@ const styles = StyleSheet.create({
   actionOff: { opacity: 0.45 },
   pill: {
     flex: 1,
-    flexDirection: "row",
+    flexDirection: "column",
     minHeight: 48,
-    maxHeight: 120,
+    maxHeight: 168,
     borderRadius: 24,
     backgroundColor: "#FFFFFF",
     borderWidth: 1,
     borderColor: "rgba(14,76,184,0.25)",
-    alignItems: "center",
-    paddingHorizontal: 10,
-    gap: 6,
+    alignItems: "stretch",
+    paddingHorizontal: 6,
+    paddingBottom: 2,
+  },
+  pillRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    minHeight: 48,
+    gap: 4,
+    paddingHorizontal: 4,
   },
   pillIcon: {
     fontSize: 18,

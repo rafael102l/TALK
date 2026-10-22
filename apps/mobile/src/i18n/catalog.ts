@@ -58,9 +58,48 @@ export type MsgKey =
   | "everyone"
   | "messages"
   | "tabWalkie"
+  | "navWalkie"
+  | "navChats"
+  | "navLive"
+  | "callsEmpty"
+  | "callOutgoing"
+  | "callNoPhone"
+  | "callRinging"
+  | "callIncoming"
+  | "callIncomingVoice"
+  | "callIncomingVideo"
+  | "callMute"
+  | "callAnswer"
+  | "callReject"
+  | "callEnd"
+  | "callVideo"
+  | "callVideoOff"
+  | "callFlip"
+  | "callMissed"
+  | "callCancelled"
+  | "callAnswered"
+  | "liveCallHint"
+  | "liveCallPick"
+  | "liveCallEmpty"
+  | "liveCallLine"
+  | "liveCallHold"
+  | "voiceMessages"
+  | "noVoiceMessages"
+  | "speakerOut"
   | "noWalkieYet"
   | "walkieClip"
   | "speaker"
+  | "translator"
+  | "translatorSource"
+  | "translatorTarget"
+  | "translatorSwap"
+  | "translatorRecord"
+  | "translatorRecording"
+  | "translatorWorking"
+  | "translatorHeard"
+  | "translatorResult"
+  | "translatorNoSpeech"
+  | "translatorFlip"
   | "quiet"
   | "holdMic"
   | "tx"
@@ -102,6 +141,10 @@ export type MsgKey =
   | "nobody"
   | "inTalkMeta"
   | "voiceClip"
+  | "photoClip"
+  | "videoClip"
+  | "sendOnce"
+  | "viewOnceMediaHint"
   | "noHistory"
   | "you"
   | "captions"
@@ -134,7 +177,72 @@ export type MsgKey =
   | "inviteSendSms"
   | "inviteSmsUnavailable"
   | "searchLanguage"
-  | "noLanguageMatch";
+  | "noLanguageMatch"
+  | "heardText"
+  | "installVoice"
+  | "voicePackMissing"
+  | "sentTranslation"
+  | "today"
+  | "yesterday"
+  | "statusOnline"
+  | "statusTyping"
+  | "statusLastSeen"
+  | "messageCopied"
+  | "deleteForMe"
+  | "deleteForEveryone"
+  | "deleteMessageTitle"
+  | "deleteMessagesTitle"
+  | "replyAction"
+  | "forwardAction"
+  | "unblockUser"
+  | "phoneCopied"
+  | "contactMedia"
+  | "contactStorage"
+  | "contactNotifications"
+  | "contactMediaVisibility"
+  | "clearChat"
+  | "clearChatBody"
+  | "blockUser"
+  | "blockBody"
+  | "userBlocked"
+  | "reportUser"
+  | "reportHint"
+  | "reportSend"
+  | "reportSent"
+  | "storageSummary"
+  | "noMediaYet"
+  | "permNeedMic"
+  | "permNeedCall"
+  | "permNeedVideo"
+  | "permNeedContacts"
+  | "permGrant"
+  | "permBlockedHint"
+  | "addToContacts"
+  | "contactAdded"
+  | "searchInChat"
+  | "muteNotifications"
+  | "unmuteNotifications"
+  | "muteHint"
+  | "muteHours"
+  | "muteWeek"
+  | "muteAlways"
+  | "ok"
+  | "disappearingMessages"
+  | "disappearingBody"
+  | "disappearHero"
+  | "disappearTimer"
+  | "disappear24h"
+  | "disappear7d"
+  | "disappear90d"
+  | "disappearOff"
+  | "disappearDefault"
+  | "disappearDefaultHint"
+  | "newGroup"
+  | "groupNameOptional"
+  | "groupPermissions"
+  | "membersCount"
+  | "frequentChats"
+  | "searchPeopleHint";
 
 type Dict = Record<MsgKey, string>;
 
@@ -196,11 +304,54 @@ const en: Dict = {
   everyone: "Everyone",
   messages: "Messages",
   tabWalkie: "Walkie-talkie",
+  navWalkie: "Walkie-talkie",
+  navChats: "Chats",
+  navLive: "Calls",
+  callsEmpty: "No recent calls",
+  callOutgoing: "Outgoing call",
+  callNoPhone: "No phone number",
+  callRinging: "Ringing...",
+  callIncoming: "Incoming call",
+  callIncomingVoice: "Incoming voice call...",
+  callIncomingVideo: "Incoming video call...",
+  callMute: "Mute",
+  callAnswer: "Answer",
+  callReject: "Decline",
+  callEnd: "End",
+  callVideo: "Video",
+  callVideoOff: "Camera off",
+  callFlip: "Flip camera",
+  callMissed: "Missed call",
+  callCancelled: "Cancelled",
+  callAnswered: "Call",
+  liveCallHint: "Open two-way line. Speech is translated live into the other person's language.",
+  liveCallPick: "Choose someone for a live translation call",
+  liveCallEmpty: "No TALK contacts yet",
+  liveCallLine: "Open line",
+  liveCallHold: "Hold to talk. They hear the translation.",
+  voiceMessages: "Voice messages",
+  noVoiceMessages: "No voice messages yet",
+  speakerOut: "Loudspeaker",
   noWalkieYet: "No walkie messages yet",
   walkieClip: "Walkie message",
   speaker: "Speaker",
+  translator: "Translator",
+  translatorSource: "From",
+  translatorTarget: "To",
+  translatorSwap: "Swap languages",
+  translatorRecord: "Hold to speak",
+  translatorRecording: "Recording... release to translate",
+  translatorWorking: "Translating...",
+  translatorHeard: "Heard",
+  translatorResult: "Translation",
+  translatorNoSpeech: "No speech heard. Try again.",
+  translatorFlip: "Flip for the other person",
   quiet: "Mute",
   holdMic: "Hold the mic to talk",
+  heardText: "Heard",
+  installVoice: "Install voice pack",
+  voicePackMissing: "Voice pack for this language is missing.",
+  sentTranslation: "Translated",
   tx: "Recording...",
   transcribe: "Transcribing and sending...",
   sent: "Sent",
@@ -240,6 +391,10 @@ const en: Dict = {
   nobody: "No TALK user with that name or number",
   inTalkMeta: "on TALK",
   voiceClip: "Voice message",
+  photoClip: "Photo",
+  videoClip: "Video",
+  sendOnce: "View once",
+  viewOnceMediaHint: "View once · closing deletes it",
   noHistory: "No transmissions yet",
   you: "You",
   captions: "Captions",
@@ -252,6 +407,8 @@ const en: Dict = {
   chooseCountryTitle: "Choose country",
   searchCountry: "Search country or code",
   cloneSavedTemp: "Saved a temporary state — you can continue",
+  today: "Today",
+  yesterday: "Yesterday",
   typeMessage: "Message",
   sendMessage: "Send",
   noMessagesYet: "Send a message or record",
@@ -273,6 +430,65 @@ const en: Dict = {
   inviteSmsUnavailable: "SMS is not available on this device",
   searchLanguage: "Type a language name…",
   noLanguageMatch: "No matching language",
+  statusOnline: "Online",
+  statusTyping: "typing...",
+  statusLastSeen: "Last seen {when}",
+  deleteForMe: "Delete for me",
+  deleteForEveryone: "Delete for everyone",
+  deleteMessageTitle: "Delete message?",
+  deleteMessagesTitle: "Delete messages?",
+  replyAction: "Reply",
+  forwardAction: "Forward",
+  messageCopied: "Message copied",
+  unblockUser: "Unblock",
+  phoneCopied: "Phone number copied",
+  contactMedia: "Media and links",
+  contactStorage: "Storage",
+  contactNotifications: "Notifications",
+  contactMediaVisibility: "Media visibility",
+  clearChat: "Clear chat",
+  clearChatBody: "Delete this chat's messages from this phone?",
+  blockUser: "Block {name}",
+  blockBody: "They will not be able to send you messages.",
+  userBlocked: "User is blocked",
+  reportUser: "Report",
+  reportHint: "Describe what happened",
+  reportSend: "Send",
+  reportSent: "Report sent",
+  storageSummary: "{messages} messages · {voice} voice notes",
+  noMediaYet: "No media yet",
+  permNeedMic: "To record, TALK needs access to your microphone.",
+  permNeedCall: "To place a voice call, TALK needs access to your microphone.",
+  permNeedVideo: "To place a video call, TALK needs access to your camera and microphone.",
+  permNeedContacts: "To find friends from your address book, TALK needs access to your contacts.",
+  permGrant: "Allow permission",
+  permBlockedHint: "Permission is blocked. You can allow it in device settings.",
+  addToContacts: "Add to contacts",
+  contactAdded: "Added to contacts",
+  searchInChat: "Search",
+  muteNotifications: "Mute notifications",
+  unmuteNotifications: "Unmute",
+  muteHint: "Other people will not see that you muted this chat. You will still get a notification if you are mentioned.",
+  muteHours: "8 hours",
+  muteWeek: "1 week",
+  muteAlways: "Always",
+  ok: "OK",
+  disappearingMessages: "Disappearing messages",
+  disappearingBody: "New messages in this chat will disappear for everyone after the period you choose, except messages you keep.",
+  disappearHero: "Set disappearing messages for this chat",
+  disappearTimer: "Message timer",
+  disappear24h: "24 hours",
+  disappear7d: "7 days",
+  disappear90d: "90 days",
+  disappearOff: "Off",
+  disappearDefault: "Default message timer",
+  disappearDefaultHint: "Start new chats with disappearing messages",
+  newGroup: "New group",
+  groupNameOptional: "Group name (optional)",
+  groupPermissions: "Group permissions",
+  membersCount: "Members: {count}",
+  frequentChats: "Frequently contacted",
+  searchPeopleHint: "Name, number, @username",
 };
 
 const he: Dict = {
@@ -333,11 +549,54 @@ const he: Dict = {
   everyone: "כולם",
   messages: "הודעות",
   tabWalkie: "ווקי טוקי",
+  navWalkie: "ווקי-טוקי",
+  navChats: "צ'אטים",
+  navLive: "שיחות",
+  callsEmpty: "אין שיחות אחרונות",
+  callOutgoing: "שיחה יוצאת",
+  callNoPhone: "אין מספר טלפון",
+  callRinging: "מחייג...",
+  callIncoming: "שיחה נכנסת",
+  callIncomingVoice: "שיחה קולית נכנסת...",
+  callIncomingVideo: "שיחת וידאו נכנסת...",
+  callMute: "השתקה",
+  callAnswer: "מענה",
+  callReject: "דחייה",
+  callEnd: "ניתוק",
+  callVideo: "וידאו",
+  callVideoOff: "כבה מצלמה",
+  callFlip: "החלף מצלמה",
+  callMissed: "שיחה שלא נענתה",
+  callCancelled: "בוטלה",
+  callAnswered: "שיחה",
+  liveCallHint: "קו פתוח דו-כיווני. הדיבור מתורגם בלייב לשפה של הצד השני.",
+  liveCallPick: "בחרו אדם לשיחת תרגום חיה",
+  liveCallEmpty: "אין עדיין אנשי קשר ב-TALK",
+  liveCallLine: "קו פתוח",
+  liveCallHold: "החזיקו כדי לדבר. הצד השני שומע את התרגום.",
+  voiceMessages: "הודעות קוליות",
+  noVoiceMessages: "אין עדיין הודעות קוליות",
+  speakerOut: "רמקול פעיל",
   noWalkieYet: "אין עדיין שידורי ווקי טוקי",
   walkieClip: "שידור ווקי",
   speaker: "רמקול",
+  translator: "מתרגמן",
+  translatorSource: "שפת מקור",
+  translatorTarget: "שפת יעד",
+  translatorSwap: "החלפת שפות",
+  translatorRecord: "החזיקו כדי לדבר",
+  translatorRecording: "מקליט... שחררו לתרגום",
+  translatorWorking: "מתרגם...",
+  translatorHeard: "מה שנאמר",
+  translatorResult: "תרגום",
+  translatorNoSpeech: "לא זוהה דיבור. נסו שוב.",
+  translatorFlip: "היפוך למולכם",
   quiet: "שקט",
   holdMic: "החזיקו את המיקרופון כדי לדבר",
+  heardText: "נשמע",
+  installVoice: "התקן חבילת קול",
+  voicePackMissing: "חבילת הקול לשפה זו חסרה.",
+  sentTranslation: "תורגם",
   tx: "מקליט...",
   transcribe: "מתמלל ושולח...",
   sent: "נשלח",
@@ -377,6 +636,10 @@ const he: Dict = {
   nobody: "אין מישהו עם TALK בשם או במספר הזה",
   inTalkMeta: "ב-TALK",
   voiceClip: "הודעה קולית",
+  photoClip: "תמונה",
+  videoClip: "סרטון",
+  sendOnce: "חד-פעמי",
+  viewOnceMediaHint: "חד-פעמי · סגירה מוחקת",
   noHistory: "עדיין אין שידורים",
   you: "אני",
   captions: "כתוביות",
@@ -389,6 +652,8 @@ const he: Dict = {
   chooseCountryTitle: "בחירת מדינה",
   searchCountry: "חיפוש מדינה או קידומת",
   cloneSavedTemp: "נשמר מצב זמני — אפשר להמשיך",
+  today: "היום",
+  yesterday: "אתמול",
   typeMessage: "הודעה",
   sendMessage: "שלח",
   noMessagesYet: "שלחו הודעה או הקליטו",
@@ -410,6 +675,65 @@ const he: Dict = {
   inviteSmsUnavailable: "אין אפשרות לשלוח SMS במכשיר הזה",
   searchLanguage: "הקלידו שם שפה…",
   noLanguageMatch: "לא נמצאה שפה מתאימה",
+  statusOnline: "מחובר/ת",
+  statusTyping: "מקליד/ה...",
+  statusLastSeen: "נראה/תה לאחרונה ב-{when}",
+  deleteForMe: "למחוק אצלי",
+  deleteForEveryone: "למחוק אצל כולם",
+  deleteMessageTitle: "למחוק הודעה?",
+  deleteMessagesTitle: "למחוק הודעות?",
+  replyAction: "תגובה",
+  forwardAction: "העברה",
+  messageCopied: "הודעה הועתקה",
+  unblockUser: "ביטול חסימה",
+  phoneCopied: "מספר הטלפון הועתק",
+  contactMedia: "מדיה וקישורים",
+  contactStorage: "ניהול אחסון",
+  contactNotifications: "התראות",
+  contactMediaVisibility: "הצגת מדיה",
+  clearChat: "ניקוי הצ'אט",
+  clearChatBody: "למחוק את היסטוריית ההודעות במכשיר הזה?",
+  blockUser: "לחסום את {name}",
+  blockBody: "הצד השני לא יוכל לשלוח לכם הודעות.",
+  userBlocked: "המשתמש חסום",
+  reportUser: "דיווח",
+  reportHint: "כתבו הסבר או תלונה",
+  reportSend: "שליחה",
+  reportSent: "הדיווח נשלח",
+  storageSummary: "{messages} הודעות · {voice} הודעות קול",
+  noMediaYet: "אין מדיה עדיין",
+  permNeedMic: "כדי להקליט, TALK זקוקה לגישה למיקרופון שלך.",
+  permNeedCall: "כדי לבצע שיחת קול, TALK זקוקה לגישה למיקרופון שלך.",
+  permNeedVideo: "כדי לבצע שיחת וידאו, TALK זקוקה לגישה למצלמה ולמיקרופון שלך.",
+  permNeedContacts: "כדי למצוא חברים מאנשי הקשר, TALK זקוקה לגישה לאנשי הקשר שלך.",
+  permGrant: "אישור הרשאה",
+  permBlockedHint: "ההרשאה נחסמה. אפשר לאשר אותה בהגדרות המכשיר.",
+  addToContacts: "הוספה לאנשי קשר",
+  contactAdded: "נוסף לאנשי הקשר",
+  searchInChat: "חיפוש",
+  muteNotifications: "השתקת התראות",
+  unmuteNotifications: "ביטול השתקה",
+  muteHint: "חברים אחרים לא יוכלו לראות שהשתקת את הצ'אט הזה. עדיין תישלח לך התראה אם יאזכרו אותך.",
+  muteHours: "8 שעות",
+  muteWeek: "שבוע",
+  muteAlways: "תמיד",
+  ok: "אישור",
+  disappearingMessages: "הודעות נעלמות",
+  disappearingBody: "הודעות חדשות בצ'אט הזה ייעלמו אצל כולם אחרי פרק הזמן שבחרת, חוץ מהודעות שבחרת לשמור.",
+  disappearHero: "הגדרת הודעות נעלמות בצ'אט הזה",
+  disappearTimer: "טיימר להודעות",
+  disappear24h: "24 שעות",
+  disappear7d: "7 ימים",
+  disappear90d: "90 ימים",
+  disappearOff: "כבוי",
+  disappearDefault: "טיימר ברירת מחדל להודעות נעלמות",
+  disappearDefaultHint: "אפשר להתחיל צ'אטים חדשים עם הודעות נעלמות",
+  newGroup: "קבוצה חדשה",
+  groupNameOptional: "שם הקבוצה (אופציונלי)",
+  groupPermissions: "הרשאות בקבוצה",
+  membersCount: "חברים: {count}",
+  frequentChats: "צ'אטים בשימוש נפוץ",
+  searchPeopleHint: "שם,מספר,@username",
 };
 
 function mix(over: Partial<Dict>): Dict {
@@ -420,6 +744,7 @@ export const CATALOG: Record<LanguageCode, Dict> = {
   en,
   he,
   ar: mix({
+    statusOnline: "متصل",
     invite: "دعوة",
     notInContacts: "ليس في جهات اتصالك",
     inviteSheetTitle: "إرسال دعوة برسالة نصية",

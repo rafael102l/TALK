@@ -10,14 +10,19 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "app.talk.ptt",
+      "entitlements": {
+        "aps-environment": "production"
+      },
       "infoPlist": {
         "NSMicrophoneUsageDescription": "TALK צריך מיקרופון כדי לתמלל שידורים במכשיר.",
         "NSSpeechRecognitionUsageDescription": "TALK מתמלל שידורים במכשיר כדי לתרגם בחינם.",
         "NSContactsUsageDescription": "TALK משתמש באנשי הקשר כדי למצוא מי כבר באפליקציה.",
         "NSPhotoLibraryUsageDescription": "TALK צריך תמונה כדי להציג אותך לחברים.",
+        "NSCameraUsageDescription": "TALK צריך מצלמה כדי לצלם תמונה או סרטון.",
         "UIBackgroundModes": [
           "audio",
-          "remote-notification"
+          "remote-notification",
+          "voip"
         ]
       }
     },
@@ -25,6 +30,7 @@
       "package": "app.talk.ptt",
       "usesCleartextTraffic": true,
       "permissions": [
+        "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
         "android.permission.READ_CONTACTS",
         "android.permission.VIBRATE",
@@ -33,12 +39,22 @@
         "android.permission.FOREGROUND_SERVICE_MICROPHONE",
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.WRITE_CONTACTS"
+        "android.permission.WRITE_CONTACTS",
+        "android.permission.CALL_PHONE",
+        "android.permission.READ_PHONE_STATE",
+        "android.permission.READ_PHONE_NUMBERS",
+        "android.permission.MANAGE_OWN_CALLS",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
+        "android.permission.BIND_TELECOM_CONNECTION_SERVICE",
+        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
       ]
     },
     "plugins": [
       "expo-router",
       "expo-dev-client",
+      "@react-native-firebase/app",
+      "@react-native-firebase/messaging",
       "expo-secure-store",
       "expo-av",
       "expo-contacts",
@@ -46,7 +62,9 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "TALK צריך תמונה כדי להציג אותך לחברים."
+          "photosPermission": "TALK צריך תמונה כדי להציג אותך לחברים.",
+          "cameraPermission": "TALK צריך מצלמה כדי לצלם תמונה או סרטון.",
+          "microphonePermission": "TALK צריך מיקרופון כדי לצלם סרטון."
         }
       ],
       [

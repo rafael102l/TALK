@@ -194,7 +194,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         playedAt: null,
         transmission: {
           senderId: { not: userId },
-          kind: { in: ["text", "voice"] },
+          kind: { in: ["text", "voice", "image", "video"] },
           status: "READY",
           createdAt: { gte: since },
         },
@@ -212,7 +212,11 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       const sourceLang = (tx.sender.speakLang || tx.sender.listenLang || "he").slice(0, 2).toLowerCase();
       const sameLang = hear === sourceLang;
       const render = tx.renders.find((item) => item.language === hear);
-      const kind = (tx.kind === "voice" ? "voice" : "text") as "text" | "voice";
+      const kind = (tx.kind === "voice" || tx.kind === "image" || tx.kind === "video" ? tx.kind : "text") as
+        | "text"
+        | "voice"
+        | "image"
+        | "video";
       const payload = {
         transmissionId: tx.id,
         channelId: tx.channelId,
@@ -221,7 +225,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         language: hear,
         speakLang: sourceLang,
         mode: sender.plan === "PLUS" ? "plus" : "free",
-        audioUrl: kind === "voice" ? this.storage.publicUrl(tx.originalAudioUrl) : null,
+        audioUrl: kind === "text" ? null : this.storage.publicUrl(tx.originalAudioUrl),
         originalText: tx.originalText || "",
         translatedText: sameLang ? tx.originalText || "" : render?.translatedText || tx.originalText || "",
         durationMs: tx.durationMs,

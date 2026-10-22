@@ -49,7 +49,7 @@ export class TransmissionsController {
   }
 
   @Post()
-  @UseInterceptors(FileInterceptor("audio"))
+  @UseInterceptors(FileInterceptor("audio", { limits: { fileSize: 80 * 1024 * 1024 } }))
   create(
     @CurrentUser() user: User,
     @UploadedFile() file: Express.Multer.File,

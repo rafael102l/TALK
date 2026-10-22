@@ -1,4 +1,4 @@
-import { View } from "react-native";
+import { Text, View } from "react-native";
 
 type IconProps = { size?: number; color?: string };
 
@@ -145,6 +145,29 @@ export function BellIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
   );
 }
 
+export function WalkieIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
+  return (
+    <View style={{ width: size, height: size, alignItems: "center" }}>
+      <View style={{ width: 2, height: size * 0.18, backgroundColor: color, borderRadius: 1 }} />
+      <View
+        style={{
+          width: size * 0.58,
+          height: size * 0.68,
+          borderRadius: size * 0.12,
+          borderWidth: 2,
+          borderColor: color,
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 4,
+        }}
+      >
+        <View style={{ width: size * 0.28, height: size * 0.14, borderRadius: 3, backgroundColor: color }} />
+        <View style={{ width: size * 0.16, height: size * 0.16, borderRadius: size * 0.08, borderWidth: 2, borderColor: color }} />
+      </View>
+    </View>
+  );
+}
+
 export function ChatIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
   return (
     <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
@@ -170,30 +193,267 @@ export function ChatIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
   );
 }
 
-export function PhoneIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
+/** Ionicons "call" handset (U+EAD9). `down` is the hang-up pose. */
+const PHONE_GLYPH = "\uEAD9";
+
+export function PhoneIcon({ size = 28, color = "#FFFFFF", down = false }: IconProps & { down?: boolean }) {
   return (
-    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
-      <View style={{ transform: [{ rotate: "-38deg" }], alignItems: "center" }}>
-        <View
-          style={{
-            width: size * 0.46,
-            height: size * 0.22,
-            borderRadius: size * 0.11,
-            backgroundColor: color,
-          }}
-        />
-        <View style={{ width: size * 0.2, height: size * 0.28, backgroundColor: color }} />
-        <View
-          style={{
-            width: size * 0.46,
-            height: size * 0.22,
-            borderRadius: size * 0.11,
-            backgroundColor: color,
-          }}
-        />
-      </View>
+    <View
+      style={{
+        width: size,
+        height: size,
+        alignItems: "center",
+        justifyContent: "center",
+        transform: [{ rotate: down ? "135deg" : "0deg" }],
+      }}
+    >
+      <Text
+        allowFontScaling={false}
+        style={{
+          fontFamily: "ionicons",
+          fontSize: size * 0.92,
+          lineHeight: size,
+          color,
+          includeFontPadding: false,
+          textAlign: "center",
+        }}
+      >
+        {PHONE_GLYPH}
+      </Text>
     </View>
   );
+}
+
+export function MicOffIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <MicIcon size={size * 0.86} color={color} />
+      <View
+        style={{
+          position: "absolute",
+          width: size * 0.82,
+          height: Math.max(3, size * 0.09),
+          borderRadius: 2,
+          backgroundColor: color,
+          transform: [{ rotate: "-42deg" }],
+        }}
+      />
+    </View>
+  );
+}
+
+function IonGlyph({ glyph, size, color }: { glyph: string; size: number; color: string }) {
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <Text
+        allowFontScaling={false}
+        style={{
+          fontFamily: "ionicons",
+          fontSize: size,
+          lineHeight: size,
+          color,
+          includeFontPadding: false,
+          textAlign: "center",
+        }}
+      >
+        {glyph}
+      </Text>
+    </View>
+  );
+}
+
+/** Ionicons videocam. */
+export function VideoIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
+  return <IonGlyph glyph={"\uEF0E"} size={size} color={color} />;
+}
+
+/** Navigation chevron: left in LTR, right in RTL. */
+export function BackChevronIcon({ size = 24, color = "#111B21", rtl = false }: IconProps & { rtl?: boolean }) {
+  const thick = Math.max(2.2, size * 0.13);
+  const arm = size * 0.36;
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <View
+        style={{
+          width: arm,
+          height: arm,
+          borderColor: color,
+          transform: [{ rotate: "45deg" }],
+          ...(rtl
+            ? { borderTopWidth: thick, borderRightWidth: thick, marginLeft: -size * 0.06 }
+            : { borderBottomWidth: thick, borderLeftWidth: thick, marginLeft: size * 0.06 }),
+        }}
+      />
+    </View>
+  );
+}
+
+/** WhatsApp-style reply (curved arrow to the left). */
+export function ReplyArrowIcon({ size = 22, color = "#111B21" }: IconProps) {
+  const w = Math.max(1.8, size * 0.1);
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <View
+        style={{
+          position: "absolute",
+          left: size * 0.14,
+          top: size * 0.22,
+          width: size * 0.3,
+          height: size * 0.3,
+          borderLeftWidth: w,
+          borderBottomWidth: w,
+          borderColor: color,
+          transform: [{ rotate: "45deg" }],
+        }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          left: size * 0.22,
+          top: size * 0.36,
+          width: size * 0.46,
+          height: w,
+          backgroundColor: color,
+          borderRadius: 1,
+        }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          right: size * 0.22,
+          top: size * 0.36,
+          width: w,
+          height: size * 0.28,
+          backgroundColor: color,
+          borderBottomLeftRadius: size * 0.12,
+          borderBottomRightRadius: size * 0.12,
+        }}
+      />
+    </View>
+  );
+}
+
+/** WhatsApp-style forward (curved arrow to the right). */
+export function ForwardArrowIcon({ size = 22, color = "#111B21" }: IconProps) {
+  return (
+    <View style={{ width: size, height: size, transform: [{ scaleX: -1 }] }}>
+      <ReplyArrowIcon size={size} color={color} />
+    </View>
+  );
+}
+
+/** WhatsApp-style trash can. */
+export function TrashIcon({ size = 22, color = "#111B21" }: IconProps) {
+  const w = Math.max(1.7, size * 0.09);
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <View style={{ width: size * 0.18, height: w, backgroundColor: color, borderRadius: 1, marginBottom: 2 }} />
+      <View style={{ width: size * 0.62, height: w, backgroundColor: color, borderRadius: 1, marginBottom: 2 }} />
+      <View
+        style={{
+          width: size * 0.5,
+          height: size * 0.48,
+          borderWidth: w,
+          borderColor: color,
+          borderRadius: 3,
+          borderTopWidth: 0,
+        }}
+      />
+    </View>
+  );
+}
+
+/** WhatsApp-style copy (two overlapping pages). */
+export function CopyPagesIcon({ size = 22, color = "#111B21" }: IconProps) {
+  const w = Math.max(1.6, size * 0.09);
+  const box = size * 0.46;
+  return (
+    <View style={{ width: size, height: size }}>
+      <View
+        style={{
+          position: "absolute",
+          top: size * 0.14,
+          left: size * 0.14,
+          width: box,
+          height: box * 1.15,
+          borderWidth: w,
+          borderColor: color,
+          borderRadius: 3,
+        }}
+      />
+      <View
+        style={{
+          position: "absolute",
+          top: size * 0.3,
+          left: size * 0.3,
+          width: box,
+          height: box * 1.15,
+          borderWidth: w,
+          borderColor: color,
+          borderRadius: 3,
+          backgroundColor: "#FFFFFF",
+        }}
+      />
+    </View>
+  );
+}
+
+/** Three vertical dots (overflow menu). */
+export function MoreVertIcon({ size = 22, color = "#111B21" }: IconProps) {
+  const dot = Math.max(3, size * 0.18);
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center", gap: Math.max(2, size * 0.1) }}>
+      <View style={{ width: dot, height: dot, borderRadius: dot / 2, backgroundColor: color }} />
+      <View style={{ width: dot, height: dot, borderRadius: dot / 2, backgroundColor: color }} />
+      <View style={{ width: dot, height: dot, borderRadius: dot / 2, backgroundColor: color }} />
+    </View>
+  );
+}
+
+/** Ionicons videocam-off. Shown while the camera is live: the next tap stops it. */
+export function VideoOffIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
+  return <IonGlyph glyph={"\uEF0F"} size={size} color={color} />;
+}
+
+/** Outline camera for the chat composer. */
+export function CameraIcon({ size = 22, color = "#54656F" }: IconProps) {
+  const bodyW = size * 0.72;
+  const bodyH = size * 0.5;
+  const lens = size * 0.28;
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <View
+        style={{
+          width: bodyW,
+          height: bodyH,
+          borderRadius: 4,
+          borderWidth: 2,
+          borderColor: color,
+          alignItems: "center",
+          justifyContent: "center",
+          marginTop: size * 0.12,
+        }}
+      >
+        <View style={{ width: lens, height: lens, borderRadius: lens / 2, borderWidth: 2, borderColor: color }} />
+      </View>
+      <View
+        style={{
+          position: "absolute",
+          top: size * 0.12,
+          width: size * 0.22,
+          height: size * 0.14,
+          borderTopLeftRadius: 3,
+          borderTopRightRadius: 3,
+          backgroundColor: color,
+        }}
+      />
+    </View>
+  );
+}
+
+/** Ionicons camera-reverse. One tap swaps front and back. */
+export function FlipCameraIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
+  return <IonGlyph glyph={"\uEADE"} size={size} color={color} />;
 }
 
 export function SpeakerIcon({ size = 28, color = "#FFFFFF" }: IconProps) {

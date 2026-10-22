@@ -80,10 +80,12 @@ export type HistoryItem = {
   peerName?: string;
   peerAvatar?: string | null;
   peerGender?: VoiceGender;
-  kind?: "walkie" | "voice" | "text";
+  kind?: "walkie" | "voice" | "text" | "image" | "video";
   viewOnce?: boolean;
   replyToId?: string | null;
   replyToName?: string | null;
   replyToText?: string | null;
   receipt?: MessageReceipt;
+  channelId?: string | null;
+  expiresAt?: string | null;
 };

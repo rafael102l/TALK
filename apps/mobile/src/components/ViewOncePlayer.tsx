@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors } from "../lib/theme";
 import { formatClock, pausePlayer, playUrl, resumePlayer, stopPlayer } from "../lib/audio";
+import { setSecureScreen } from "../lib/phoneCall";
 import { VoiceWave } from "./VoiceWave";
 import { useI18n } from "../i18n";
 
@@ -23,11 +24,15 @@ export function ViewOncePlayer({
 
   useEffect(() => {
     if (!visible) {
+      setSecureScreen(false);
       void stopPlayer();
       setPlaying(false);
       setProgress(0);
       setClock(formatClock(durationMs || 0));
+      return;
     }
+    setSecureScreen(true);
+    return () => setSecureScreen(false);
   }, [visible, durationMs]);
 
   async function toggle() {

@@ -57,7 +57,7 @@ export type HistoryItem = {
     durationMs: number | null;
     mine?: boolean;
     peerId?: string;
-    kind?: "walkie" | "voice" | "text";
+    kind?: "walkie" | "voice" | "text" | "image" | "video";
     replyToId?: string | null;
     replyToName?: string | null;
     replyToText?: string | null;

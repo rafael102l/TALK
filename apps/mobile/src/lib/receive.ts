@@ -38,14 +38,7 @@ export async function playReceived(
   _token?: string | null,
 ): Promise<{ translatedText: string | null }> {
   const id = payload.transmissionId;
-  if (id) {
-    if (played.has(id)) return { translatedText: null };
-    played.add(id);
-    if (played.size > 80) {
-      played.clear();
-      played.add(id);
-    }
-  }
+  if (id && played.has(id)) return { translatedText: null };
   if (speaking) {
     await stopRobot();
     await stopPlayback();
@@ -54,31 +47,46 @@ export async function playReceived(
   clockLog("play", { kind: payload.kind || "walkie" });
   try {
     await setPlaybackMode();
-    const sourceLang = payload.speakLang || payload.language;
-    // Server already stamped the listener language on the payload — prefer it.
-    const hearAs = payload.language || listenLang;
+    const sourceLang = (payload.speakLang || payload.language || "").slice(0, 2).toLowerCase();
+    const hearAs = (listenLang || payload.language || "").slice(0, 2).toLowerCase();
     const original = collapseRepeats(payload.originalText?.trim() ?? "");
     const translated = collapseRepeats(payload.translatedText?.trim() ?? "");
     const gender = payload.voiceGender ?? "male";
-    const sameLang = hearAs === sourceLang;
+    const sameLang = Boolean(sourceLang && hearAs && sourceLang === hearAs);
+    const crossLang = Boolean(sourceLang && hearAs && sourceLang !== hearAs);
     const caption =
       (translated || original) && !isFakeSpeech(translated || original) ? translated || original : null;
 
     if (
       payload.viewOnce ||
-      payload.kind === "text"
+      payload.kind === "text" ||
+      payload.kind === "image" ||
+      payload.kind === "video"
     ) {
       return { translatedText: caption };
     }
 
-    const translatedFile = Boolean(payload.audioUrl) && !payload.usedOriginalVoice;
-    const walkieFile = payload.kind !== "text" && payload.kind !== "voice" && Boolean(payload.audioUrl);
-    // A walkie tap plays the recording that was sent. Language tags must not skip it.
-    if (payload.audioUrl && (walkieFile || translatedFile || sameLang)) {
+    const dubbed = Boolean(payload.audioUrl) && payload.usedOriginalVoice === false && crossLang;
+    if (dubbed) {
+      if (id) played.add(id);
       await stopRobot();
       await stopPlayback();
       try {
-        await playUri(payload.audioUrl);
+        await playUri(payload.audioUrl!, payload.durationMs ?? undefined);
+        return { translatedText: caption };
+      } catch {
+        /* the phone speaks the translation below */
+      }
+    }
+
+    const translatedFile = Boolean(payload.audioUrl) && !payload.usedOriginalVoice && !crossLang;
+    const walkieFile = payload.kind !== "text" && payload.kind !== "voice" && Boolean(payload.audioUrl) && !crossLang;
+    if (!crossLang && payload.audioUrl && (walkieFile || translatedFile || sameLang)) {
+      if (id) played.add(id);
+      await stopRobot();
+      await stopPlayback();
+      try {
+        await playUri(payload.audioUrl, payload.durationMs ?? undefined);
         return { translatedText: caption };
       } catch (error) {
         if (walkieFile) throw error;

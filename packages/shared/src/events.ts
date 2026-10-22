@@ -109,7 +109,7 @@ export type TransmissionReadyPayload = {
   senderPhone?: string;
   senderAvatarUrl?: string | null;
   voiceGender?: "male" | "female" | "child";
-  kind?: "walkie" | "voice" | "text";
+  kind?: "walkie" | "voice" | "text" | "image" | "video";
   viewOnce?: boolean;
   releasedAt?: number;
   readyAt?: number;

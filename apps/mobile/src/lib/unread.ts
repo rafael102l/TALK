@@ -63,7 +63,7 @@ export function ackDelivered(
 }
 
 export function isInboxMessage(payload: { kind?: string; audioUrl?: string | null; durationMs?: number | null }) {
-  if (payload.kind === "text" || payload.kind === "voice") return true;
+  if (payload.kind === "text" || payload.kind === "voice" || payload.kind === "image" || payload.kind === "video") return true;
   if (payload.kind === "walkie") return false;
   return !payload.audioUrl && !payload.durationMs;
 }

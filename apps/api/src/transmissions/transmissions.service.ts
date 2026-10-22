@@ -70,7 +70,10 @@ export class TransmissionsService {
       replyToText?: string;
     },
   ) {
-    if (!file?.buffer?.length) throw new BadRequestException("חסר קובץ שמע");
+    if (!file?.buffer?.length) throw new BadRequestException("חסר קובץ");
+    if (input.kind === "image" || input.kind === "video") {
+      return this.createChatMedia(sender, file, input, input.kind);
+    }
     const started = Date.now();
     const releasedAt = Number(input.releasedAt);
     const clientRelease = Number.isFinite(releasedAt) && releasedAt > 0 ? releasedAt : started;
@@ -137,6 +140,121 @@ export class TransmissionsService {
       }),
     );
     return { id: transmission.id, status: "PROCESSING" as const, channelId: channel.id };
+  }
+
+  private async createChatMedia(
+    sender: User,
+    file: Express.Multer.File,
+    input: {
+      channelId?: string;
+      targetUserIds?: string[];
+      everyone?: boolean;
+      durationMs?: number;
+      viewOnce?: boolean;
+      replyToId?: string;
+      replyToName?: string;
+      replyToText?: string;
+    },
+    kind: "image" | "video",
+  ) {
+    if (file.buffer.length > 80 * 1024 * 1024) throw new BadRequestException("הקובץ גדול מדי");
+    if (kind === "video") {
+      const duration = Number(input.durationMs) || 0;
+      if (duration > 61_500) throw new BadRequestException("הסרטון יכול להיות עד דקה");
+    }
+    const targetIds = await this.resolveTargets(sender, input);
+    if (!targetIds.length) throw new BadRequestException("לא נבחרו נמענים");
+    const users = await this.prisma.user.findMany({ where: { id: { in: targetIds } } });
+    const channel = await this.ensureChannel(sender, input.channelId, targetIds);
+    const saved = await this.storage.save(file.buffer, extFrom(file), "chat");
+    const packed = packReply("", {
+      id: input.replyToId,
+      name: input.replyToName,
+      text: input.replyToText,
+    });
+    const transmission = await this.prisma.transmission.create({
+      data: {
+        senderId: sender.id,
+        channelId: channel.id,
+        originalAudioUrl: saved,
+        originalText: packed || null,
+        durationMs: kind === "video" ? input.durationMs ?? null : null,
+        kind,
+        viewOnce: Boolean(input.viewOnce),
+        status: "READY",
+        ...(await this.expiryData(channel.id)),
+        targets: {
+          create: users.map((user) => ({
+            userId: user.id,
+            language: user.listenLang || user.speakLang,
+          })),
+        },
+      },
+      include: { targets: true },
+    });
+    const senderPublic = toPublicUser(sender);
+    const mediaUrl = this.storage.publicUrl(saved);
+    const quoted = decodeReply(packed);
+    const readyAt = Date.now();
+    for (const target of transmission.targets) {
+      const payload: TransmissionReadyPayload = {
+        transmissionId: transmission.id,
+        channelId: transmission.channelId,
+        senderId: sender.id,
+        senderName: sender.displayName || sender.phoneE164,
+        language: target.language,
+        speakLang: sender.speakLang || sender.listenLang,
+        mode: sender.plan === "PLUS" ? "plus" : "free",
+        audioUrl: mediaUrl,
+        originalText: quoted.text || "",
+        translatedText: quoted.text || "",
+        durationMs: transmission.durationMs,
+        usedOriginalVoice: true,
+        replyToId: quoted.reply?.id || null,
+        replyToName: quoted.reply?.name || null,
+        replyToText: quoted.reply?.text || null,
+        needsAccept: false,
+        live: false,
+        senderPhone: sender.phoneE164,
+        senderAvatarUrl: senderPublic.avatarUrl,
+        voiceGender: sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male",
+        kind,
+        viewOnce: Boolean(transmission.viewOnce),
+        releasedAt: readyAt,
+        readyAt,
+        expiresAt: transmission.expiresAt?.toISOString() || null,
+      };
+      const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+      this.logger.log(`Deliver ${kind} ${transmission.id} -> ${target.userId} reached=${reached}`);
+      if (reached) void this.noteDelivered(target.id, sender.id, transmission.id, target.userId);
+      if (!reached) {
+        void this.push.notifyUsers(
+          [target.userId],
+          sender.displayName?.trim() || sender.phoneE164,
+          transmission.viewOnce ? (kind === "video" ? "סרטון חד-פעמי" : "תמונה חד-פעמית") : kind === "video" ? "סרטון" : "תמונה",
+          {
+            type: "message",
+            transmissionId: transmission.id,
+            channelId: transmission.channelId,
+            kind,
+            senderId: sender.id,
+            senderName: sender.displayName || "",
+            senderPhone: sender.phoneE164,
+            senderAvatarUrl: senderPublic.avatarUrl || "",
+            audioUrl: mediaUrl,
+            viewOnce: transmission.viewOnce ? "1" : "0",
+          },
+        );
+      }
+    }
+    void Promise.all(
+      users.map(async (target) => {
+        await this.contacts.ensureIncoming(target, sender);
+        await this.contacts.ensureMutualTalk(sender, target);
+      }),
+    );
+    this.logger.log(`${kind.toUpperCase()} ${transmission.id} from=${sender.id} to=${targetIds.join(",")}`);
+    return { id: transmission.id, status: "READY" as const, channelId: channel.id };
   }
 
   /** Walkie is the recording itself. Translation stays in the codebase and is not on this path. */
@@ -1298,7 +1416,7 @@ export class TransmissionsService {
       where: { id: transmissionId },
       include: { targets: true, renders: true },
     });
-    if (!tx?.viewOnce) throw new BadRequestException("זו לא הקלטה חד-פעמית");
+    if (!tx?.viewOnce) throw new BadRequestException("זו לא הודעה חד-פעמית");
     const allowed = tx.senderId === user.id || tx.targets.some((row) => row.userId === user.id);
     if (!allowed) throw new ForbiddenException();
     const burn = tx.targets.some((row) => row.userId === user.id);
@@ -1417,9 +1535,14 @@ export class TransmissionsService {
 
 function extFrom(file: Express.Multer.File) {
   const name = file.originalname || "";
-  const fromName = name.includes(".") ? name.split(".").pop() : "";
-  if (fromName && fromName.length <= 5) return fromName;
+  const fromName = name.includes(".") ? name.split(".").pop()?.toLowerCase() : "";
+  if (fromName && fromName.length <= 5 && /^[a-z0-9]+$/.test(fromName)) return fromName;
   const mime = file.mimetype || "";
+  if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
+  if (mime.includes("png")) return "png";
+  if (mime.includes("webp")) return "webp";
+  if (mime.includes("mp4")) return "mp4";
+  if (mime.includes("quicktime") || mime.includes("mov")) return "mov";
   if (mime.includes("wav")) return "wav";
   if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
   return "m4a";
