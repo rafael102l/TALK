@@ -23,9 +23,24 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   async onModuleInit() {
     // Do not wait on the database before listening. A stuck connect was failing the deploy.
-    void this.$connect().catch((error: Error) => {
-      console.error(`[db] connect failed: ${error.message}`);
-    });
+    void this.$connect()
+      .then(() => this.ensureColumns())
+      .catch((error: Error) => {
+        console.error(`[db] connect failed: ${error.message}`);
+      });
+  }
+
+  private async ensureColumns() {
+    try {
+      await this.$executeRawUnsafe(`ALTER TABLE "Channel" ADD COLUMN IF NOT EXISTS "avatarUrl" TEXT`);
+      await this.$executeRawUnsafe(
+        `ALTER TABLE "Channel" ADD COLUMN IF NOT EXISTS "disappearAfterSec" INTEGER NOT NULL DEFAULT 0`,
+      );
+      await this.$executeRawUnsafe(`ALTER TABLE "Transmission" ADD COLUMN IF NOT EXISTS "expiresAt" TIMESTAMP(3)`);
+      console.log("[db] optional columns ready");
+    } catch (error) {
+      console.error(`[db] alter columns: ${(error as Error).message}`);
+    }
   }
 
   async onModuleDestroy() {

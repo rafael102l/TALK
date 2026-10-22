@@ -118,7 +118,7 @@ export class TransmissionsService {
         kind,
         viewOnce: kind === "voice" && Boolean(input.viewOnce),
         status: "PROCESSING",
-        expiresAt: await this.expiryFor(channel.id),
+        ...(await this.expiryData(channel.id)),
         targets: {
           create: users.map((user) => ({
             userId: user.id,
@@ -352,7 +352,7 @@ export class TransmissionsService {
         durationMs: null,
         kind: "text",
         status: "PROCESSING",
-        expiresAt: await this.expiryFor(channel.id),
+        ...(await this.expiryData(channel.id)),
         targets: {
           create: users.map((user) => ({
             userId: user.id,
@@ -1330,13 +1330,17 @@ export class TransmissionsService {
     return { ok: true };
   }
 
+  private async expiryData(channelId: string) {
+    const expiresAt = await this.expiryFor(channelId);
+    return expiresAt ? { expiresAt } : {};
+  }
+
   private async expiryFor(channelId: string) {
     try {
-      const row = await this.prisma.channel.findUnique({
-        where: { id: channelId },
-        select: { disappearAfterSec: true },
-      });
-      const sec = row?.disappearAfterSec || 0;
+      const rows = await this.prisma.$queryRaw<Array<{ disappearAfterSec: number | null }>>`
+        SELECT "disappearAfterSec" FROM "Channel" WHERE "id" = ${channelId} LIMIT 1
+      `;
+      const sec = rows[0]?.disappearAfterSec || 0;
       if (sec <= 0) return null;
       return new Date(Date.now() + sec * 1000);
     } catch {
