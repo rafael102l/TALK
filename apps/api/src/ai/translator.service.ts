@@ -25,6 +25,9 @@ const GEMINI_TRANSLATE_MODELS = [
 const STRICT_TRANSLATE =
   "You are an absolute word-for-word TRANSLATOR, NOT a conversational assistant. Your ONLY job is to translate the input sentence into the target language. If the user asks a question (e.g., 'How do I say X in Hebrew?'), DO NOT answer the question. Translate the question itself directly (e.g., 'איך אומרים X בעברית?'). NEVER output just the answer. Do NOT add pleasantries, notes, context, corrections, or explanations. Return ONLY the direct translation of the input.";
 
+const STRICT_SPELL =
+  "You are a spelling corrector only, not an assistant and not a translator. Fix typos and misspellings in the same language. Keep the same words, names, and meaning. Do not translate. Do not answer questions. Do not add or remove ideas. If the input is a question, keep it a question. If a word is already spelled correctly, leave it. Return only the corrected sentence.";
+
 type Turn = {
   sourceText: string;
   translatedText: string;
@@ -213,7 +216,10 @@ export class TranslatorService {
       form.append("model", "whisper-1");
       form.append("temperature", "0");
       form.append("response_format", "verbose_json");
-      form.append("prompt", "Transcribe exactly what was spoken. Do not translate.");
+      form.append(
+        "prompt",
+        "Transcribe exactly what was spoken, with correct spelling in the original language. Do not translate.",
+      );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
@@ -246,7 +252,10 @@ export class TranslatorService {
       form.append("language", lang);
       form.append("temperature", "0");
       form.append("response_format", "verbose_json");
-      form.append("prompt", `${speechTag(lang) || lang} only. Transcribe exactly. Do not translate.`);
+      form.append(
+        "prompt",
+        `${speechTag(lang) || lang} only. Transcribe exactly, with correct spelling. Do not translate.`,
+      );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
@@ -265,6 +274,7 @@ export class TranslatorService {
   private async finishTurn(sourceText: string, sourceLang: string, targetLang: string) {
     sourceText = sanitizeTranscript(sourceText);
     if (!sourceText) return { sourceText: "", translatedText: "", sourceLang, targetLang };
+    sourceText = await this.correctSpelling(sourceText, sourceLang).catch(() => sourceText);
     if (sourceLang === targetLang) {
       return { sourceText, translatedText: "", sourceLang, targetLang };
     }
@@ -283,6 +293,19 @@ export class TranslatorService {
     }
     this.logger.log(`translator ${sourceLang}->${targetLang} ${clip(sourceText)} => ${clip(translatedText)}`);
     return { sourceText, translatedText, sourceLang, targetLang };
+  }
+
+  private async correctSpelling(text: string, lang: string) {
+    const prompt = [
+      STRICT_SPELL,
+      `Language: ${lang}.`,
+      "Return the same sentence with spelling fixed. If already correct, return it unchanged.",
+      text,
+    ].join("\n");
+    const geminiKey = process.env.GEMINI_API_KEY || "";
+    if (!geminiKey) return text;
+    const fixed = await this.viaGeminiTranslate(GEMINI_TRANSLATE_MODELS[0], prompt, geminiKey);
+    return spellingOk(text, fixed, lang) ? sanitizeTranscript(fixed) : text;
   }
 
   private async translateFast(text: string, source: string, target: string, retry = false) {
@@ -478,6 +501,20 @@ function pickSpoken(detected: string | null, autoLang: string, text: string, lan
   if (hasScript(text, langB) && !hasScript(text, langA)) return langB;
   if (hasScript(text, langA) && !hasScript(text, langB)) return langA;
   return langA;
+}
+
+function spellingOk(original: string, fixed: string, lang: string) {
+  const clean = sanitizeTranscript(fixed);
+  if (!clean) return false;
+  if (clean === original) return true;
+  if (uniqueScript(lang) && !hasScript(clean, lang)) return false;
+  if (!uniqueScript(lang) && /[\u0590-\u05FF\u0600-\u06FF]/.test(clean) && !/[\u0590-\u05FF\u0600-\u06FF]/.test(original)) {
+    return false;
+  }
+  const before = original.split(/\s+/).filter(Boolean).length;
+  const after = clean.split(/\s+/).filter(Boolean).length;
+  if (after < Math.max(1, Math.floor(before * 0.6)) || after > Math.ceil(before * 1.4) + 1) return false;
+  return true;
 }
 
 function textMatchesLang(text: string, lang: string, otherLang: string) {
