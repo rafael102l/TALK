@@ -7,6 +7,7 @@ const native = NativeModules.TalkCallState as
       isInCall: (cb?: (err: Error | null, value: boolean) => void) => Promise<boolean>;
       preparePlayback?: () => Promise<boolean>;
       releasePlayback?: () => Promise<boolean>;
+      setSecureScreen?: (on: boolean) => Promise<boolean>;
     }
   | undefined;
 
@@ -241,6 +242,9 @@ export function endCallAudio() {
 export function setSecureScreen(on: boolean) {
   if (Platform.OS !== "android") return;
   pcmCall("setSecureScreen", on);
+  if (typeof native?.setSecureScreen === "function") {
+    void native.setSecureScreen(on).catch(() => undefined);
+  }
 }
 
 /** MIUI keeps MODE_IN_COMMUNICATION after PTT — force speaker before play. */
