@@ -23,10 +23,7 @@ const GEMINI_TRANSLATE_MODELS = [
 ];
 
 const STRICT_TRANSLATE =
-  "You are an absolute word-for-word TRANSLATOR, NOT a conversational assistant. Your ONLY job is to translate the input sentence into the target language. If the user asks a question (e.g., 'How do I say X in Hebrew?'), DO NOT answer the question. Translate the question itself directly (e.g., 'איך אומרים X בעברית?'). NEVER output just the answer. Do NOT add pleasantries, notes, context, corrections, or explanations. Return ONLY the direct translation of the input.";
-
-const STRICT_SPELL =
-  "You are a spelling corrector only, not an assistant and not a translator. Fix typos and misspellings in the same language. Keep the same words, names, and meaning. Do not translate. Do not answer questions. Do not add or remove ideas. If the input is a question, keep it a question. If a word is already spelled correctly, leave it. Return only the corrected sentence.";
+  "You are an absolute word-for-word TRANSLATOR, NOT a conversational assistant. Your ONLY job is to translate the input sentence into the target language, exactly as written. Do not shorten, summarize, paraphrase, or replace the sentence with a different one. Do not transliterate. Translate meaning (Hebrew גוף → English body, not guf). If the user asks a question (e.g., 'How do I say X in Hebrew?'), DO NOT answer the question. Translate the question itself directly (e.g., 'איך אומרים X בעברית?'). NEVER output just the answer. Do NOT add pleasantries, notes, context, corrections, or explanations. Return ONLY the direct translation of the input.";
 
 type Turn = {
   sourceText: string;
@@ -133,12 +130,16 @@ export class TranslatorService {
       this.detectSpokenLang(audio, mime, ext, langA, langB),
       this.whisperAuto(audio, mime, ext),
     ]);
-    const sourceLang = pickSpoken(detected, auto.language, auto.text, langA, langB);
+    const aOnly =
+      uniqueScript(langA) && hasScript(auto.text, langA) && !(uniqueScript(langB) && hasScript(auto.text, langB));
+    const bOnly =
+      uniqueScript(langB) && hasScript(auto.text, langB) && !(uniqueScript(langA) && hasScript(auto.text, langA));
+    const sourceLang = aOnly ? langA : bOnly ? langB : pickSpoken(detected, auto.language, auto.text, langA, langB);
     const targetLang = sourceLang === langA ? langB : langA;
     let text = auto.text;
-    if (!textMatchesLang(text, sourceLang, targetLang)) {
+    if (uniqueScript(sourceLang) && !hasScript(text, sourceLang)) {
       const locked = await this.whisperFor(audio, sourceLang, mime, ext);
-      if (textMatchesLang(locked.text, sourceLang, targetLang)) text = locked.text;
+      if (hasScript(locked.text, sourceLang)) text = locked.text;
     }
     if (!text) return null;
     this.logger.log(`translator-detect ${detected || auto.language || "?"} => ${sourceLang}->${targetLang} ${clip(text)}`);
@@ -218,7 +219,7 @@ export class TranslatorService {
       form.append("response_format", "verbose_json");
       form.append(
         "prompt",
-        "Transcribe exactly what was spoken, with correct spelling in the original language. Do not translate.",
+        "Transcribe every spoken word exactly in the original language. Do not translate. Do not paraphrase. Do not shorten.",
       );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
@@ -254,7 +255,7 @@ export class TranslatorService {
       form.append("response_format", "verbose_json");
       form.append(
         "prompt",
-        `${speechTag(lang) || lang} only. Transcribe exactly, with correct spelling. Do not translate.`,
+        `${speechTag(lang) || lang} only. Transcribe every spoken word exactly. Do not translate. Do not paraphrase. Do not shorten.`,
       );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
@@ -274,7 +275,6 @@ export class TranslatorService {
   private async finishTurn(sourceText: string, sourceLang: string, targetLang: string) {
     sourceText = sanitizeTranscript(sourceText);
     if (!sourceText) return { sourceText: "", translatedText: "", sourceLang, targetLang };
-    sourceText = await this.correctSpelling(sourceText, sourceLang).catch(() => sourceText);
     if (sourceLang === targetLang) {
       return { sourceText, translatedText: "", sourceLang, targetLang };
     }
@@ -295,26 +295,13 @@ export class TranslatorService {
     return { sourceText, translatedText, sourceLang, targetLang };
   }
 
-  private async correctSpelling(text: string, lang: string) {
-    const prompt = [
-      STRICT_SPELL,
-      `Language: ${lang}.`,
-      "Return the same sentence with spelling fixed. If already correct, return it unchanged.",
-      text,
-    ].join("\n");
-    const geminiKey = process.env.GEMINI_API_KEY || "";
-    if (!geminiKey) return text;
-    const fixed = await this.viaGeminiTranslate(GEMINI_TRANSLATE_MODELS[0], prompt, geminiKey);
-    return spellingOk(text, fixed, lang) ? sanitizeTranscript(fixed) : text;
-  }
-
   private async translateFast(text: string, source: string, target: string, retry = false) {
     const prompt = [
       STRICT_TRANSLATE,
       `Input language: ${source}. Output language: ${target}.`,
-      `Translate the whole input into ${target} only. Do not write ${source}. Do not repeat the input.`,
+      `Translate this exact sentence into ${target} only. Do not shorten it. Do not transliterate. Do not write ${source}.`,
       "Do not answer questions. If the input is a question, translate the question itself.",
-      retry ? `The previous output was still in ${source}. Translate the original sentence into ${target} only. Do not answer it.` : "",
+      retry ? `The previous output was still in ${source} or was not a full translation. Translate the original sentence into ${target} only. Do not answer it.` : "",
       text,
     ]
       .filter(Boolean)
@@ -501,27 +488,6 @@ function pickSpoken(detected: string | null, autoLang: string, text: string, lan
   if (hasScript(text, langB) && !hasScript(text, langA)) return langB;
   if (hasScript(text, langA) && !hasScript(text, langB)) return langA;
   return langA;
-}
-
-function spellingOk(original: string, fixed: string, lang: string) {
-  const clean = sanitizeTranscript(fixed);
-  if (!clean) return false;
-  if (clean === original) return true;
-  if (uniqueScript(lang) && !hasScript(clean, lang)) return false;
-  if (!uniqueScript(lang) && /[\u0590-\u05FF\u0600-\u06FF]/.test(clean) && !/[\u0590-\u05FF\u0600-\u06FF]/.test(original)) {
-    return false;
-  }
-  const before = original.split(/\s+/).filter(Boolean).length;
-  const after = clean.split(/\s+/).filter(Boolean).length;
-  if (after < Math.max(1, Math.floor(before * 0.6)) || after > Math.ceil(before * 1.4) + 1) return false;
-  return true;
-}
-
-function textMatchesLang(text: string, lang: string, otherLang: string) {
-  if (!text) return false;
-  if (uniqueScript(lang)) return hasScript(text, lang);
-  if (uniqueScript(otherLang)) return !hasScript(text, otherLang);
-  return true;
 }
 
 function canSpeakTranslation(text: string, sourceLang: string, targetLang: string) {
