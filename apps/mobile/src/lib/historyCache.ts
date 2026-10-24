@@ -1,5 +1,10 @@
 import { HistoryItem, MessageReceipt } from "@talk/shared";
+import * as FileSystem from "expo-file-system";
 import { api } from "./api";
+
+const HISTORY_FILE = `${FileSystem.documentDirectory || ""}talk-history.json`;
+let diskReady = false;
+let cacheUserId = "";
 
 let cache: HistoryItem[] = [];
 let fetchedAt = 0;
@@ -43,7 +48,10 @@ export function applyReceipt(transmissionId: string, receipt: MessageReceipt, pe
     changed = true;
     return { ...item, receipt: next };
   });
-  if (changed) fetchedAt = Date.now();
+  if (changed) {
+    fetchedAt = Date.now();
+    persistHistory();
+  }
   for (const listener of receiptListeners) listener(transmissionId, receipt);
 }
 
@@ -73,6 +81,7 @@ export function clearHistoryCache() {
   fetchedAt = 0;
   inflight = null;
   pendingReceipts.clear();
+  persistHistory();
 }
 
 export function peekHistoryCache() {
@@ -90,6 +99,52 @@ export function isHistoryFresh(maxAgeMs = 30_000) {
 export function seedHistoryCache(items: HistoryItem[]) {
   cache = withKeptReceipts(items, cache);
   fetchedAt = Date.now();
+  persistHistory();
+}
+
+function persistHistory() {
+  if (!FileSystem.documentDirectory || typeof FileSystem.writeAsStringAsync !== "function") return;
+  void FileSystem.writeAsStringAsync(
+    HISTORY_FILE,
+    JSON.stringify({ userId: cacheUserId, items: cache.slice(0, 150) }),
+  ).catch(() => undefined);
+}
+
+/** Last chats stay on the phone so Messages does not go empty while Render wakes. */
+export async function hydrateHistoryCache(userId?: string) {
+  if (diskReady) {
+    if (userId && cacheUserId && userId !== cacheUserId) {
+      cache = [];
+      fetchedAt = 0;
+      cacheUserId = userId;
+      persistHistory();
+    } else if (userId) {
+      cacheUserId = userId;
+    }
+    return cache;
+  }
+  diskReady = true;
+  if (!FileSystem.documentDirectory || typeof FileSystem.readAsStringAsync !== "function") return cache;
+  try {
+    const raw = await FileSystem.readAsStringAsync(HISTORY_FILE);
+    const parsed = JSON.parse(raw) as HistoryItem[] | { userId?: string; items?: HistoryItem[] };
+    const rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed.items) ? parsed.items : [];
+    const owner = Array.isArray(parsed) ? "" : parsed.userId || "";
+    if (userId && owner && owner !== userId) {
+      cache = [];
+      fetchedAt = 0;
+      cacheUserId = userId;
+      return cache;
+    }
+    if (owner) cacheUserId = owner;
+    if (rows.length) {
+      cache = withKeptReceipts(rows, cache);
+      if (!fetchedAt) fetchedAt = 1;
+    }
+  } catch {
+    /* first launch */
+  }
+  return cache;
 }
 
 export function historyForPeer(peerId: string) {
@@ -99,6 +154,7 @@ export function historyForPeer(peerId: string) {
 export function clearPeerHistory(peerId: string) {
   cache = cache.filter((item) => (item.peerId || (!item.mine && item.senderId)) !== peerId);
   fetchedAt = Date.now();
+  persistHistory();
   return cache;
 }
 
@@ -108,17 +164,22 @@ export async function refreshHistory(token: string, opts?: { maxAgeMs?: number }
     return cache;
   }
   if (inflight) return inflight;
-  inflight = api<HistoryItem[]>("/transmissions", { token, timeoutMs: 8000 })
+  inflight = api<HistoryItem[]>("/transmissions", { token, timeoutMs: 45000 })
     .then((items) => {
       const incoming = Array.isArray(items) ? items : [];
-      const merged = withKeptReceipts(incoming, cache);
+      const merged: HistoryItem[] = withKeptReceipts(incoming, cache);
       const seen = new Set(merged.map((item) => item.id));
       for (const item of cache) {
         if (item.id.startsWith("local-") && !seen.has(item.id)) merged.push(item);
       }
       cache = merged;
       fetchedAt = Date.now();
+      persistHistory();
       return cache;
+    })
+    .catch((error) => {
+      if (cache.length) return cache;
+      throw error;
     })
     .finally(() => {
       inflight = null;

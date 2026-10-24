@@ -5,10 +5,16 @@ import { join } from "path";
 import { PrismaService } from "../prisma/prisma.service";
 import { currentLanBase } from "../lan-base";
 
-function mimeFor(name: string) {
+function mimeFor(name: string, fallback = "") {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "png") return "image/png";
+  if (ext === "webp") return "image/webp";
+  if (ext === "mp4" || ext === "m4v") return "video/mp4";
+  if (ext === "mov") return "video/quicktime";
   if (ext === "wav") return "audio/wav";
   if (ext === "mp3") return "audio/mpeg";
+  if (fallback.startsWith("image/") || fallback.startsWith("video/") || fallback.startsWith("audio/")) return fallback;
   return "audio/mp4";
 }
 
@@ -24,17 +30,18 @@ export class StorageService {
     await mkdir(dir, { recursive: true });
     const name = `${randomUUID()}.${ext.replace(/^\./, "")}`;
     await writeFile(join(dir, name), buffer);
-    if (folder === "audio") {
-      void this.rememberAudio(name, buffer, mimeFor(name)).catch((error: Error) => {
-        console.error(`[audio] store failed: ${error.message}`);
+    if (folder === "audio" || folder === "chat") {
+      await this.rememberAudio(name, buffer, mimeFor(name)).catch((error: Error) => {
+        console.error(`[media] store failed: ${error.message}`);
       });
     }
     return `/media/${folder}/${name}`;
   }
 
-  /** Keep the clip in Postgres so either server can play it after a restart. */
+  /** Keep the file in Postgres so a Render restart does not turn photos black. */
   async rememberAudio(name: string, buffer: Buffer, mime: string) {
-    if (!buffer.length || buffer.length > 8_000_000) return;
+    const max = 12_000_000;
+    if (!buffer.length || buffer.length > max) return;
     let last: Error | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -57,18 +64,27 @@ export class StorageService {
   }
 
   async readAudio(name: string): Promise<{ body: Buffer; mime: string } | null> {
+    return this.readStored(name, "audio");
+  }
+
+  async readChat(name: string): Promise<{ body: Buffer; mime: string } | null> {
+    return this.readStored(name, "chat");
+  }
+
+  private async readStored(name: string, folder: "audio" | "chat"): Promise<{ body: Buffer; mime: string } | null> {
     const clean = name.split("/").pop() ?? name;
     if (!/^[\w.-]+$/.test(clean)) return null;
-    const names = clean.includes(".") ? [clean] : [clean, `${clean}.m4a`, `${clean}.mp3`, `${clean}.wav`];
+    const extras = folder === "audio" ? [clean, `${clean}.m4a`, `${clean}.mp3`, `${clean}.wav`] : [clean];
+    const names = clean.includes(".") ? [clean] : extras;
     for (const candidate of names) {
-      const found = await this.readNamedAudio(candidate);
+      const found = await this.readNamedFile(candidate, folder);
       if (found) return found;
     }
     return null;
   }
 
-  private async readNamedAudio(name: string): Promise<{ body: Buffer; mime: string } | null> {
-    const diskPath = join(this.root, "audio", name);
+  private async readNamedFile(name: string, folder: "audio" | "chat"): Promise<{ body: Buffer; mime: string } | null> {
+    const diskPath = join(this.root, folder, name);
     try {
       const body = await readFile(diskPath);
       if (body.length) {
@@ -96,6 +112,12 @@ export class StorageService {
       if (!row?.b64) return null;
       const body = Buffer.from(row.b64, "base64");
       if (!body.length) return null;
+      try {
+        await mkdir(join(this.root, folder), { recursive: true });
+        await writeFile(diskPath, body);
+      } catch {
+        /* next request can still serve from Postgres */
+      }
       return { body, mime: row.mime || mimeFor(name) };
     } catch (error) {
       console.error(`[audio] read failed: ${(error as Error).message}`);
@@ -140,6 +162,14 @@ export class StorageService {
       await unlink(this.absolutePath(publicPath));
     } catch {
       /* already gone */
+    }
+    const name = publicPath.split("/").pop();
+    if (!name || !/^[\w.-]+$/.test(name)) return;
+    try {
+      await this.ensureAudioTable();
+      await this.prisma.$executeRawUnsafe(`DELETE FROM "WalkieAudio" WHERE "name" = $1`, name);
+    } catch {
+      /* table missing */
     }
   }
 }

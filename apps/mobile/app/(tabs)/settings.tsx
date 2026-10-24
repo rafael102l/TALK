@@ -1,7 +1,7 @@
 import { AccountPlan, LanguageCode, VoiceGender } from "@talk/shared";
 import { useRouter } from "expo-router";
-import { useState } from "react";
-import { Alert, Pressable, StyleSheet, Text, TextInput } from "react-native";
+import { useEffect, useState } from "react";
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar } from "../../src/components/Avatar";
 import { BackBar } from "../../src/components/BackBar";
@@ -11,6 +11,7 @@ import { useI18n } from "../../src/i18n";
 import { api } from "../../src/lib/api";
 import { useAuth } from "../../src/lib/auth";
 import { pickLocalPhoto, uploadAvatar } from "../../src/lib/avatar";
+import { isAutoSaveMedia, setAutoSaveMedia } from "../../src/lib/mediaCache";
 import { colors } from "../../src/lib/theme";
 
 export default function SettingsScreen() {
@@ -18,6 +19,11 @@ export default function SettingsScreen() {
   const { user, token, setUser, logout } = useAuth();
   const { t, align } = useI18n();
   const [email, setEmail] = useState(user?.email ?? "");
+  const [autoSave, setAutoSave] = useState(true);
+
+  useEffect(() => {
+    void isAutoSaveMedia().then(setAutoSave);
+  }, []);
 
   async function save(partial: {
     email?: string;
@@ -82,6 +88,7 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={styles.page}>
       <BackBar title={t("settings")} />
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       <Pressable style={styles.profile} onPress={() => void changePhoto()}>
         <Avatar uri={user?.avatarUrl} name={user?.displayName || "?"} size={72} />
         <Text style={styles.photoText}>{t("changePhoto")}</Text>
@@ -114,6 +121,20 @@ export default function SettingsScreen() {
         value={user?.voiceGender ?? "male"}
         onChange={(voiceGender) => void save({ voiceGender })}
       />
+      <View style={[styles.toggleRow, { flexDirection: align === "right" ? "row-reverse" : "row" }]}>
+        <View style={styles.toggleCopy}>
+          <Text style={[styles.label, { textAlign: align as "left" | "right", marginTop: 0 }]}>{t("autoSaveMedia")}</Text>
+          <Text style={[styles.hint, { textAlign: align as "left" | "right" }]}>{t("autoSaveMediaHint")}</Text>
+        </View>
+        <Switch
+          value={autoSave}
+          onValueChange={(on) => {
+            setAutoSave(on);
+            void setAutoSaveMedia(on);
+          }}
+          trackColor={{ false: "#9AA0A6", true: colors.amber }}
+        />
+      </View>
       <Pressable
         style={styles.logout}
         onPress={async () => {
@@ -126,12 +147,14 @@ export default function SettingsScreen() {
       <Pressable style={styles.logout} onPress={confirmDelete}>
         <Text style={styles.deleteText}>{t("deleteAccount")}</Text>
       </Pressable>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: colors.bg, padding: 20, gap: 8 },
+  page: { flex: 1, backgroundColor: colors.bg },
+  scroll: { padding: 20, gap: 8, paddingBottom: 40 },
   profile: { alignItems: "center", gap: 8, marginBottom: 4 },
   photoText: { color: colors.amber, fontWeight: "700" },
   name: { color: colors.amber, fontSize: 20 },
@@ -147,6 +170,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   saveEmail: { color: colors.amber, fontWeight: "700", marginBottom: 4 },
+  toggleRow: { alignItems: "center", gap: 12, marginTop: 14 },
+  toggleCopy: { flex: 1, gap: 4 },
+  hint: { color: colors.muted, fontSize: 13, lineHeight: 18 },
   logout: { marginTop: 12, alignItems: "center" },
   logoutText: { color: colors.red, fontSize: 16, fontWeight: "700" },
   deleteText: { color: colors.muted, fontSize: 15, fontWeight: "700" },

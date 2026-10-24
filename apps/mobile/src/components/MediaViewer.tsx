@@ -2,6 +2,7 @@ import { Video, ResizeMode } from "expo-av";
 import { useEffect, useState } from "react";
 import { AppState, Image, Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { setSecureScreen } from "../lib/phoneCall";
+import { cacheChatMedia } from "../lib/mediaCache";
 import { resolveMediaUri } from "../lib/mediaUri";
 import { useI18n } from "../i18n";
 
@@ -20,7 +21,24 @@ export function MediaViewer({
 }) {
   const { t } = useI18n();
   const [hidden, setHidden] = useState(false);
-  const src = resolveMediaUri(uri);
+  const remote = resolveMediaUri(uri);
+  const [src, setSrc] = useState(remote);
+
+  useEffect(() => {
+    let live = true;
+    setSrc(remote);
+    if (!visible || !remote || viewOnce) {
+      return () => {
+        live = false;
+      };
+    }
+    void cacheChatMedia(remote, { album: true }).then((local) => {
+      if (live && local) setSrc(local);
+    });
+    return () => {
+      live = false;
+    };
+  }, [visible, remote, viewOnce]);
 
   useEffect(() => {
     if (!visible) {

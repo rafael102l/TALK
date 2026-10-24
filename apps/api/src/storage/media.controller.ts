@@ -17,6 +17,17 @@ export class MediaController {
     console.log(`[audio] play ${name} bytes=${file.body.length}`);
     sendAudio(req, res, file.body, file.mime);
   }
+
+  @Get("chat/:name")
+  async chat(@Param("name") name: string, @Req() req: Request, @Res() res: Response) {
+    const file = await this.storage.readChat(name);
+    if (!file) {
+      console.warn(`[chat] missing ${name}`);
+      res.status(404).json({ message: "missing" });
+      return;
+    }
+    sendAudio(req, res, file.body, file.mime);
+  }
 }
 
 function sendAudio(req: Request, res: Response, body: Buffer, mime: string) {

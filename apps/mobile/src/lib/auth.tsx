@@ -4,11 +4,11 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import { AppState } from "react-native";
 import { api, isAuthFailure } from "./api";
 import { ensureApiBase } from "./discover";
-import { clearHistoryCache } from "./historyCache";
+import { hydrateHistoryCache, prefetchHistory } from "./historyCache";
 import { bindChatDelivery } from "./unread";
 import { clearRecents } from "./recents";
 import { clearTalkContactsCache } from "./syncContacts";
-import { startCallAlive, stopCallAlive } from "./phoneCall";
+import { releasePhoneAudio, startCallAlive, stopCallAlive } from "./phoneCall";
 import { connectSocket, disconnectSocket, ensureSocket, getSocket, resumeSocket, socketAuthToken } from "./socket";
 
 const TOKEN_KEY = "talk.jwt";
@@ -40,6 +40,7 @@ function runSession(task: () => Promise<void>) {
 async function clearLocalSession() {
   await runSession(async () => {
     stopCallAlive();
+    releasePhoneAudio({ evenIfLive: true });
     disconnectSocket();
     await SecureStore.deleteItemAsync(TOKEN_KEY);
     await SecureStore.deleteItemAsync(USER_KEY);
@@ -77,6 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setToken(stored);
         setUser(cached);
         setReady(true);
+        void hydrateHistoryCache(cached.id).then(() => prefetchHistory(stored));
         void ensureApiBase()
           .then(() => connectSocket(stored))
           .catch(() => undefined);
@@ -85,6 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       setToken(stored);
+      void hydrateHistoryCache();
       try {
         await ensureApiBase();
         const me = await api<PublicUser>("/users/me", { token: stored, timeoutMs: 8000, once: true });
@@ -192,7 +195,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       setUser,
       async login(nextToken, nextUser) {
-        clearHistoryCache();
+        await hydrateHistoryCache(nextUser.id);
         clearTalkContactsCache();
         await clearRecents().catch(() => undefined);
         await runSession(async () => {
@@ -203,6 +206,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
         await ensureApiBase();
         connectSocket(nextToken);
+        void prefetchHistory(nextToken);
       },
       async refresh() {
         if (!token) return;

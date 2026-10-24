@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { QuoteBox } from "./QuoteBox";
 import { ReceiptTicks } from "./ReceiptTicks";
+import { cacheChatMedia } from "../lib/mediaCache";
 import { resolveMediaUri } from "../lib/mediaUri";
 import { formatClock } from "../lib/audio";
 import type { MessageReceipt } from "@talk/shared";
@@ -44,7 +46,23 @@ export function MediaBubble({
   photoLabel: string;
   videoLabel: string;
 }) {
-  const src = resolveMediaUri(uri);
+  const remote = resolveMediaUri(uri);
+  const [src, setSrc] = useState(remote);
+  useEffect(() => {
+    let live = true;
+    setSrc(remote);
+    if (!remote || viewOnce) {
+      return () => {
+        live = false;
+      };
+    }
+    void cacheChatMedia(remote, { album: false }).then((local) => {
+      if (live && local) setSrc(local);
+    });
+    return () => {
+      live = false;
+    };
+  }, [remote, viewOnce]);
   return (
     <Pressable
       onPress={() => {
@@ -64,7 +82,11 @@ export function MediaBubble({
           <Text style={styles.lockTxt}>{kind === "video" ? videoLabel : photoLabel}</Text>
         </View>
       ) : kind === "image" && src ? (
-        <Image source={{ uri: src }} style={styles.photo} />
+        <Image source={{ uri: src }} style={styles.photo} onError={() => setSrc("")} />
+      ) : kind === "image" ? (
+        <View style={[styles.photo, styles.missing]}>
+          <Text style={styles.missingText}>{photoLabel}</Text>
+        </View>
       ) : (
         <View style={styles.video}>
           {src ? <Image source={{ uri: src }} style={styles.photo} /> : null}
@@ -99,7 +121,9 @@ const styles = StyleSheet.create({
     borderColor: "rgba(17,27,33,0.08)",
   },
   picked: { backgroundColor: "rgba(30,120,240,0.16)" },
-  photo: { width: 220, height: 220, borderRadius: 8, backgroundColor: "#111B21" },
+  photo: { width: 220, height: 220, borderRadius: 8, backgroundColor: "#D1D7DB" },
+  missing: { alignItems: "center", justifyContent: "center" },
+  missingText: { color: "#54656F", fontWeight: "700" },
   video: {
     width: 220,
     height: 160,

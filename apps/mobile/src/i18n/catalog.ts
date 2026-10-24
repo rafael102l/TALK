@@ -242,7 +242,10 @@ export type MsgKey =
   | "groupPermissions"
   | "membersCount"
   | "frequentChats"
-  | "searchPeopleHint";
+  | "searchPeopleHint"
+  | "chatsLoading"
+  | "autoSaveMedia"
+  | "autoSaveMediaHint";
 
 type Dict = Record<MsgKey, string>;
 
@@ -489,6 +492,9 @@ const en: Dict = {
   membersCount: "Members: {count}",
   frequentChats: "Frequently contacted",
   searchPeopleHint: "Name, number, @username",
+  chatsLoading: "Loading chats…",
+  autoSaveMedia: "Save photos to the phone",
+  autoSaveMediaHint: "When you open a regular photo, also copy it to the TALK album. Photos always stay in the app.",
 };
 
 const he: Dict = {
@@ -734,6 +740,9 @@ const he: Dict = {
   membersCount: "חברים: {count}",
   frequentChats: "צ'אטים בשימוש נפוץ",
   searchPeopleHint: "שם,מספר,@username",
+  chatsLoading: "טוען שיחות…",
+  autoSaveMedia: "שמירת תמונות למכשיר",
+  autoSaveMediaHint: "כשפותחים תמונה רגילה היא נשמרת גם באלבום TALK. התמונה תמיד נשארת באפליקציה.",
 };
 
 function mix(over: Partial<Dict>): Dict {

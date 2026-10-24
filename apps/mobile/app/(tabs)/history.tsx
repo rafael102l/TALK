@@ -9,7 +9,7 @@ import { SearchIcon } from "../../src/components/MirsIcons";
 import { useI18n } from "../../src/i18n";
 import { useAuth } from "../../src/lib/auth";
 import { api } from "../../src/lib/api";
-import { peekHistoryCache, refreshHistory, seedHistoryCache } from "../../src/lib/historyCache";
+import { hydrateHistoryCache, peekHistoryCache, refreshHistory, seedHistoryCache } from "../../src/lib/historyCache";
 import { loadGroups, onGroups, upsertGroup, type TalkGroup } from "../../src/lib/groups";
 import { SOCKET_EVENTS, getSocket } from "../../src/lib/socket";
 import { colors } from "../../src/lib/theme";
@@ -82,6 +82,7 @@ export default function HistoryScreen() {
   const [items, setItems] = useState<HistoryItem[]>(() => peekHistoryCache());
   const [unread, setUnread] = useState<UnreadInfo>(EMPTY_UNREAD);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(!peekHistoryCache().length);
   const [query, setQuery] = useState("");
   const [groups, setGroups] = useState<TalkGroup[]>([]);
 
@@ -93,15 +94,28 @@ export default function HistoryScreen() {
   useFocusEffect(
     useCallback(() => {
       if (!token) return;
-      const cached = peekHistoryCache();
-      if (cached.length) setItems(cached);
+      void hydrateHistoryCache().then((disk) => {
+        const cached = disk.length ? disk : peekHistoryCache();
+        if (cached.length) {
+          setItems(cached);
+          setLoading(false);
+        }
+      });
       void refreshHistory(token, { maxAgeMs: 30_000 })
         .then((rows) => {
           setItems(rows);
           setError("");
+          setLoading(false);
         })
-        .catch((e) => {
-          if (!peekHistoryCache().length) setError((e as Error).message);
+        .catch(() => {
+          const cached = peekHistoryCache();
+          if (cached.length) {
+            setItems(cached);
+            setError("");
+          } else {
+            setError(t("network"));
+          }
+          setLoading(false);
         });
       refreshUnread();
       void loadGroups().then(setGroups);
@@ -126,7 +140,7 @@ export default function HistoryScreen() {
       return onGroups(() => {
         void loadGroups().then(setGroups);
       });
-    }, [token, refreshUnread]),
+    }, [token, refreshUnread, t]),
   );
 
   useEffect(() => {
@@ -281,7 +295,7 @@ export default function HistoryScreen() {
           style={[styles.input, { textAlign: align === "right" ? (I18nManager.isRTL ? "left" : "right") : I18nManager.isRTL ? "right" : "left" }]}
         />
       </View>
-      {error ? <Text style={[styles.note, { textAlign: align }]}>{error}</Text> : null}
+      {error && shown.length ? <Text style={[styles.note, { textAlign: align }]}>{error}</Text> : null}
       <ScrollView style={styles.scroll} contentContainerStyle={styles.list}>
         {shown.map((thread) => (
           <View key={thread.peerId} style={[styles.row, { flexDirection: I18nManager.isRTL ? "row-reverse" : "row" }]}>
@@ -316,7 +330,7 @@ export default function HistoryScreen() {
             </Pressable>
           </View>
         ))}
-        {!shown.length ? <Text style={styles.empty}>{t("noHistory")}</Text> : null}
+        {!shown.length ? <Text style={styles.empty}>{loading ? t("chatsLoading") : error || t("noHistory")}</Text> : null}
       </ScrollView>
       <View style={[styles.navBar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
         <BottomNav />

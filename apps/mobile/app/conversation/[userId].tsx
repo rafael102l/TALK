@@ -56,6 +56,7 @@ import { MAX_PTT_MS } from "../../src/lib/config";
 import { fetchPresence, isCachedOnline, knownLastSeen, rememberLastSeen, subscribePresence } from "../../src/lib/presence";
 import { loadReactions, setReaction } from "../../src/lib/reactions";
 import {
+  hydrateHistoryCache,
   isHistoryFresh,
   onChatReceipt,
   peekHistoryCache,
@@ -63,6 +64,7 @@ import {
   seedHistoryCache,
   takePendingReceipt,
 } from "../../src/lib/historyCache";
+import { cacheChatMedia, keepLocalCapture } from "../../src/lib/mediaCache";
 import { copyText, showCopied } from "../../src/lib/clipboard";
 import { SOCKET_EVENTS, ensureSocket, getSocket } from "../../src/lib/socket";
 import { useTargets } from "../../src/lib/targets";
@@ -96,6 +98,12 @@ function itemKind(item: HistoryItem): "walkie" | "voice" | "text" | "image" | "v
   }
   if (item.audioUrl || item.durationMs) return "walkie";
   return "text";
+}
+
+function keepChatMedia(item: HistoryItem) {
+  const kind = itemKind(item);
+  if (!item.audioUrl || item.viewOnce) return;
+  if (kind === "image" || kind === "video") void cacheChatMedia(item.audioUrl, { album: false });
 }
 
 const MINE_BG = "#D9FDD3";
@@ -192,7 +200,10 @@ export default function ConversationScreen() {
       if (cached.length) {
         const rows = sortMessages(cached);
         setItems(rows);
-        for (const row of rows) if (row.audioUrl) void prefetchAudio(row.audioUrl);
+        for (const row of rows) {
+          keepChatMedia(row);
+          if (row.audioUrl && itemKind(row) !== "image" && itemKind(row) !== "video") void prefetchAudio(row.audioUrl);
+        }
       }
       // Fresh cache: paint instantly, skip blocking network on open.
       if (!opts?.immediate && isHistoryFresh(45_000)) return;
@@ -202,10 +213,17 @@ export default function ConversationScreen() {
             const next = sortMessages(rows);
             setItems(next);
             setError("");
-            for (const row of next) if (row.audioUrl) void prefetchAudio(row.audioUrl);
+            for (const row of next) {
+              keepChatMedia(row);
+              if (row.audioUrl && itemKind(row) !== "image" && itemKind(row) !== "video") void prefetchAudio(row.audioUrl);
+            }
           })
-          .catch((e) => {
-            if (!peekHistoryCache().length) setError((e as Error).message);
+          .catch(() => {
+            const fallback = peekHistoryCache();
+            if (fallback.length) {
+              setItems(sortMessages(fallback));
+              setError("");
+            }
           });
       };
       if (opts?.immediate) run();
@@ -216,8 +234,10 @@ export default function ConversationScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      const cached = peekHistoryCache();
-      if (cached.length) setItems(sortMessages(cached));
+      void hydrateHistoryCache().then((disk) => {
+        const cached = disk.length ? disk : peekHistoryCache();
+        if (cached.length) setItems(sortMessages(cached));
+      });
       load();
       void primeConversationMic();
       void isPeerMuted(userId).then(setMuted);
@@ -296,6 +316,7 @@ export default function ConversationScreen() {
         channelId: payload.channelId || (isGroup ? userId : null),
         expiresAt: payload.expiresAt || null,
       });
+      keepChatMedia(row);
       if (row.audioUrl && kind !== "image" && kind !== "video") void prefetchAudio(row.audioUrl);
       setItems((current) => {
         const existing = current.find(
@@ -865,6 +886,7 @@ export default function ConversationScreen() {
     const taken = capture;
     setCapture(null);
     if (!taken || !token || !userId) return;
+    const localUri = viewOnce ? taken.uri : await keepLocalCapture(taken.uri);
     const quoted = replyTo ? quotePreview(replyTo) : null;
     setReplyTo(null);
     setError("");
@@ -874,7 +896,7 @@ export default function ConversationScreen() {
       senderId: user?.id || "",
       originalText: null,
       translatedText: null,
-      audioUrl: taken.uri,
+      audioUrl: localUri,
       language: user?.speakLang || lang,
       createdAt: new Date().toISOString(),
       durationMs: taken.durationMs || null,
@@ -897,7 +919,7 @@ export default function ConversationScreen() {
     });
     const form = new FormData();
     form.append("audio", {
-      uri: taken.uri,
+      uri: localUri,
       name: taken.name,
       type: taken.mime,
     } as unknown as Blob);
@@ -1272,17 +1294,18 @@ export default function ConversationScreen() {
               />
             </View>
           ) : (
-            <View style={styles.composer}>
+            <View style={[styles.composer, rtl && styles.composerRtl]}>
               <View style={styles.pill}>
                 {replyTo ? (
                   <QuoteBox
                     name={quotePreview(replyTo).name}
                     text={quotePreview(replyTo).text}
                     inset
+                    rtl={rtl}
                     onClose={() => setReplyTo(null)}
                   />
                 ) : null}
-                <View style={styles.pillRow}>
+                <View style={[styles.pillRow, rtl && styles.pillRowRtl]}>
                   <Pressable
                     onPress={() => setEmojiOpen((open) => !open)}
                     hitSlop={8}
@@ -1301,17 +1324,17 @@ export default function ConversationScreen() {
                     }}
                     onFocus={() => setEmojiOpen(false)}
                     placeholder={t("typeMessage")}
-                    placeholderTextColor="#7A99C4"
+                    placeholderTextColor="#8696A0"
                     multiline
                     underlineColorAndroid="transparent"
                   />
-                  {hasDraft ? null : (
-                    <Pressable onPress={() => void openCamera()} hitSlop={8} style={styles.camBtn}>
-                      <CameraIcon size={22} color="#54656F" />
-                    </Pressable>
-                  )}
                 </View>
               </View>
+              {hasDraft ? null : (
+                <Pressable onPress={() => void openCamera()} hitSlop={8} style={styles.camBtn}>
+                  <CameraIcon size={26} color="#54656F" />
+                </Pressable>
+              )}
               <Pressable
                 onPress={() => {
                   if (hasDraft) void sendText();
@@ -1499,11 +1522,10 @@ const styles = StyleSheet.create({
   reactionTheirs: { right: 10 },
   reactionTxt: { fontSize: 14 },
   camBtn: {
-    minWidth: 32,
-    minHeight: 32,
+    width: 40,
+    height: 48,
     alignItems: "center",
     justifyContent: "center",
-    paddingBottom: 2,
   },
   reactOverlay: {
     flex: 1,
@@ -1577,13 +1599,14 @@ const styles = StyleSheet.create({
   composer: {
     flexDirection: "row",
     alignItems: "flex-end",
-    gap: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
     borderTopWidth: 1,
     borderTopColor: "rgba(92,78,114,0.12)",
     backgroundColor: "#EFEAF6",
   },
+  composerRtl: { flexDirection: "row-reverse" },
   actionBtn: {
     width: 48,
     height: 48,
@@ -1602,10 +1625,10 @@ const styles = StyleSheet.create({
     maxHeight: 168,
     borderRadius: 24,
     backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "rgba(14,76,184,0.25)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(17,27,33,0.08)",
     alignItems: "stretch",
-    paddingHorizontal: 6,
+    paddingHorizontal: 4,
     paddingBottom: 2,
   },
   pillRow: {
@@ -1613,8 +1636,9 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     minHeight: 48,
     gap: 4,
-    paddingHorizontal: 4,
+    paddingHorizontal: 6,
   },
+  pillRowRtl: { flexDirection: "row-reverse" },
   pillIcon: {
     fontSize: 18,
     lineHeight: 22,
