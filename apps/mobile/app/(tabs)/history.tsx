@@ -63,7 +63,8 @@ function lastWhen(iso: string, locale: string) {
   });
 }
 
-function previewText(item: HistoryItem, t: (key: "voiceClip" | "walkieClip" | "photoClip" | "videoClip") => string) {
+function previewText(item: HistoryItem, t: (key: "voiceClip" | "walkieClip" | "photoClip" | "videoClip" | "viewOnceOpened") => string) {
+  if (item.openedOnce) return t("viewOnceOpened");
   if (item.viewOnce) return "1";
   const kind = itemKind(item);
   if (kind === "walkie") return item.translatedText || item.originalText || t("walkieClip");

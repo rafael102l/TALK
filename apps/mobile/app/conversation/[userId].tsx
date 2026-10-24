@@ -336,9 +336,23 @@ export default function ConversationScreen() {
         void markPeerTextRead(token, userId).catch(() => undefined);
       }
     };
-    const onRemoved = (payload: { transmissionId?: string }) => {
+    const onRemoved = (payload: { transmissionId?: string; opened?: boolean }) => {
       const id = payload.transmissionId;
       if (!id) return;
+      if (payload.opened) {
+        setItems((current) => {
+          const next = current.map((item) =>
+            txIdOf(item.id) === id ? { ...item, openedOnce: true, audioUrl: null, receipt: item.mine ? "read" : item.receipt } : item,
+          );
+          seedHistoryCache(next);
+          return next;
+        });
+        if (onceRef.current && txIdOf(onceRef.current.id) === id) {
+          onceRef.current = null;
+          setOnceItem(null);
+        }
+        return;
+      }
       setItems((current) => current.filter((item) => txIdOf(item.id) !== id));
       if (onceRef.current && txIdOf(onceRef.current.id) === id) {
         onceRef.current = null;
@@ -882,11 +896,11 @@ export default function ConversationScreen() {
     }
   }
 
-  async function sendCapture(viewOnce: boolean) {
+  async function sendCapture(result: { uri: string; viewOnce: boolean; caption: string }) {
     const taken = capture;
     setCapture(null);
     if (!taken || !token || !userId) return;
-    const localUri = viewOnce ? taken.uri : await keepLocalCapture(taken.uri);
+    const localUri = result.viewOnce ? result.uri : await keepLocalCapture(result.uri);
     const quoted = replyTo ? quotePreview(replyTo) : null;
     setReplyTo(null);
     setError("");
@@ -894,8 +908,8 @@ export default function ConversationScreen() {
       id: `local-${Date.now()}`,
       senderName: user?.displayName || "",
       senderId: user?.id || "",
-      originalText: null,
-      translatedText: null,
+      originalText: result.caption || null,
+      translatedText: result.caption || null,
       audioUrl: localUri,
       language: user?.speakLang || lang,
       createdAt: new Date().toISOString(),
@@ -904,7 +918,7 @@ export default function ConversationScreen() {
       peerId: userId,
       peerAvatar: user?.avatarUrl,
       kind: taken.kind,
-      viewOnce,
+      viewOnce: result.viewOnce,
       replyToId: quoted?.id || null,
       replyToName: quoted?.name || null,
       replyToText: quoted?.text || null,
@@ -920,12 +934,13 @@ export default function ConversationScreen() {
     const form = new FormData();
     form.append("audio", {
       uri: localUri,
-      name: taken.name,
-      type: taken.mime,
+      name: taken.kind === "image" ? "photo.jpg" : taken.name,
+      type: taken.kind === "image" ? "image/jpeg" : taken.mime,
     } as unknown as Blob);
     form.append("kind", taken.kind);
-    form.append("viewOnce", viewOnce ? "true" : "false");
+    form.append("viewOnce", result.viewOnce ? "true" : "false");
     form.append("durationMs", String(taken.durationMs || 0));
+    if (result.caption) form.append("originalText", result.caption);
     form.append("targetUserIds", JSON.stringify(isGroup ? groupMembers.filter((id) => id !== user?.id) : [userId]));
     if (isGroup) form.append("channelId", userId);
     if (quoted?.id) {
@@ -965,7 +980,13 @@ export default function ConversationScreen() {
     } catch {
       /* already gone */
     }
-    setItems((current) => current.filter((row) => txIdOf(row.id) !== id));
+    setItems((current) => {
+      const next = current.map((row) =>
+        txIdOf(row.id) === id ? { ...row, openedOnce: true, audioUrl: null } : row,
+      );
+      seedHistoryCache(next);
+      return next;
+    });
   }
 
   function messageText(item: HistoryItem, mine: boolean) {
@@ -1042,16 +1063,21 @@ export default function ConversationScreen() {
           kind={kind}
           durationMs={item.durationMs}
           mine={mine}
-          locked={Boolean(item.viewOnce && !mine)}
+          locked={Boolean(item.viewOnce && !mine && !item.openedOnce)}
           viewOnce={item.viewOnce}
+          openedOnce={item.openedOnce}
+          onceTitle={t("viewOnceCardTitle")}
+          onceBody={t("viewOnceCardBody")}
+          openedLabel={t("viewOnceOpened")}
           time={time}
-          receipt={mine ? item.receipt || "sent" : undefined}
+          receipt={mine ? (item.openedOnce ? "read" : item.receipt || "sent") : undefined}
           selected={picking}
           selecting={selecting}
           quoteName={quotedName}
           quoteText={quotedText}
           photoLabel={t("photoClip")}
           videoLabel={t("videoClip")}
+          caption={item.openedOnce ? null : item.translatedText || item.originalText}
           onOpen={() => {
             onceRef.current = item;
             setOnceItem(item);
@@ -1294,7 +1320,7 @@ export default function ConversationScreen() {
               />
             </View>
           ) : (
-            <View style={[styles.composer, rtl && styles.composerRtl]}>
+            <View style={styles.composer}>
               <View style={styles.pill}>
                 {replyTo ? (
                   <QuoteBox
@@ -1369,8 +1395,8 @@ export default function ConversationScreen() {
       />
       <CapturePreview
         capture={capture}
-        onSend={() => void sendCapture(false)}
-        onOnce={() => void sendCapture(true)}
+        peerName={peer.name}
+        onSend={(result) => void sendCapture(result)}
         onCancel={() => setCapture(null)}
       />
       <Modal visible={deleteOpen} transparent animationType="fade" onRequestClose={() => setDeleteOpen(false)}>
@@ -1606,7 +1632,6 @@ const styles = StyleSheet.create({
     borderTopColor: "rgba(92,78,114,0.12)",
     backgroundColor: "#EFEAF6",
   },
-  composerRtl: { flexDirection: "row-reverse" },
   actionBtn: {
     width: 48,
     height: 48,

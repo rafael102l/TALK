@@ -27,6 +27,11 @@ export function MediaBubble({
   selecting,
   photoLabel,
   videoLabel,
+  caption,
+  openedOnce,
+  onceTitle,
+  onceBody,
+  openedLabel,
 }: {
   uri: string | null;
   kind: "image" | "video";
@@ -45,6 +50,11 @@ export function MediaBubble({
   selecting?: boolean;
   photoLabel: string;
   videoLabel: string;
+  caption?: string | null;
+  openedOnce?: boolean;
+  onceTitle?: string;
+  onceBody?: string;
+  openedLabel?: string;
 }) {
   const remote = resolveMediaUri(uri);
   const [src, setSrc] = useState(remote);
@@ -67,19 +77,24 @@ export function MediaBubble({
     <Pressable
       onPress={() => {
         if (selecting) onSelect?.();
-        else onOpen();
+        else if (!openedOnce) onOpen();
       }}
       onLongPress={onLongPress}
       delayLongPress={280}
-      style={[styles.bubble, mine ? styles.mine : styles.theirs, selected && styles.picked]}
+      style={[styles.bubble, mine ? styles.mine : styles.theirs, selected && styles.picked, openedOnce && styles.openedBubble]}
     >
       {quoteName || quoteText ? <QuoteBox name={quoteName || ""} text={quoteText || ""} compact /> : null}
-      {locked ? (
-        <View style={styles.lock}>
-          <View style={styles.lockOne}>
-            <Text style={styles.lockOneTxt}>1</Text>
+      {openedOnce ? (
+        <View style={styles.openedRow}>
+          <Text style={styles.openedTxt}>{openedLabel || "נפתחה"}</Text>
+        </View>
+      ) : locked ? (
+        <View style={styles.onceCard}>
+          <View style={styles.onceIcon}>
+            <Text style={styles.onceIconTxt}>1</Text>
           </View>
-          <Text style={styles.lockTxt}>{kind === "video" ? videoLabel : photoLabel}</Text>
+          <Text style={styles.onceTitle}>{onceTitle || photoLabel}</Text>
+          {onceBody ? <Text style={styles.onceBody}>{onceBody}</Text> : null}
         </View>
       ) : kind === "image" && src ? (
         <Image source={{ uri: src }} style={styles.photo} onError={() => setSrc("")} />
@@ -96,6 +111,7 @@ export function MediaBubble({
           {durationMs ? <Text style={styles.dur}>{formatClock(durationMs)}</Text> : null}
         </View>
       )}
+      {caption ? <Text style={styles.caption}>{caption}</Text> : null}
       <View style={styles.metaRow}>
         {viewOnce && !locked ? <Text style={styles.once}>1</Text> : null}
         {time ? <Text style={styles.meta}>{time}</Text> : null}
@@ -171,7 +187,34 @@ const styles = StyleSheet.create({
   },
   lockOneTxt: { fontWeight: "900", fontSize: 16, color: INK },
   lockTxt: { color: INK, fontWeight: "700", fontSize: 14 },
+  onceCard: {
+    width: 220,
+    minHeight: 160,
+    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+    gap: 8,
+  },
+  onceIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: "#00A884",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 4,
+  },
+  onceIconTxt: { color: "#FFFFFF", fontWeight: "900", fontSize: 20 },
+  onceTitle: { color: INK, fontWeight: "800", fontSize: 15, textAlign: "center" },
+  onceBody: { color: "#667781", fontSize: 12, lineHeight: 17, textAlign: "center" },
+  openedBubble: { minWidth: 96, maxWidth: 160 },
+  openedRow: { paddingHorizontal: 10, paddingVertical: 6, minWidth: 88 },
+  openedTxt: { color: "rgba(17,27,33,0.55)", fontWeight: "700", fontSize: 13 },
   metaRow: { marginTop: 4, flexDirection: "row", alignItems: "center", alignSelf: "flex-end", gap: 4, paddingHorizontal: 4 },
   meta: { fontSize: 11, fontWeight: "600", color: "rgba(17,27,33,0.42)" },
   once: { fontSize: 11, fontWeight: "800", color: "rgba(17,27,33,0.55)" },
+  caption: { color: INK, fontSize: 15, paddingHorizontal: 6, paddingTop: 4 },
 });

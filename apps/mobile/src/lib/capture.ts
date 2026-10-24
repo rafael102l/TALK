@@ -38,7 +38,7 @@ export async function captureChatMedia(): Promise<ChatCapture | null> {
   const picked = await ImagePicker.launchCameraAsync({
     mediaTypes: ImagePicker.MediaTypeOptions?.All ?? ["images", "videos"],
     videoMaxDuration: 60,
-    quality: 0.72,
+    quality: 1,
     allowsEditing: false,
   });
   if (picked.canceled || !picked.assets?.[0]) return null;

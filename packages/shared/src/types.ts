@@ -82,6 +82,7 @@ export type HistoryItem = {
   peerGender?: VoiceGender;
   kind?: "walkie" | "voice" | "text" | "image" | "video";
   viewOnce?: boolean;
+  openedOnce?: boolean;
   replyToId?: string | null;
   replyToName?: string | null;
   replyToText?: string | null;

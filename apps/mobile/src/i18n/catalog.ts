@@ -245,7 +245,23 @@ export type MsgKey =
   | "searchPeopleHint"
   | "chatsLoading"
   | "autoSaveMedia"
-  | "autoSaveMediaHint";
+  | "autoSaveMediaHint"
+  | "addCaption"
+  | "addTextOnPhoto"
+  | "viewOncePreview"
+  | "photoQuality"
+  | "photoQualityHint"
+  | "qualityStandard"
+  | "qualityStandardHint"
+  | "qualityHd"
+  | "qualityHdHint"
+  | "photoSavedGallery"
+  | "doneEdit"
+  | "viewOnceCardTitle"
+  | "viewOnceCardBody"
+  | "viewOnceOpened"
+  | "viewOnceMoreInfo"
+  | "viewOnceOk";
 
 type Dict = Record<MsgKey, string>;
 
@@ -495,6 +511,22 @@ const en: Dict = {
   chatsLoading: "Loading chats…",
   autoSaveMedia: "Save photos to the phone",
   autoSaveMediaHint: "When you open a regular photo, also copy it to the TALK album. Photos always stay in the app.",
+  addCaption: "Add a caption…",
+  addTextOnPhoto: "Add text",
+  viewOncePreview: "View once",
+  photoQuality: "Media quality",
+  photoQualityHint: "Choose the quality used to send photos and videos.",
+  qualityStandard: "Standard quality",
+  qualityStandardHint: "Faster send · smaller file",
+  qualityHd: "HD quality",
+  qualityHdHint: "Larger file · slower send",
+  photoSavedGallery: "Saved to the gallery",
+  doneEdit: "Done",
+  viewOnceCardTitle: "View-once messages add extra privacy",
+  viewOnceCardBody: "Photos and videos sent as view-once disappear from the device after the other person opens them once. They cannot share, forward, copy, or save them, and the screen is protected while they are open.",
+  viewOnceOpened: "Opened",
+  viewOnceMoreInfo: "Learn more",
+  viewOnceOk: "OK",
 };
 
 const he: Dict = {
@@ -743,6 +775,22 @@ const he: Dict = {
   chatsLoading: "טוען שיחות…",
   autoSaveMedia: "שמירת תמונות למכשיר",
   autoSaveMediaHint: "כשפותחים תמונה רגילה היא נשמרת גם באלבום TALK. התמונה תמיד נשארת באפליקציה.",
+  addCaption: "הוספת כיתוב…",
+  addTextOnPhoto: "הוספת טקסט",
+  viewOncePreview: "הצגה חד-פעמית",
+  photoQuality: "איכות המדיה",
+  photoQualityHint: "כאן בוחרים את האיכות שבה יישלחו תמונות וסרטונים.",
+  qualityStandard: "איכות סטנדרטית",
+  qualityStandardHint: "שליחה מהירה יותר · קובץ קטן יותר",
+  qualityHd: "איכות HD",
+  qualityHdHint: "קובץ גדול יותר · שליחה איטית יותר",
+  photoSavedGallery: "נשמר בגלריה",
+  doneEdit: "סיום",
+  viewOnceCardTitle: "הודעות שמוגדרות לצפייה חד-פעמית מגבירות את הפרטיות",
+  viewOnceCardBody: "תמונות וסרטונים שנשלחים כהודעה חד-פעמית ייעלמו מהמכשיר אחרי שהנמען יצפה בהם פעם אחת. אי אפשר לשתף, להעביר, להעתיק או לשמור אותם, והמסך מוגן בזמן שהם פתוחים.",
+  viewOnceOpened: "נפתחה",
+  viewOnceMoreInfo: "מידע נוסף",
+  viewOnceOk: "אישור",
 };
 
 function mix(over: Partial<Dict>): Dict {

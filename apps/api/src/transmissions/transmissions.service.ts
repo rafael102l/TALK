@@ -151,6 +151,7 @@ export class TransmissionsService {
       everyone?: boolean;
       durationMs?: number;
       viewOnce?: boolean;
+      originalText?: string;
       replyToId?: string;
       replyToName?: string;
       replyToText?: string;
@@ -167,7 +168,7 @@ export class TransmissionsService {
     const users = await this.prisma.user.findMany({ where: { id: { in: targetIds } } });
     const channel = await this.ensureChannel(sender, input.channelId, targetIds);
     const saved = await this.storage.save(file.buffer, extFrom(file), "chat");
-    const packed = packReply("", {
+    const packed = packReply(input.originalText?.trim() || "", {
       id: input.replyToId,
       name: input.replyToName,
       text: input.replyToText,
@@ -1111,7 +1112,7 @@ export class TransmissionsService {
         replyToId: quoted.reply?.id || null,
         replyToName: quoted.reply?.name || null,
         replyToText: quoted.reply?.text || null,
-        audioUrl,
+        audioUrl: tx.viewOnce && !tx.originalAudioUrl ? null : audioUrl,
         language: listenLang,
         speakLang: sourceLang,
         mode: "free",
@@ -1119,6 +1120,7 @@ export class TransmissionsService {
         durationMs: tx.durationMs,
         kind,
         viewOnce: Boolean(tx.viewOnce),
+        openedOnce: Boolean(tx.viewOnce && !tx.originalAudioUrl),
         expiresAt: tx.expiresAt?.toISOString() || null,
       });
     }
@@ -1151,7 +1153,7 @@ export class TransmissionsService {
           replyToId: quoted.reply?.id || null,
           replyToName: quoted.reply?.name || null,
           replyToText: quoted.reply?.text || null,
-          audioUrl: publicMedia(this.storage, tx.originalAudioUrl),
+          audioUrl: tx.viewOnce && !tx.originalAudioUrl ? null : publicMedia(this.storage, tx.originalAudioUrl),
           language: sourceLang,
           speakLang: sourceLang,
           mode: "free",
@@ -1159,6 +1161,7 @@ export class TransmissionsService {
           durationMs: tx.durationMs,
           kind: tx.kind || (tx.originalAudioUrl ? "walkie" : "text"),
           viewOnce: Boolean(tx.viewOnce),
+          openedOnce: Boolean(tx.viewOnce && !tx.originalAudioUrl),
           receipt,
           expiresAt: tx.expiresAt?.toISOString() || null,
         });
@@ -1184,7 +1187,7 @@ export class TransmissionsService {
           replyToId: quoted.reply?.id || null,
           replyToName: quoted.reply?.name || null,
           replyToText: quoted.reply?.text || null,
-          audioUrl: publicMedia(this.storage, tx.originalAudioUrl),
+          audioUrl: tx.viewOnce && !tx.originalAudioUrl ? null : publicMedia(this.storage, tx.originalAudioUrl),
           language: sourceLang,
           speakLang: sourceLang,
           mode: "free",
@@ -1192,6 +1195,7 @@ export class TransmissionsService {
           durationMs: tx.durationMs,
           kind: tx.kind || (tx.originalAudioUrl ? "walkie" : "text"),
           viewOnce: Boolean(tx.viewOnce),
+          openedOnce: Boolean(tx.viewOnce && !tx.originalAudioUrl),
           receipt: target.playedAt ? "read" : target.deliveredAt ? "delivered" : "sent",
           channelId: tx.channelId,
           expiresAt: tx.expiresAt?.toISOString() || null,
@@ -1423,11 +1427,22 @@ export class TransmissionsService {
     if (!burn) return { ok: true, kept: true };
     await this.storage.remove(tx.originalAudioUrl);
     for (const render of tx.renders) await this.storage.remove(render.audioUrl);
+    await this.prisma.transmission.update({
+      where: { id: tx.id },
+      data: { originalAudioUrl: "" },
+    });
+    await this.prisma.transmissionTarget.updateMany({
+      where: { transmissionId: tx.id },
+      data: { playedAt: new Date() },
+    });
     const watchers = [...new Set([tx.senderId, ...tx.targets.map((row) => row.userId)])];
-    await this.prisma.transmission.delete({ where: { id: tx.id } });
-    void this.firebase.removeTransmission(watchers, tx.id);
     for (const id of watchers) {
-      this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_REMOVED, { transmissionId: tx.id });
+      this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_REMOVED, { transmissionId: tx.id, opened: true });
+      this.realtime.emitToUser(id, SOCKET_EVENTS.CHAT_RECEIPT, {
+        transmissionId: tx.id,
+        peerId: tx.senderId,
+        receipt: "read",
+      });
     }
     return { ok: true };
   }
