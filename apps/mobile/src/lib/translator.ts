@@ -1,7 +1,9 @@
+import { apiLangCode, type VoiceGender } from "@talk/shared";
 import { Audio, InterruptionModeAndroid, InterruptionModeIOS } from "expo-av";
 import * as FileSystem from "expo-file-system";
 import { api } from "./api";
 import { setExtraMicBusy, setPlaybackMode } from "./audio";
+import { speakRobot, transcribeOnDevice } from "./onDeviceAi";
 
 const CAPTURE_OPTS: Audio.RecordingOptions = {
   isMeteringEnabled: false,
@@ -50,6 +52,8 @@ export type TranslatorTurn = {
   targetLang: string;
   audioBase64: string;
   mime: string;
+  /** STT done; translation may still be in flight. */
+  partial?: boolean;
 };
 
 export async function startTranslatorCapture() {
@@ -148,11 +152,35 @@ export async function runTranslatorTurn(
   gender: string,
   token: string | null,
   onText?: (turn: TranslatorTurn) => void,
+  opts?: { play?: boolean },
 ): Promise<TranslatorTurn> {
+  const from = apiLangCode(langA, "he");
+  const to = apiLangCode(langB, "en");
+  let heard = "";
+  try {
+    heard = (await transcribeOnDevice(uri, from))?.trim() || "";
+  } catch {
+    heard = "";
+  }
+  if (heard) {
+    onText?.({
+      sourceText: heard,
+      translatedText: "",
+      sourceLang: from,
+      targetLang: to,
+      audioBase64: "",
+      mime: "audio/mpeg",
+      partial: true,
+    });
+  }
   const form = new FormData();
-  form.append("audio", { uri, name: "speech.m4a", type: "audio/m4a" } as unknown as Blob);
-  form.append("langA", langA);
-  form.append("langB", langB);
+  if (heard) {
+    form.append("text", heard);
+  } else {
+    form.append("audio", { uri, name: "speech.m4a", type: "audio/m4a" } as unknown as Blob);
+  }
+  form.append("langA", from);
+  form.append("langB", to);
   form.append("gender", gender);
   try {
     const turn = await api<TranslatorTurn>("/ai/translator", {
@@ -162,12 +190,44 @@ export async function runTranslatorTurn(
       timeoutMs: 20_000,
       body: form,
     });
-    onText?.(turn);
-    if (turn?.audioBase64) void playTranslatorMp3(turn.audioBase64);
-    return turn;
+    const sourceText = (turn?.sourceText || heard || "").trim();
+    const translatedText = (turn?.translatedText || "").trim();
+    const full: TranslatorTurn = {
+      sourceText,
+      translatedText,
+      sourceLang: apiLangCode(turn?.sourceLang || from, from),
+      targetLang: apiLangCode(turn?.targetLang || to, to),
+      audioBase64: turn?.audioBase64 || "",
+      mime: turn?.mime || "audio/mpeg",
+    };
+    onText?.(full);
+    if (opts?.play !== false && translatedText) {
+      const genderVoice = (gender === "female" || gender === "child" ? gender : "male") as VoiceGender;
+      const serverTarget = apiLangCode(full.targetLang, to);
+      if (full.audioBase64 && serverTarget === to) void playTranslatorMp3(full.audioBase64);
+      else void speakRobot(translatedText, to, genderVoice);
+    }
+    return full;
   } finally {
     void deleteLocalFile(uri);
   }
+}
+
+/** Hear a short utterance (language name) without playing a translation. */
+export async function hearTranslatorText(uri: string, listenLang: string, token: string | null): Promise<string> {
+  try {
+    const local = await transcribeOnDevice(uri, listenLang);
+    if (local?.trim()) {
+      void deleteLocalFile(uri);
+      return local.trim();
+    }
+  } catch {
+    /* cloud fallback */
+  }
+  const hear = apiLangCode(listenLang, "he");
+  const other = hear === "en" ? "he" : "en";
+  const turn = await runTranslatorTurn(uri, hear, other, "male", token, undefined, { play: false });
+  return (turn?.sourceText || "").trim();
 }
 
 export async function playTranslatorMp3(base64: string) {
