@@ -17,7 +17,7 @@ const ELEVEN_VOICE: Record<VoiceGender, string> = {
 };
 
 const GEMINI_TRANSLATE_MODELS = [
-  "gemini-2.5-flash-lite",
+  "gemini-3.5-flash-lite",
   "gemini-flash-lite-latest",
   "gemini-2.5-flash",
   "gemini-2.0-flash-lite",
@@ -325,7 +325,7 @@ export class TranslatorService {
         temperature: 0.0,
         maxOutputTokens: 512,
       };
-      if (model.includes("2.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      if (model.includes("2.5") || model.includes("3.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
         {

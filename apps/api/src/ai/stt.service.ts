@@ -1,12 +1,12 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { LANGUAGES, isLanguageCode } from "@talk/shared";
+import { LANGUAGES, canonicalSpeech, isLanguageCode, speechBase, speechLocale, speechPrompt } from "@talk/shared";
 import { extname } from "path";
 import { readFile } from "fs/promises";
 
 // gemini-1.5-flash and gemini-2.0-flash return 404. Pro is slower. 2.5-flash is the fast live model; thinking is off.
 const GEMINI_HEAR_MODELS = ["gemini-2.5-flash"];
 /** Hear and translate with Flash, not Pro. Lite is only the backup if Flash 404s. */
-const GEMINI_LIVE_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite"];
+const GEMINI_LIVE_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"];
 /** One spoken sentence. The cap stops the reply; the model does not fill it. */
 const LIVE_STT_TOKENS = 384;
 const LIVE_TRANSLATION_TOKENS = 192;
@@ -187,7 +187,7 @@ export class SttService {
               generationConfig: {
                 temperature: 0,
                 maxOutputTokens,
-                ...(model.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+                ...(model.includes("2.5") || model.includes("3.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
               },
             }),
           },
@@ -251,7 +251,7 @@ export class SttService {
           responseMimeType: "application/json",
         };
         // Gemini 2.5 thinking tokens share the output budget — disable or transcripts truncate.
-        if (model.includes("2.5")) {
+        if (model.includes("2.5") || model.includes("3.5")) {
           generationConfig.thinkingConfig = { thinkingBudget: 0 };
         }
         const res = await fetch(
@@ -550,11 +550,12 @@ export function spokenLang(text: string, whisperLang = "", fallback = "") {
 }
 
 function langName(code: string) {
-  const hit = LANGUAGES.find((language) => language.code === normLang(code));
-  return hit?.nameEn || code || "the listener's language";
+  return speechPrompt(code) || LANGUAGES.find((language) => language.code === normLang(code))?.nameEn || code || "the listener's language";
 }
 
 export function speechTag(code: string) {
+  const locale = speechLocale(code);
+  if (locale) return locale;
   const tags: Record<string, string> = {
     he: "he-IL",
     en: "en-US",
@@ -597,7 +598,7 @@ export function speechTag(code: string) {
     ka: "ka-GE",
     am: "am-ET",
   };
-  return tags[code] || code;
+  return tags[speechBase(code) || code] || tags[code] || code;
 }
 
 function hearInstruction(code: string, tag: string) {
@@ -699,39 +700,31 @@ export function detectLang(text: string): string {
 
 export function matchesLang(text: string, language: string) {
   if (!text || isHallucination(text)) return false;
-  if (language === "he") return HEBREW.test(text);
-  if (language === "ar" || language === "fa" || language === "ur") return ARABIC.test(text);
-  if (language === "ru" || language === "uk" || language === "bg") return CYRILLIC.test(text);
-  if (language === "ja" || language === "zh") return CJK.test(text);
-  if (language === "ko") return HANGUL.test(text);
-  if (language === "hi") return DEVANAGARI.test(text);
-  if (language === "th") return THAI.test(text);
-  if (language === "el") return GREEK.test(text);
-  if (language === "ka") return GEORGIAN.test(text);
-  if (language === "am") return ETHIOPIC.test(text);
-  if (language === "bn") return BENGALI.test(text);
-  if (language === "ta") return TAMIL.test(text);
+  const exact = canonicalSpeech(language) || language;
+  if (exact === "pa") return /[\u0A00-\u0A7F]/.test(text);
+  if (exact === "gu") return /[\u0A80-\u0AFF]/.test(text);
+  if (exact === "te") return /[\u0C00-\u0C7F]/.test(text);
+  if (exact === "kn") return /[\u0C80-\u0CFF]/.test(text);
+  if (exact === "ml") return /[\u0D00-\u0D7F]/.test(text);
+  const lang = speechBase(language) || exact;
+  if (lang === "he") return HEBREW.test(text);
+  if (lang === "ar" || lang === "fa" || lang === "ur") return ARABIC.test(text);
+  if (lang === "ru" || lang === "uk" || lang === "bg") return CYRILLIC.test(text);
+  if (lang === "ja" || lang === "zh") return CJK.test(text);
+  if (lang === "ko") return HANGUL.test(text);
+  if (lang === "hi") return DEVANAGARI.test(text);
+  if (lang === "th") return THAI.test(text);
+  if (lang === "el") return GREEK.test(text);
+  if (lang === "ka") return GEORGIAN.test(text);
+  if (lang === "am") return ETHIOPIC.test(text);
+  if (lang === "bn") return BENGALI.test(text);
+  if (lang === "ta") return TAMIL.test(text);
   if (HEBREW.test(text) || ARABIC.test(text) || CJK.test(text) || HANGUL.test(text)) return false;
   return /[A-Za-zÀ-ÿĀ-ž]/u.test(text);
 }
 
 export function normLang(code: string) {
-  const raw = (code || "").toLowerCase().trim();
-  if (!raw) return "";
-  if (raw === "iw" || raw === "heb" || raw === "hebrew") return "he";
-  if (raw === "ara" || raw === "arabic") return "ar";
-  if (raw === "urd" || raw === "urdu") return "ur";
-  if (raw === "fas" || raw === "per" || raw === "persian" || raw === "farsi") return "fa";
-  if (raw === "chi" || raw === "chinese" || raw === "cmn") return "zh";
-  if (raw === "fil" || raw === "tl") return "tl";
-  if (raw === "nb" || raw === "nn" || raw === "nor") return "no";
-  if (raw === "jpn" || raw === "japanese") return "ja";
-  if (raw === "kor" || raw === "korean") return "ko";
-  if (raw === "tur") return "tr";
-  if (raw === "ukr") return "uk";
-  if (raw === "pol" || raw === "po") return "pl";
-  const two = raw.slice(0, 2);
-  return isLanguageCode(two) ? two : "";
+  return canonicalSpeech(code);
 }
 
 function clip(text: string) {

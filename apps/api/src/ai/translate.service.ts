@@ -1,17 +1,17 @@
 import { Injectable, Logger } from "@nestjs/common";
-import { LANGUAGE_BY_CODE, isLanguageCode } from "@talk/shared";
+import { LANGUAGE_BY_CODE, isLanguageCode, speechPrompt } from "@talk/shared";
 import { faithfulnessReason, wrongScript } from "./gate";
 import { collapseRepeats, isStutterGarbage } from "./stt.service";
 
 const GEMINI_MODELS = [
+  "gemini-3.5-flash-lite",
   "gemini-flash-lite-latest",
-  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
   "gemini-2.0-flash-lite",
-  "gemini-2.0-flash",
 ];
 
 function langName(code: string) {
-  return isLanguageCode(code) ? LANGUAGE_BY_CODE[code].nameEn : code;
+  return speechPrompt(code) || (isLanguageCode(code) ? LANGUAGE_BY_CODE[code].nameEn : code);
 }
 
 function understandPrompt(source: string, target: string, names: string[], written = false) {
@@ -134,7 +134,7 @@ export class TranslateService {
           temperature: 0,
           maxOutputTokens: written ? 1024 : 1024,
         };
-        if (model.includes("2.5")) {
+        if (model.includes("2.5") || model.includes("3.5")) {
           generationConfig.thinkingConfig = { thinkingBudget: 0 };
         }
         const res = await fetch(
@@ -215,7 +215,7 @@ export class TranslateService {
             generationConfig: {
               temperature: 0,
               maxOutputTokens: 1024,
-              ...(model.includes("2.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+              ...(model.includes("2.5") || model.includes("3.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
             },
           }),
         },
