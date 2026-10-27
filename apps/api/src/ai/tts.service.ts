@@ -66,14 +66,13 @@ const WIDE_CODES = new Set([
 ]);
 
 export function elevenVoicePlan(language: string) {
-  const two = (language || "").slice(0, 2).toLowerCase();
+  const two = (language || "").trim().toLowerCase().split("-")[0];
   const code = two === "tl" ? "fil" : two;
   const flash = process.env.ELEVENLABS_TTS_MODEL_MULTI || process.env.ELEVENLABS_TTS_MODEL || "eleven_flash_v2_5";
   const wide = process.env.ELEVENLABS_TTS_MODEL_WIDE || "eleven_v3";
   if (!code || code === "en") return { model: process.env.ELEVENLABS_TTS_MODEL || "eleven_flash_v2_5", code: "" };
   if (FLASH_CODES.has(code)) return { model: flash, code };
-  if (WIDE_CODES.has(code)) return { model: wide, code };
-  return { model: wide, code: "" };
+  return { model: wide, code };
 }
 
 @Injectable()

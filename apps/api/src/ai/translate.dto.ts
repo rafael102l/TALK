@@ -1,18 +1,15 @@
 import { IsIn, IsOptional, IsString } from "class-validator";
-import { LANGUAGES } from "@talk/shared";
-
-const codes = LANGUAGES.map((l) => l.code);
 
 export class TranslateDto {
   @IsString()
   text!: string;
 
   @IsOptional()
-  @IsIn(codes)
+  @IsString()
   source?: string;
 
   @IsOptional()
-  @IsIn(codes)
+  @IsString()
   target?: string;
 }
 
@@ -21,10 +18,10 @@ export class TranslatorDto {
   @IsString()
   text?: string;
 
-  @IsIn(codes)
+  @IsString()
   langA!: string;
 
-  @IsIn(codes)
+  @IsString()
   langB!: string;
 
   @IsOptional()
@@ -40,7 +37,7 @@ export class TranslatorSpeakDto {
   @IsString()
   text!: string;
 
-  @IsIn(codes)
+  @IsString()
   lang!: string;
 
   @IsOptional()

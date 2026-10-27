@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { VoiceGender } from "@talk/shared";
-import { apiLangCode, canonicalSpeech, speechBase, speechPrompt, whisperLang } from "@talk/shared";
+import { canonicalSpeech, speechBase, speechPrompt, whisperLang } from "@talk/shared";
 import { speechTag } from "./stt.service";
 import { elevenVoicePlan } from "./tts.service";
 
@@ -22,6 +22,7 @@ const GEMINI_TRANSLATE_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.0-flash-lite",
 ];
+const GEMINI_DETECT_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"];
 
 const STRICT_TRANSLATE =
   "You are an absolute word-for-word TRANSLATOR, NOT a conversational assistant. Your ONLY job is to translate the input sentence into the target language, exactly as written. Do not shorten, summarize, paraphrase, or replace the sentence with a different one. Do not transliterate. Translate meaning (Hebrew גוף → English body, not guf). If the user asks a question (e.g., 'How do I say X in Hebrew?'), DO NOT answer the question. Translate the question itself directly (e.g., 'איך אומרים X בעברית?'). NEVER output just the answer. Do NOT add pleasantries, notes, context, corrections, or explanations. Return ONLY the direct translation of the input.";
@@ -45,14 +46,15 @@ export class TranslatorService {
     langA: string;
     langB: string;
   }): Promise<Turn> {
-    const langA = apiLangCode(input.langA, "he");
-    const langB = apiLangCode(input.langB, "en");
+    const langA = keepLang(input.langA, "he");
+    const langB = keepLang(input.langB, "en");
     const empty = { sourceText: "", translatedText: "", sourceLang: langA, targetLang: langB };
     const preset = (input.text || "").replace(/\s+/g, " ").trim();
     if (preset) {
       const sourceLang = pickSpoken(null, "", preset, langA, langB);
       if (!sourceLang) return empty;
-      const targetLang = sameSpeech(sourceLang, langA) ? langB : langA;
+      const targetLang = otherLang(sourceLang, langA, langB);
+      if (!targetLang) return empty;
       return this.finishTurn(preset, sourceLang, targetLang);
     }
     if (input.audio?.length) {
@@ -70,8 +72,8 @@ export class TranslatorService {
     langB: string;
     gender?: VoiceGender;
   }) {
-    const langA = apiLangCode(input.langA, "he");
-    const langB = apiLangCode(input.langB, "en");
+    const langA = keepLang(input.langA, "he");
+    const langB = keepLang(input.langB, "en");
     const turn = await this.transcribe({
       text: input.text,
       audio: input.audio,
@@ -80,12 +82,8 @@ export class TranslatorService {
       langA,
       langB,
     });
-    const sourceLang = sameSpeech(turn.sourceLang, langB)
-      ? langB
-      : sameSpeech(turn.sourceLang, langA)
-        ? langA
-        : "";
-    const targetLang = sameSpeech(sourceLang, langA) ? langB : sameSpeech(sourceLang, langB) ? langA : "";
+    const sourceLang = matchChoice(turn.sourceLang, langA, langB);
+    const targetLang = otherLang(sourceLang, langA, langB);
     if (!sourceLang || !targetLang || !turn.sourceText) {
       return {
         sourceText: "",
@@ -98,12 +96,10 @@ export class TranslatorService {
     }
     const sourceText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
     const translatedText = (turn.translatedText || "").replace(/\s+/g, " ").trim();
-    const spoken =
-      translatedText && translatedText !== sourceText ? translatedText : "";
     let audio: Buffer | null = null;
-    if (spoken) {
+    if (translatedText) {
       try {
-        audio = await this.speakTranslation(spoken, targetLang, input.gender || "male");
+        audio = await this.speakTranslation(translatedText, targetLang, input.gender || "male");
       } catch {
         audio = null;
       }
@@ -123,7 +119,7 @@ export class TranslatorService {
     if (!spoken) return { audioBase64: "", mime: "audio/mpeg" as const };
     let audio: Buffer | null = null;
     try {
-      audio = await this.speakTranslation(spoken, apiLangCode(lang, "en"), gender);
+      audio = await this.speakTranslation(spoken, keepLang(lang, "en"), gender);
     } catch {
       audio = null;
     }
@@ -146,24 +142,19 @@ export class TranslatorService {
   ): Promise<Turn | null> {
     const [detected, auto] = await Promise.all([
       this.detectSpokenLang(audio, mime, ext, langA, langB),
-      this.whisperAuto(audio, mime, ext),
+      this.whisperAuto(audio, mime, ext, langA, langB),
     ]);
     let text = auto.text;
-    if (!text) return null;
-    const scriptB = hasScript(text, langB) && !hasScript(text, langA);
-    const scriptA = hasScript(text, langA) && !hasScript(text, langB);
-    let sourceLang = "";
-    if (scriptB) sourceLang = langB;
-    else if (scriptA) sourceLang = langA;
-    else if (sameSpeech(detected || "", langB) || sameSpeech(whisperLangCode(auto.language), langB)) sourceLang = langB;
-    else if (sameSpeech(detected || "", langA) || sameSpeech(whisperLangCode(auto.language), langA)) sourceLang = langA;
-    if (!sourceLang) return null;
-    if (uniqueScript(sourceLang) && !hasScript(text, sourceLang)) {
+    let sourceLang = pickSpoken(detected, auto.language, text, langA, langB);
+    if (!text && sourceLang) {
       const locked = await this.whisperFor(audio, sourceLang, mime, ext);
-      if (locked.text && hasScript(locked.text, sourceLang)) text = locked.text;
+      if (locked.text) text = locked.text;
     }
     if (!text) return null;
-    const targetLang = sameSpeech(sourceLang, langA) ? langB : langA;
+    sourceLang = pickSpoken(detected, auto.language, text, langA, langB);
+    if (!sourceLang) return null;
+    const targetLang = otherLang(sourceLang, langA, langB);
+    if (!targetLang) return null;
     this.logger.log(`translator-detect ${detected || auto.language || "?"} => ${sourceLang}->${targetLang} ${clip(text)}`);
     return this.finishTurn(text, sourceLang, targetLang);
   }
@@ -171,68 +162,64 @@ export class TranslatorService {
   private async detectSpokenLang(audio: Buffer, mime: string, ext: string, langA: string, langB: string) {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return null;
-    const tagA = speechTag(langA) || langA;
-    const tagB = speechTag(langB) || langB;
-    const nameA = speechPrompt(langA) || langA;
-    const nameB = speechPrompt(langB) || langB;
     const prompt = [
-      `The speaker used either ${nameA} (code ${langA}, locale ${tagA}) or ${nameB} (code ${langB}, locale ${tagB}). Never any other language.`,
-      `Which of these two languages or dialects was spoken?`,
-      `Return JSON: {"lang":"${langA}"} or {"lang":"${langB}"} using that exact code.`,
+      `The speaker used exactly one of these two: ${langTitle(langA)} or ${langTitle(langB)}.`,
+      "If they are dialects of the same language, pick the dialect that was actually spoken.",
+      `Return JSON: {"lang":"${langA}"} or {"lang":"${langB}"} using that exact code. Never a generic base code.`,
       "Do not transcribe. Do not translate.",
     ].join(" ");
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(5000),
-          body: JSON.stringify({
-            contents: [
-              {
-                role: "user",
-                parts: [
-                  { text: prompt },
-                  { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
-                ],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.0,
-              maxOutputTokens: 32,
-              responseMimeType: "application/json",
-              thinkingConfig: { thinkingBudget: 0 },
-            },
-          }),
-        },
-      );
-      if (!res.ok) {
-        this.logger.warn(`translator detect ${res.status}`);
-        return null;
+    for (const model of GEMINI_DETECT_MODELS) {
+      try {
+        const generationConfig: Record<string, unknown> = {
+          temperature: 0.0,
+          maxOutputTokens: 32,
+          responseMimeType: "application/json",
+        };
+        if (model.includes("2.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: AbortSignal.timeout(6000),
+            body: JSON.stringify({
+              contents: [
+                {
+                  role: "user",
+                  parts: [
+                    { text: prompt },
+                    { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
+                  ],
+                },
+              ],
+              generationConfig,
+            }),
+          },
+        );
+        if (!res.ok) {
+          this.logger.warn(`translator detect ${model} ${res.status}`);
+          continue;
+        }
+        const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+        const raw =
+          data.candidates?.[0]?.content?.parts
+            ?.map((part) => part.text || "")
+            .join("")
+            .trim() ?? "";
+        const start = raw.indexOf("{");
+        const end = raw.lastIndexOf("}");
+        if (start < 0 || end <= start) continue;
+        const parsed = JSON.parse(raw.slice(start, end + 1)) as { lang?: string };
+        const lang = matchChoice(String(parsed.lang || ""), langA, langB);
+        if (lang) return lang;
+      } catch (error) {
+        this.logger.warn(`translator detect ${model} ${(error as Error).message}`);
       }
-      const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
-      const raw =
-        data.candidates?.[0]?.content?.parts
-          ?.map((part) => part.text || "")
-          .join("")
-          .trim() ?? "";
-      const start = raw.indexOf("{");
-      const end = raw.lastIndexOf("}");
-      if (start < 0 || end <= start) return null;
-      const parsed = JSON.parse(raw.slice(start, end + 1)) as { lang?: string };
-      const lang = whisperLangCode(String(parsed.lang || ""));
-      if (lang === langB || lang === langA) return lang;
-      if (sameSpeech(lang, langB) && !sameSpeech(lang, langA)) return langB;
-      if (sameSpeech(lang, langA) && !sameSpeech(lang, langB)) return langA;
-      return null;
-    } catch (error) {
-      this.logger.warn(`translator detect ${(error as Error).message}`);
-      return null;
     }
+    return null;
   }
 
-  private async whisperAuto(audio: Buffer, mime: string, ext: string) {
+  private async whisperAuto(audio: Buffer, mime: string, ext: string, langA?: string, langB?: string) {
     const empty = { text: "", language: "" };
     const key = process.env.OPENAI_API_KEY;
     if (!key || !audio.length) return empty;
@@ -244,7 +231,9 @@ export class TranslatorService {
       form.append("response_format", "verbose_json");
       form.append(
         "prompt",
-        "Transcribe every spoken word exactly in the original language. Do not translate. Do not paraphrase. Do not shorten.",
+        langA && langB
+          ? `The speaker used either ${langTitle(langA)} or ${langTitle(langB)}. Transcribe every spoken word exactly in that original dialect. Do not translate. Do not paraphrase. Do not shorten.`
+          : "Transcribe every spoken word exactly in the original language. Do not translate. Do not paraphrase. Do not shorten.",
       );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
@@ -300,22 +289,20 @@ export class TranslatorService {
   private async finishTurn(sourceText: string, sourceLang: string, targetLang: string) {
     sourceText = sanitizeTranscript(sourceText);
     if (!sourceText) return { sourceText: "", translatedText: "", sourceLang, targetLang };
-    if (sourceLang === targetLang) {
+    if (sameChoice(sourceLang, targetLang)) {
       return { sourceText, translatedText: "", sourceLang, targetLang };
     }
     let translatedText = await this.translateFast(sourceText, sourceLang, targetLang).catch((error) => {
       logTranslateFail(`translator-translate ${sourceLang}->${targetLang} ${(error as Error).message}`);
       return "";
     });
-    if (!translatedText || translatedText === sourceText || !canSpeakTranslation(translatedText, sourceLang, targetLang)) {
+    if (!translatedText || translatedText === sourceText) {
       translatedText = await this.translateFast(sourceText, sourceLang, targetLang, true).catch((error) => {
         logTranslateFail(`translator-translate retry ${sourceLang}->${targetLang} ${(error as Error).message}`);
         return "";
       });
     }
-    if (translatedText === sourceText || !canSpeakTranslation(translatedText, sourceLang, targetLang)) {
-      translatedText = "";
-    }
+    if (translatedText === sourceText) translatedText = "";
     this.logger.log(`translator ${sourceLang}->${targetLang} ${clip(sourceText)} => ${clip(translatedText)}`);
     return { sourceText, translatedText, sourceLang, targetLang };
   }
@@ -427,24 +414,9 @@ export class TranslatorService {
   }
 
   private async speakMp3(text: string, lang: string, gender: VoiceGender) {
-    const plan = elevenVoicePlan(lang);
-    if (plan.code) {
-      const native = await this.viaElevenMp3(text, lang, gender);
-      if (native?.length) return native;
-      return this.viaOpenAiMp3(text, gender);
-    }
-    const jobs = [this.viaOpenAiMp3(text, gender), this.viaElevenMp3(text, lang, gender)];
-    try {
-      return await Promise.any(
-        jobs.map(async (job) => {
-          const buffer = await job;
-          if (!buffer?.length) throw new Error("empty");
-          return buffer;
-        }),
-      );
-    } catch {
-      return null;
-    }
+    const native = await this.viaElevenMp3(text, lang, gender);
+    if (native?.length) return native;
+    return this.viaOpenAiMp3(text, gender);
   }
 
   private async viaOpenAiMp3(text: string, gender: VoiceGender) {
@@ -453,7 +425,7 @@ export class TranslatorService {
     const res = await fetch("https://api.openai.com/v1/audio/speech", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(3500),
+      signal: AbortSignal.timeout(8000),
       body: JSON.stringify({
         model: "tts-1",
         input: text.slice(0, 4000),
@@ -485,7 +457,7 @@ export class TranslatorService {
         "Content-Type": "application/json",
         Accept: "audio/mpeg",
       },
-      signal: AbortSignal.timeout(3500),
+      signal: AbortSignal.timeout(8000),
       body: JSON.stringify(body),
     });
     if (!res.ok) return null;
@@ -521,14 +493,50 @@ function logTranslateFail(message: string) {
   console.error(message);
 }
 
+function keepLang(code: string, fallback: string) {
+  const raw = (code || "").trim().toLowerCase().replace(/_/g, "-");
+  if (!raw) return fallback;
+  if (raw.includes("-")) return raw;
+  return canonicalSpeech(raw) || raw;
+}
+
+function sameChoice(a?: string | null, b?: string | null) {
+  const left = keepLang(a || "", "");
+  const right = keepLang(b || "", "");
+  if (!left || !right) return false;
+  if (left === right) return true;
+  return left.startsWith(`${right}-`) || right.startsWith(`${left}-`);
+}
+
+function matchChoice(raw: string, langA: string, langB: string) {
+  const value = keepLang(raw, "");
+  if (!value) return "";
+  if (keepLang(langB, "") === value) return langB;
+  if (keepLang(langA, "") === value) return langA;
+  const hitB = sameChoice(value, langB);
+  const hitA = sameChoice(value, langA);
+  if (hitB && !hitA) return langB;
+  if (hitA && !hitB) return langA;
+  return "";
+}
+
+function otherLang(spoken: string, langA: string, langB: string) {
+  if (sameChoice(spoken, langA) && !sameChoice(spoken, langB)) return langB;
+  if (sameChoice(spoken, langB) && !sameChoice(spoken, langA)) return langA;
+  return "";
+}
+
+function langTitle(code: string) {
+  const name = speechPrompt(code) || speechTag(code) || code;
+  return `${name} (${code})`;
+}
+
 function pickSpoken(detected: string | null, autoLang: string, text: string, langA: string, langB: string) {
-  if (detected === langB) return langB;
-  if (detected === langA) return langA;
-  const code = whisperLangCode(autoLang);
-  if (code === langB) return langB;
-  if (code === langA) return langA;
-  if (sameSpeech(code, langB) && !sameSpeech(code, langA)) return langB;
-  if (sameSpeech(code, langA) && !sameSpeech(code, langB)) return langA;
+  const gemini = matchChoice(detected || "", langA, langB);
+  if (gemini) return gemini;
+  const code = matchChoice(whisperLangCode(autoLang), langA, langB);
+  if (code) return code;
+  if (sameSpeech(langA, langB)) return "";
   const aScript = uniqueScript(langA) && hasScript(text, langA);
   const bScript = uniqueScript(langB) && hasScript(text, langB);
   if (bScript && !aScript) return langB;
