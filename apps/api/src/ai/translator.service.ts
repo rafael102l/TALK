@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { VoiceGender } from "@talk/shared";
 import { canonicalSpeech, speechBase, speechPrompt, whisperLang } from "@talk/shared";
-import { speechTag } from "./stt.service";
+import { geminiThinkingConfig, speechTag } from "./stt.service";
 import { elevenVoicePlan } from "./tts.service";
 
 const OPENAI_VOICE: Record<VoiceGender, string> = {
@@ -182,10 +182,11 @@ export class TranslatorService {
       try {
         const generationConfig: Record<string, unknown> = {
           temperature: 0.0,
-          maxOutputTokens: 32,
+          maxOutputTokens: 256,
           responseMimeType: "application/json",
         };
-        if (model.includes("2.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+        const thinkingConfig = geminiThinkingConfig(model);
+        if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
         const res = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
           {
@@ -199,7 +200,7 @@ export class TranslatorService {
                   role: "user",
                   parts: [
                     { text: constraint },
-                    { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
+                    { inlineData: { mimeType: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
                   ],
                 },
               ],
@@ -208,7 +209,8 @@ export class TranslatorService {
           },
         );
         if (!res.ok) {
-          this.logger.warn(`translator detect ${model} ${res.status}`);
+          const errText = await res.text().catch(() => "");
+          this.logger.warn(`translator detect ${model} ${res.status} ${errText.slice(0, 240)}`);
           continue;
         }
         const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
@@ -359,7 +361,8 @@ export class TranslatorService {
         temperature: 0.0,
         maxOutputTokens: 512,
       };
-      if (model.includes("2.5") || model.includes("3.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
+      const thinkingConfig = geminiThinkingConfig(model);
+      if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
         {

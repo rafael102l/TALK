@@ -24,6 +24,13 @@ const LIVE_SAFETY = [
 ].map((category) => ({ category, threshold: "BLOCK_NONE" }));
 const LANG_LIST = LANGUAGES.map((language) => language.code).join(", ");
 
+/** Gemini 3.x returns 400 INVALID_ARGUMENT for thinkingBudget. Gemini 2.5 uses thinkingBudget: 0. */
+export function geminiThinkingConfig(model: string): Record<string, unknown> | undefined {
+  if (model.includes("2.5")) return { thinkingBudget: 0 };
+  if (model.includes("gemini-3")) return { thinkingLevel: "minimal" };
+  return undefined;
+}
+
 const HEBREW = /[\u0590-\u05FF]/;
 const ARABIC = /[\u0600-\u06FF]/;
 const CYRILLIC = /[\u0400-\u04FF]/;
@@ -187,7 +194,7 @@ export class SttService {
               generationConfig: {
                 temperature: 0,
                 maxOutputTokens,
-                ...(model.includes("2.5") || model.includes("3.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+                ...(geminiThinkingConfig(model) ? { thinkingConfig: geminiThinkingConfig(model) } : {}),
               },
             }),
           },
@@ -251,9 +258,8 @@ export class SttService {
           responseMimeType: "application/json",
         };
         // Gemini 2.5 thinking tokens share the output budget — disable or transcripts truncate.
-        if (model.includes("2.5") || model.includes("3.5")) {
-          generationConfig.thinkingConfig = { thinkingBudget: 0 };
-        }
+        const thinkingConfig = geminiThinkingConfig(model);
+        if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
         const res = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
           {

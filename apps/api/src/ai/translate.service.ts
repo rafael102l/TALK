@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { LANGUAGE_BY_CODE, isLanguageCode, speechPrompt } from "@talk/shared";
 import { faithfulnessReason, wrongScript } from "./gate";
-import { collapseRepeats, isStutterGarbage } from "./stt.service";
+import { collapseRepeats, geminiThinkingConfig, isStutterGarbage } from "./stt.service";
 
 const GEMINI_MODELS = [
   "gemini-3.5-flash-lite",
@@ -134,9 +134,8 @@ export class TranslateService {
           temperature: 0,
           maxOutputTokens: written ? 1024 : 1024,
         };
-        if (model.includes("2.5") || model.includes("3.5")) {
-          generationConfig.thinkingConfig = { thinkingBudget: 0 };
-        }
+        const thinkingConfig = geminiThinkingConfig(model);
+        if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
         const res = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
           {
@@ -215,7 +214,7 @@ export class TranslateService {
             generationConfig: {
               temperature: 0,
               maxOutputTokens: 1024,
-              ...(model.includes("2.5") || model.includes("3.5") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+              ...(geminiThinkingConfig(model) ? { thinkingConfig: geminiThinkingConfig(model) } : {}),
             },
           }),
         },
