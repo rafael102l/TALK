@@ -49,7 +49,12 @@ export class TranslatorService {
     const langB = apiLangCode(input.langB, "en");
     const empty = { sourceText: "", translatedText: "", sourceLang: langA, targetLang: langB };
     const preset = (input.text || "").replace(/\s+/g, " ").trim();
-    if (preset) return this.finishTurn(preset, langA, langB);
+    if (preset) {
+      const sourceLang = pickSpoken(null, "", preset, langA, langB);
+      if (!sourceLang) return empty;
+      const targetLang = sameSpeech(sourceLang, langA) ? langB : langA;
+      return this.finishTurn(preset, sourceLang, targetLang);
+    }
     if (input.audio?.length) {
       return (await this.hearAndTranslate(input.audio, input.mime || "audio/mp4", input.ext || "m4a", langA, langB)) || empty;
     }
@@ -75,8 +80,22 @@ export class TranslatorService {
       langA,
       langB,
     });
-    const sourceLang = langA;
-    const targetLang = langB;
+    const sourceLang = sameSpeech(turn.sourceLang, langB)
+      ? langB
+      : sameSpeech(turn.sourceLang, langA)
+        ? langA
+        : "";
+    const targetLang = sameSpeech(sourceLang, langA) ? langB : sameSpeech(sourceLang, langB) ? langA : "";
+    if (!sourceLang || !targetLang || !turn.sourceText) {
+      return {
+        sourceText: "",
+        translatedText: "",
+        sourceLang: langA,
+        targetLang: langB,
+        audioBase64: "",
+        mime: "audio/mpeg" as const,
+      };
+    }
     const sourceText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
     const translatedText = (turn.translatedText || "").replace(/\s+/g, " ").trim();
     const spoken =
@@ -125,12 +144,27 @@ export class TranslatorService {
     langA: string,
     langB: string,
   ): Promise<Turn | null> {
-    const sourceLang = apiLangCode(langA, "he");
-    const targetLang = apiLangCode(langB, "en");
-    const locked = await this.whisperFor(audio, sourceLang, mime, ext);
-    const text = locked.text;
+    const [detected, auto] = await Promise.all([
+      this.detectSpokenLang(audio, mime, ext, langA, langB),
+      this.whisperAuto(audio, mime, ext),
+    ]);
+    let text = auto.text;
     if (!text) return null;
-    this.logger.log(`translator ${sourceLang}->${targetLang} ${clip(text)}`);
+    const scriptB = hasScript(text, langB) && !hasScript(text, langA);
+    const scriptA = hasScript(text, langA) && !hasScript(text, langB);
+    let sourceLang = "";
+    if (scriptB) sourceLang = langB;
+    else if (scriptA) sourceLang = langA;
+    else if (sameSpeech(detected || "", langB) || sameSpeech(whisperLangCode(auto.language), langB)) sourceLang = langB;
+    else if (sameSpeech(detected || "", langA) || sameSpeech(whisperLangCode(auto.language), langA)) sourceLang = langA;
+    if (!sourceLang) return null;
+    if (uniqueScript(sourceLang) && !hasScript(text, sourceLang)) {
+      const locked = await this.whisperFor(audio, sourceLang, mime, ext);
+      if (locked.text && hasScript(locked.text, sourceLang)) text = locked.text;
+    }
+    if (!text) return null;
+    const targetLang = sameSpeech(sourceLang, langA) ? langB : langA;
+    this.logger.log(`translator-detect ${detected || auto.language || "?"} => ${sourceLang}->${targetLang} ${clip(text)}`);
     return this.finishTurn(text, sourceLang, targetLang);
   }
 
@@ -501,7 +535,7 @@ function pickSpoken(detected: string | null, autoLang: string, text: string, lan
   if (aScript && !bScript) return langA;
   if (hasScript(text, langB) && !hasScript(text, langA)) return langB;
   if (hasScript(text, langA) && !hasScript(text, langB)) return langA;
-  return langA;
+  return "";
 }
 
 function canSpeakTranslation(text: string, sourceLang: string, targetLang: string) {
