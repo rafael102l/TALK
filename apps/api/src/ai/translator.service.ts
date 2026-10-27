@@ -27,6 +27,25 @@ const GEMINI_DETECT_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemi
 const STRICT_TRANSLATE =
   "You are an absolute word-for-word TRANSLATOR, NOT a conversational assistant. Your ONLY job is to translate the input sentence into the target language, exactly as written. Do not shorten, summarize, paraphrase, or replace the sentence with a different one. Do not transliterate. Translate meaning (Hebrew גוף → English body, not guf). If the user asks a question (e.g., 'How do I say X in Hebrew?'), DO NOT answer the question. Translate the question itself directly (e.g., 'איך אומרים X בעברית?'). NEVER output just the answer. Do NOT add pleasantries, notes, context, corrections, or explanations. Return ONLY the direct translation of the input.";
 
+function translateSystem(source: string, target: string, retry = false) {
+  const src = langTitle(source);
+  const dst = langTitle(target);
+  return [
+    STRICT_TRANSLATE,
+    `Input language: ${src}. Output language: ${dst}.`,
+    `Translate the user's sentence into ${dst} only, using that language's own words and usual script.`,
+    "Never transliterate. Never romanize. Never copy the source in Latin letters.",
+    "Example: Hebrew לילה טוב becomes Romanian Noapte bună. Never write Laila Tov.",
+    "Do not answer questions. If the input is a question, translate the question itself.",
+    "Never output instructions or refusals such as 'do not translate' or 'אל תתרגם'.",
+    retry
+      ? `The previous output was a transliteration, still in ${src}, or not a real ${dst} sentence. Write a natural ${dst} translation only.`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 type Turn = {
   sourceText: string;
   translatedText: string;
@@ -311,43 +330,32 @@ export class TranslatorService {
       logTranslateFail(`translator-translate ${sourceLang}->${targetLang} ${(error as Error).message}`);
       return "";
     });
-    if (!translatedText || translatedText === sourceText) {
+    if (!isTargetTranslation(sourceText, translatedText, sourceLang, targetLang)) {
       translatedText = await this.translateFast(sourceText, sourceLang, targetLang, true).catch((error) => {
         logTranslateFail(`translator-translate retry ${sourceLang}->${targetLang} ${(error as Error).message}`);
         return "";
       });
     }
-    if (translatedText === sourceText) translatedText = "";
+    if (!isTargetTranslation(sourceText, translatedText, sourceLang, targetLang)) translatedText = "";
     this.logger.log(`translator ${sourceLang}->${targetLang} ${clip(sourceText)} => ${clip(translatedText)}`);
     return { sourceText, translatedText, sourceLang, targetLang };
   }
 
   private async translateFast(text: string, source: string, target: string, retry = false) {
-    const prompt = [
-      STRICT_TRANSLATE,
-      `Input language: ${speechPrompt(source) || source} (code ${source}). Output language: ${speechPrompt(target) || target} (code ${target}).`,
-      `Translate this exact sentence into ${speechPrompt(target) || target} only, using that dialect's natural wording. Do not shorten it. Do not transliterate. Do not write ${speechPrompt(source) || source}.`,
-      "Do not answer questions. If the input is a question, translate the question itself.",
-      retry
-        ? `The previous output was still in ${speechPrompt(source) || source} or was not a full translation. Translate the original sentence into ${speechPrompt(target) || target} only. Do not answer it.`
-        : "",
-      text,
-    ]
-      .filter(Boolean)
-      .join("\n");
+    const system = translateSystem(source, target, retry);
     const geminiKey = process.env.GEMINI_API_KEY || "";
     if (geminiKey) {
       for (const model of GEMINI_TRANSLATE_MODELS) {
-        const out = await this.viaGeminiTranslate(model, prompt, geminiKey);
-        if (out) return out;
+        const out = await this.viaGeminiTranslate(model, system, text, geminiKey);
+        if (isTargetTranslation(text, out, source, target)) return out;
       }
     } else {
       logTranslateFail("translator-translate missing GEMINI_API_KEY");
     }
     const openaiKey = process.env.OPENAI_API_KEY || "";
     if (openaiKey) {
-      const out = await this.viaOpenAiTranslate(text, source, target, openaiKey);
-      if (out) return out;
+      const out = await this.viaOpenAiTranslate(text, source, target, openaiKey, retry);
+      if (isTargetTranslation(text, out, source, target)) return out;
     } else {
       logTranslateFail("translator-translate missing OPENAI_API_KEY");
     }
@@ -355,7 +363,7 @@ export class TranslatorService {
     return "";
   }
 
-  private async viaGeminiTranslate(model: string, prompt: string, key: string) {
+  private async viaGeminiTranslate(model: string, system: string, text: string, key: string) {
     try {
       const generationConfig: Record<string, unknown> = {
         temperature: 0.0,
@@ -370,7 +378,8 @@ export class TranslatorService {
           headers: { "Content-Type": "application/json" },
           signal: AbortSignal.timeout(4000),
           body: JSON.stringify({
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            systemInstruction: { parts: [{ text: system }] },
+            contents: [{ role: "user", parts: [{ text }] }],
             generationConfig,
           }),
         },
@@ -393,7 +402,7 @@ export class TranslatorService {
     }
   }
 
-  private async viaOpenAiTranslate(text: string, source: string, target: string, key: string) {
+  private async viaOpenAiTranslate(text: string, source: string, target: string, key: string, retry = false) {
     try {
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
@@ -409,7 +418,7 @@ export class TranslatorService {
           messages: [
             {
               role: "system",
-              content: `${STRICT_TRANSLATE} Input language: ${source}. Output language: ${target}.`,
+              content: translateSystem(source, target, retry),
             },
             { role: "user", content: text },
           ],
@@ -497,9 +506,9 @@ function isJunkSpeech(text: string) {
 }
 
 const REFUSAL =
-  /^(?:sorry|i'?m sorry|i am sorry|i cannot|i can't|as an ai|i'?m unable|unable to translate|i do not understand|please provide|could you clarify)/i;
+  /^(?:sorry|i'?m sorry|i am sorry|i cannot|i can't|as an ai|i'?m unable|unable to translate|i do not understand|please provide|could you clarify|do not translate|don't translate|do not transliterate)/i;
 const REFUSAL_HE =
-  /^(?:מצטער|אני מצטער|אני לא יכול|לא ניתן|לא הבנתי|אנא ספק|לא מצליח לתרגם)/;
+  /^(?:מצטער|אני מצטער|אני לא יכול|לא ניתן|לא הבנתי|אנא ספק|לא מצליח לתרגם|אל תתרגם|לא לתרגם)/;
 
 function cleanTranslationOnly(raw: string) {
   let out = (raw || "")
@@ -599,6 +608,189 @@ function canSpeakTranslation(text: string, sourceLang: string, targetLang: strin
   if (uniqueScript(targetLang) && !hasScript(text, targetLang)) return false;
   if (uniqueScript(sourceLang) && hasScript(text, sourceLang) && !hasScript(text, targetLang)) return false;
   return true;
+}
+
+function isTargetTranslation(source: string, output: string, sourceLang: string, targetLang: string) {
+  const original = sanitizeTranscript(source);
+  const out = sanitizeTranscript(output);
+  if (!original || !out || out === original) return false;
+  if (isMetaTranslation(out)) return false;
+  if (!canSpeakTranslation(out, sourceLang, targetLang)) return false;
+  if (looksLikeTransliteration(original, out, sourceLang, targetLang)) return false;
+  return true;
+}
+
+function isMetaTranslation(text: string) {
+  return /do not translate|don't translate|do not transliterate|אל תתרגם|לא לתרגם/i.test(text);
+}
+
+function looksLikeTransliteration(source: string, output: string, sourceLang: string, targetLang: string) {
+  if (!uniqueScript(sourceLang) || uniqueScript(targetLang)) return false;
+  const roman = romanizeSource(source) || (!hasScript(source, sourceLang) ? source : "");
+  if (!roman) return false;
+  const left = foldLatin(roman);
+  const right = foldLatin(output);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (textSimilarity(left, right) >= 0.72) return true;
+  return textSimilarity(consonantKey(left), consonantKey(right)) >= 0.8;
+}
+
+function romanizeSource(text: string) {
+  if (/[\u0590-\u05FF]/.test(text)) return romanizeHebrew(text);
+  if (/[\u0600-\u06FF]/.test(text)) return romanizeArabic(text);
+  if (/[\u0400-\u04FF]/.test(text)) return romanizeCyrillic(text);
+  return "";
+}
+
+const HE_LATIN: Record<string, string> = {
+  א: "a",
+  ב: "b",
+  ג: "g",
+  ד: "d",
+  ה: "a",
+  ו: "o",
+  ז: "z",
+  ח: "h",
+  ט: "t",
+  י: "i",
+  כ: "k",
+  ך: "k",
+  ל: "l",
+  מ: "m",
+  ם: "m",
+  נ: "n",
+  ן: "n",
+  ס: "s",
+  ע: "a",
+  פ: "p",
+  ף: "f",
+  צ: "z",
+  ץ: "z",
+  ק: "k",
+  ר: "r",
+  ש: "sh",
+  ת: "t",
+};
+
+function romanizeHebrew(text: string) {
+  return [...text].map((ch) => (ch === " " ? " " : HE_LATIN[ch] || "")).join("");
+}
+
+const AR_LATIN: Record<string, string> = {
+  ا: "a",
+  ب: "b",
+  ت: "t",
+  ث: "th",
+  ج: "j",
+  ح: "h",
+  خ: "kh",
+  د: "d",
+  ذ: "dh",
+  ر: "r",
+  ز: "z",
+  س: "s",
+  ش: "sh",
+  ص: "s",
+  ض: "d",
+  ط: "t",
+  ظ: "z",
+  ع: "a",
+  غ: "gh",
+  ف: "f",
+  ق: "q",
+  ك: "k",
+  ل: "l",
+  م: "m",
+  ن: "n",
+  ه: "h",
+  و: "w",
+  ي: "y",
+  ة: "a",
+  ى: "a",
+  ء: "a",
+  أ: "a",
+  إ: "i",
+  آ: "a",
+};
+
+function romanizeArabic(text: string) {
+  return [...text].map((ch) => (ch === " " ? " " : AR_LATIN[ch] || "")).join("");
+}
+
+const CY_LATIN: Record<string, string> = {
+  а: "a",
+  б: "b",
+  в: "v",
+  г: "g",
+  д: "d",
+  е: "e",
+  ё: "e",
+  ж: "zh",
+  з: "z",
+  и: "i",
+  й: "i",
+  к: "k",
+  л: "l",
+  м: "m",
+  н: "n",
+  о: "o",
+  п: "p",
+  р: "r",
+  с: "s",
+  т: "t",
+  у: "u",
+  ф: "f",
+  х: "h",
+  ц: "ts",
+  ч: "ch",
+  ш: "sh",
+  щ: "sh",
+  ы: "i",
+  э: "e",
+  ю: "u",
+  я: "ya",
+  і: "i",
+  ї: "i",
+  є: "e",
+  ґ: "g",
+};
+
+function romanizeCyrillic(text: string) {
+  return [...text].map((ch) => {
+    if (ch === " ") return " ";
+    return CY_LATIN[ch.toLowerCase()] || "";
+  }).join("");
+}
+
+function foldLatin(text: string) {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function consonantKey(text: string) {
+  return foldLatin(text).replace(/[aeiouy]+/g, "");
+}
+
+function textSimilarity(a: string, b: string) {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const n = a.length;
+  const m = b.length;
+  const row = Array.from({ length: m + 1 }, (_, j) => j);
+  for (let i = 1; i <= n; i++) {
+    let prev = row[0];
+    row[0] = i;
+    for (let j = 1; j <= m; j++) {
+      const cur = row[j];
+      row[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, row[j], row[j - 1]);
+      prev = cur;
+    }
+  }
+  return 1 - row[m] / Math.max(n, m);
 }
 
 function uniqueScript(lang: string) {
