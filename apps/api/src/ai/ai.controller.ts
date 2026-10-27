@@ -2,7 +2,7 @@ import { Body, Controller, Post, UploadedFile, UseGuards, UseInterceptors } from
 import { FileInterceptor } from "@nestjs/platform-express";
 import { memoryStorage } from "multer";
 import { extname } from "path";
-import { apiLangCode } from "@talk/shared";
+import { apiLangCode, keepSpeechCode } from "@talk/shared";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { TranslateDto, TranslatorDto, TranslatorSpeakDto } from "./translate.dto";
 import { TranslateService } from "./translate.service";
@@ -37,14 +37,14 @@ export class AiController {
       audio: file?.buffer ? Buffer.from(file.buffer) : undefined,
       mime: file?.mimetype || "audio/mp4",
       ext: extname(original).replace(".", "") || "m4a",
-      langA: apiLangCode(body.langA, "he"),
-      langB: apiLangCode(body.langB, "en"),
+      langA: keepSpeechCode(body.langA, "he"),
+      langB: keepSpeechCode(body.langB, "en"),
       gender: body.gender || "male",
     });
   }
 
   @Post("translator/speak")
   async translatorSpeak(@Body() body: TranslatorSpeakDto) {
-    return this.translator.speakTurn(body.text || "", apiLangCode(body.lang, "en"), body.gender || "male");
+    return this.translator.speakTurn(body.text || "", keepSpeechCode(body.lang, "en"), body.gender || "male");
   }
 }

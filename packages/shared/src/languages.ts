@@ -50,6 +50,15 @@ export type LanguageCode =
   | "ar-LB"
   | "ar-MA"
   | "ar-DR"
+  | "ar-BD"
+  | "ar-SY"
+  | "ar-JO"
+  | "ar-DZ"
+  | "ar-TN"
+  | "ar-YE"
+  | "ar-AE"
+  | "ar-SD"
+  | "hi-IN"
   | "pa"
   | "en-GB"
   | "en-AU"
@@ -237,19 +246,19 @@ export const LANGUAGES: Language[] = [
     locale: "ar",
     prompt: "Modern Standard Arabic (Fusha)",
   }),
-  L("ar-PS", "ערבית מדוברת (שטחים)", "Arabic (Levant / Territories)", "العامية الفلسطينية", {
+  L("ar-PS", "ערבית פלסטינית", "Palestinian Arabic", "العامية الفلسطينية", {
     groupHe: "ערבית",
     groupEn: "Arabic",
     rtl: true,
     locale: "ar-PS",
-    prompt: "Levantine Palestinian spoken Arabic",
+    prompt: "Palestinian Levantine spoken Arabic, not Modern Standard Arabic and not a Latin transliteration",
   }),
-  L("ar-IL", "ערבית מדוברת (ישראל)", "Arabic (Israel)", "العامية الإسرائيلية", {
+  L("ar-IL", "ערבית מדוברת", "Spoken Arabic", "العامية", {
     groupHe: "ערבית",
     groupEn: "Arabic",
     rtl: true,
     locale: "ar-IL",
-    prompt: "Israeli spoken Arabic",
+    prompt: "Spoken colloquial Arabic (Amiya) as used in daily speech in Israel and the Levant, not Fusha",
   }),
   L("ar-EG", "ערבית מצרית", "Arabic (Egypt)", "العامية المصرية", {
     groupHe: "ערבית",
@@ -258,12 +267,69 @@ export const LANGUAGES: Language[] = [
     locale: "ar-EG",
     prompt: "Egyptian Arabic (Masri)",
   }),
-  L("ar-SA", "ערבית סעודית / בדואית", "Arabic (Saudi / Bedouin)", "العربية السعودية", {
+  L("ar-SA", "ערבית סעודית", "Saudi Arabic", "العربية السعودية", {
     groupHe: "ערבית",
     groupEn: "Arabic",
     rtl: true,
     locale: "ar-SA",
-    prompt: "Saudi / Bedouin / Gulf Arabic",
+    prompt: "Saudi Arabic (Hijazi / Najdi), not Bedouin Negev speech",
+  }),
+  L("ar-BD", "ערבית בדואית", "Bedouin Arabic", "العربية البدوية", {
+    groupHe: "ערבית",
+    groupEn: "Arabic",
+    rtl: true,
+    locale: "ar-IL",
+    whisper: "ar",
+    prompt: "Bedouin Arabic as spoken by Bedouin communities in the Negev, Sinai, and the Levant. Not Fusha and not Egyptian Arabic",
+  }),
+  L("ar-SY", "ערבית סורית", "Syrian Arabic", "العامية السورية", {
+    groupHe: "ערבית",
+    groupEn: "Arabic",
+    rtl: true,
+    locale: "ar-SY",
+    prompt: "Syrian Levantine spoken Arabic",
+  }),
+  L("ar-JO", "ערבית ירדנית", "Jordanian Arabic", "العامية الأردنية", {
+    groupHe: "ערבית",
+    groupEn: "Arabic",
+    rtl: true,
+    locale: "ar-JO",
+    prompt: "Jordanian Levantine spoken Arabic",
+  }),
+  L("ar-DZ", "ערבית אלג'יראית", "Algerian Arabic", "الدارجة الجزائرية", {
+    groupHe: "ערבית",
+    groupEn: "Arabic",
+    rtl: true,
+    locale: "ar-DZ",
+    prompt: "Algerian Arabic (Darija)",
+  }),
+  L("ar-TN", "ערבית טוניסאית", "Tunisian Arabic", "الدارجة التونسية", {
+    groupHe: "ערבית",
+    groupEn: "Arabic",
+    rtl: true,
+    locale: "ar-TN",
+    prompt: "Tunisian Arabic (Darija)",
+  }),
+  L("ar-YE", "ערבית תימנית", "Yemeni Arabic", "العربية اليمنية", {
+    groupHe: "ערבית",
+    groupEn: "Arabic",
+    rtl: true,
+    locale: "ar-YE",
+    prompt: "Yemeni Arabic",
+  }),
+  L("ar-AE", "ערבית אמירתית", "Emirati Arabic", "العربية الإماراتية", {
+    groupHe: "ערבית",
+    groupEn: "Arabic",
+    rtl: true,
+    locale: "ar-AE",
+    prompt: "Emirati / Gulf Arabic",
+  }),
+  L("ar-SD", "ערבית סודאנית", "Sudanese Arabic", "العربية السودانية", {
+    groupHe: "ערבית",
+    groupEn: "Arabic",
+    rtl: true,
+    locale: "ar-SD",
+    prompt: "Sudanese Arabic",
   }),
   L("ar-LB", "ערבית לבנונית", "Arabic (Lebanon)", "العامية اللبنانية", {
     groupHe: "ערבית",
@@ -299,7 +365,15 @@ export const LANGUAGES: Language[] = [
     groupHe: "הודית",
     groupEn: "Hindi",
     locale: "hi-IN",
-    prompt: "Hindi",
+    prompt: "Hindi in Devanagari script. Never romanize. Never write Latin letters",
+  }),
+  L("hi-IN", "הינדית (הודו)", "Hindi (India)", "हिन्दी", {
+    base: "hi",
+    groupHe: "הודית",
+    groupEn: "Hindi",
+    locale: "hi-IN",
+    whisper: "hi",
+    prompt: "Indian Hindi in Devanagari script. Never romanize",
   }),
   L("pa", "פנג'אבי", "Punjabi", "ਪੰਜਾਬੀ", {
     base: "hi",
@@ -411,8 +485,16 @@ export function isAppLangCode(value: string): value is AppLangCode {
 /** ISO-639-1 codes the production translator accepts (he, en, ar, ru, ...). */
 export const API_LANG_CODES = [...APP_LANGS] as AppLangCode[];
 
+/** Keep full picker/dialect tags for translator A/B. Never collapse `ar-DR` → `ar`. */
+export function keepSpeechCode(value?: string | null, fallback = ""): string {
+  const canon = canonicalSpeech(value);
+  if (canon) return canon;
+  const raw = (value || "").trim().toLowerCase().replace(/_/g, "-");
+  return raw || fallback;
+}
+
 /**
- * Map a picker / device / dialect tag to the 2-letter code the translator API allows.
+ * Map a picker / device / dialect tag to the 2-letter code the walkie translator allows.
  * `en-AU` → `en`, `ar-DR` → `ar`, `ru-RU` → `ru`.
  */
 export function apiLangCode(value?: string | null, fallback: AppLangCode = "en"): AppLangCode {
@@ -559,13 +641,24 @@ const NAME_ALIASES: Record<string, LanguageCode> = {
   maghreb: "ar-MA",
   מרוקאית: "ar-MA",
   saudi: "ar-SA",
-  בדואית: "ar-SA",
+  סעודית: "ar-SA",
+  bedouin: "ar-BD",
+  בדואית: "ar-BD",
+  בדואי: "ar-BD",
+  بدوي: "ar-BD",
+  بدوية: "ar-BD",
   palestinian: "ar-PS",
+  פלסטינית: "ar-PS",
   israeli: "ar-IL",
+  מדוברת: "ar-IL",
+  عامية: "ar-IL",
+  amiya: "ar-IL",
+  spoken: "ar-IL",
   hindi: "hi",
   הינדית: "hi",
   הינדי: "hi",
   הודית: "hi",
+  हिन्दी: "hi",
   punjabi: "pa",
   "פנג'אבי": "pa",
   urdu: "ur",
