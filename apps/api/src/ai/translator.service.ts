@@ -140,24 +140,31 @@ export class TranslatorService {
     langA: string,
     langB: string,
   ): Promise<Turn | null> {
-    const [detected, auto] = await Promise.all([
+    const [detectedAB, detectedBA, auto] = await Promise.all([
       this.detectSpokenLang(audio, mime, ext, langA, langB),
+      this.detectSpokenLang(audio, mime, ext, langB, langA),
       this.whisperAuto(audio, mime, ext, langA, langB),
     ]);
     const autoLang = matchChoice(whisperLangCode(auto.language), langA, langB);
-    let text = keepPairTranscript(auto.text, langA, langB);
-    let sourceLang = pickSpoken(detected, autoLang, text, langA, langB);
+    const textAuto = keepPairTranscript(auto.text, langA, langB);
+    const scriptLang = pickByScript(textAuto, langA, langB);
+    const geminiLang = detectedAB && detectedBA && detectedAB === detectedBA ? detectedAB : "";
+    let sourceLang = scriptLang || autoLang || geminiLang;
+    if (scriptLang) sourceLang = scriptLang;
+    let text = textAuto;
     if (sourceLang && (!text || scriptContradicts(text, sourceLang, langA, langB))) {
       const locked = await this.whisperFor(audio, sourceLang, mime, ext);
-      const lockedText = keepPairTranscript(locked.text, langA, langB);
-      if (lockedText && !scriptContradicts(lockedText, sourceLang, langA, langB)) text = lockedText;
+      const lockedText = sanitizeTranscript(locked.text);
+      if (lockedText && !isJunkSpeech(lockedText)) text = lockedText;
     }
     if (!sourceLang || !text) return null;
-    sourceLang = pickSpoken(detected, autoLang, text, langA, langB);
-    if (!sourceLang || scriptContradicts(text, sourceLang, langA, langB)) return null;
+    if (scriptContradicts(textAuto, sourceLang, langA, langB) && scriptLang) {
+      sourceLang = scriptLang;
+      text = textAuto;
+    }
     const targetLang = otherLang(sourceLang, langA, langB);
     if (!targetLang) return null;
-    this.logger.log(`translator-detect ${detected || autoLang || "?"} => ${sourceLang}->${targetLang} ${clip(text)}`);
+    this.logger.log(`translator-detect ${geminiLang || autoLang || scriptLang || "?"} => ${sourceLang}->${targetLang} ${clip(text)}`);
     return this.finishTurn(text, sourceLang, targetLang);
   }
 
@@ -165,10 +172,10 @@ export class TranslatorService {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return null;
     const constraint = [
-      `HARD CONSTRAINT: the speaker used exactly one of these two languages, never any other.`,
-      `Valid codes: "${langA}" (${langTitle(langA)}) or "${langB}" (${langTitle(langB)}).`,
-      `If you cannot tell which of those two was spoken, return {"lang":"unknown"}.`,
-      `Never return English, Hebrew, or any other language unless that exact code is one of the two valid codes.`,
+      "The two languages below are equally likely. Do not prefer the first one listed.",
+      `Valid codes only: "${langA}" (${langTitle(langA)}) and "${langB}" (${langTitle(langB)}).`,
+      `Return JSON {"lang":"${langA}"} or {"lang":"${langB}"} or {"lang":"unknown"}.`,
+      "If you are not sure which of the two was spoken, return unknown. Never guess.",
       "Do not transcribe. Do not translate.",
     ].join(" ");
     for (const model of GEMINI_DETECT_MODELS) {
@@ -177,13 +184,6 @@ export class TranslatorService {
           temperature: 0.0,
           maxOutputTokens: 32,
           responseMimeType: "application/json",
-          responseSchema: {
-            type: "OBJECT",
-            properties: {
-              lang: { type: "STRING", enum: [langA, langB, "unknown"] },
-            },
-            required: ["lang"],
-          },
         };
         if (model.includes("2.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
         const res = await fetch(
@@ -245,7 +245,7 @@ export class TranslatorService {
       form.append(
         "prompt",
         langA && langB
-          ? `HARD CONSTRAINT: this recording is only ${langTitle(langA)} or ${langTitle(langB)}. Transcribe in the original script of whichever of those two was spoken. Do not translate. Do not write English unless English is one of those two languages. Do not use any other language.`
+          ? `The recording is equally likely to be ${langTitle(langB)} or ${langTitle(langA)}. Transcribe in the original script of whichever of those two was spoken. Do not prefer the first named language. Do not translate. Do not write English unless English is one of those two languages.`
           : "Transcribe every spoken word exactly in the original language. Do not translate. Do not paraphrase. Do not shorten.",
       );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
