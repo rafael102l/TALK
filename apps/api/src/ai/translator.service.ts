@@ -48,7 +48,7 @@ export class TranslatorService {
   }): Promise<Turn> {
     const langA = keepLang(input.langA, "he");
     const langB = keepLang(input.langB, "en");
-    const empty = { sourceText: "", translatedText: "", sourceLang: langA, targetLang: langB };
+    const empty = { sourceText: "", translatedText: "", sourceLang: "", targetLang: "" };
     const preset = (input.text || "").replace(/\s+/g, " ").trim();
     if (preset) {
       const sourceLang = pickSpoken(null, "", preset, langA, langB);
@@ -88,8 +88,8 @@ export class TranslatorService {
       return {
         sourceText: "",
         translatedText: "",
-        sourceLang: langA,
-        targetLang: langB,
+        sourceLang: "",
+        targetLang: "",
         audioBase64: "",
         mime: "audio/mpeg" as const,
       };
@@ -144,28 +144,31 @@ export class TranslatorService {
       this.detectSpokenLang(audio, mime, ext, langA, langB),
       this.whisperAuto(audio, mime, ext, langA, langB),
     ]);
-    let text = auto.text;
-    let sourceLang = pickSpoken(detected, auto.language, text, langA, langB);
-    if (!text && sourceLang) {
+    const autoLang = matchChoice(whisperLangCode(auto.language), langA, langB);
+    let text = keepPairTranscript(auto.text, langA, langB);
+    let sourceLang = pickSpoken(detected, autoLang, text, langA, langB);
+    if (sourceLang && (!text || scriptContradicts(text, sourceLang, langA, langB))) {
       const locked = await this.whisperFor(audio, sourceLang, mime, ext);
-      if (locked.text) text = locked.text;
+      const lockedText = keepPairTranscript(locked.text, langA, langB);
+      if (lockedText && !scriptContradicts(lockedText, sourceLang, langA, langB)) text = lockedText;
     }
-    if (!text) return null;
-    sourceLang = pickSpoken(detected, auto.language, text, langA, langB);
-    if (!sourceLang) return null;
+    if (!sourceLang || !text) return null;
+    sourceLang = pickSpoken(detected, autoLang, text, langA, langB);
+    if (!sourceLang || scriptContradicts(text, sourceLang, langA, langB)) return null;
     const targetLang = otherLang(sourceLang, langA, langB);
     if (!targetLang) return null;
-    this.logger.log(`translator-detect ${detected || auto.language || "?"} => ${sourceLang}->${targetLang} ${clip(text)}`);
+    this.logger.log(`translator-detect ${detected || autoLang || "?"} => ${sourceLang}->${targetLang} ${clip(text)}`);
     return this.finishTurn(text, sourceLang, targetLang);
   }
 
   private async detectSpokenLang(audio: Buffer, mime: string, ext: string, langA: string, langB: string) {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return null;
-    const prompt = [
-      `The speaker used exactly one of these two: ${langTitle(langA)} or ${langTitle(langB)}.`,
-      "If they are dialects of the same language, pick the dialect that was actually spoken.",
-      `Return JSON: {"lang":"${langA}"} or {"lang":"${langB}"} using that exact code. Never a generic base code.`,
+    const constraint = [
+      `HARD CONSTRAINT: the speaker used exactly one of these two languages, never any other.`,
+      `Valid codes: "${langA}" (${langTitle(langA)}) or "${langB}" (${langTitle(langB)}).`,
+      `If you cannot tell which of those two was spoken, return {"lang":"unknown"}.`,
+      `Never return English, Hebrew, or any other language unless that exact code is one of the two valid codes.`,
       "Do not transcribe. Do not translate.",
     ].join(" ");
     for (const model of GEMINI_DETECT_MODELS) {
@@ -174,6 +177,13 @@ export class TranslatorService {
           temperature: 0.0,
           maxOutputTokens: 32,
           responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              lang: { type: "STRING", enum: [langA, langB, "unknown"] },
+            },
+            required: ["lang"],
+          },
         };
         if (model.includes("2.5")) generationConfig.thinkingConfig = { thinkingBudget: 0 };
         const res = await fetch(
@@ -183,11 +193,12 @@ export class TranslatorService {
             headers: { "Content-Type": "application/json" },
             signal: AbortSignal.timeout(6000),
             body: JSON.stringify({
+              systemInstruction: { parts: [{ text: constraint }] },
               contents: [
                 {
                   role: "user",
                   parts: [
-                    { text: prompt },
+                    { text: constraint },
                     { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
                   ],
                 },
@@ -210,7 +221,9 @@ export class TranslatorService {
         const end = raw.lastIndexOf("}");
         if (start < 0 || end <= start) continue;
         const parsed = JSON.parse(raw.slice(start, end + 1)) as { lang?: string };
-        const lang = matchChoice(String(parsed.lang || ""), langA, langB);
+        const picked = String(parsed.lang || "").trim();
+        if (!picked || picked.toLowerCase() === "unknown") continue;
+        const lang = matchChoice(picked, langA, langB);
         if (lang) return lang;
       } catch (error) {
         this.logger.warn(`translator detect ${model} ${(error as Error).message}`);
@@ -232,7 +245,7 @@ export class TranslatorService {
       form.append(
         "prompt",
         langA && langB
-          ? `The speaker used either ${langTitle(langA)} or ${langTitle(langB)}. Transcribe every spoken word exactly in that original dialect. Do not translate. Do not paraphrase. Do not shorten.`
+          ? `HARD CONSTRAINT: this recording is only ${langTitle(langA)} or ${langTitle(langB)}. Transcribe in the original script of whichever of those two was spoken. Do not translate. Do not write English unless English is one of those two languages. Do not use any other language.`
           : "Transcribe every spoken word exactly in the original language. Do not translate. Do not paraphrase. Do not shorten.",
       );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
@@ -470,6 +483,16 @@ function sanitizeTranscript(text: string) {
   return (text || "").replace(/\s+/g, " ").trim();
 }
 
+const JUNK_SPEECH =
+  /^(thank you( for watching)?|thanks( for (watching|listening))?|please subscribe|bye|you|music|applause|thank you\.|thanks\.?|תודה( רבה)?|субтитры|продолжение следует)[\s.!?]*$/i;
+
+function isJunkSpeech(text: string) {
+  const value = sanitizeTranscript(text);
+  if (value.length < 2) return true;
+  if (/^[\s.,;:!?'"\-–—…]+$/.test(value)) return true;
+  return JUNK_SPEECH.test(value);
+}
+
 const REFUSAL =
   /^(?:sorry|i'?m sorry|i am sorry|i cannot|i can't|as an ai|i'?m unable|unable to translate|i do not understand|please provide|could you clarify)/i;
 const REFUSAL_HE =
@@ -531,18 +554,40 @@ function langTitle(code: string) {
   return `${name} (${code})`;
 }
 
+function pickByScript(text: string, langA: string, langB: string) {
+  if (!text) return "";
+  const onlyB = hasScript(text, langB) && !hasScript(text, langA);
+  const onlyA = hasScript(text, langA) && !hasScript(text, langB);
+  if (onlyB) return langB;
+  if (onlyA) return langA;
+  return "";
+}
+
+function scriptContradicts(text: string, chosen: string, langA: string, langB: string) {
+  if (!text || !chosen) return false;
+  const other = otherLang(chosen, langA, langB);
+  if (!other) return false;
+  if (hasScript(text, other) && !hasScript(text, chosen)) return true;
+  if (uniqueScript(chosen) && !hasScript(text, chosen) && hasScript(text, other)) return true;
+  return false;
+}
+
+function keepPairTranscript(text: string, langA: string, langB: string) {
+  const value = sanitizeTranscript(text);
+  if (isJunkSpeech(value)) return "";
+  if (pickByScript(value, langA, langB)) return value;
+  if (hasScript(value, langA) || hasScript(value, langB)) return value;
+  if (!uniqueScript(langA) && !uniqueScript(langB)) return value;
+  return "";
+}
+
 function pickSpoken(detected: string | null, autoLang: string, text: string, langA: string, langB: string) {
+  const script = pickByScript(text, langA, langB);
+  if (script) return script;
   const gemini = matchChoice(detected || "", langA, langB);
-  if (gemini) return gemini;
-  const code = matchChoice(whisperLangCode(autoLang), langA, langB);
-  if (code) return code;
-  if (sameSpeech(langA, langB)) return "";
-  const aScript = uniqueScript(langA) && hasScript(text, langA);
-  const bScript = uniqueScript(langB) && hasScript(text, langB);
-  if (bScript && !aScript) return langB;
-  if (aScript && !bScript) return langA;
-  if (hasScript(text, langB) && !hasScript(text, langA)) return langB;
-  if (hasScript(text, langA) && !hasScript(text, langB)) return langA;
+  if (gemini && !scriptContradicts(text, gemini, langA, langB)) return gemini;
+  const code = matchChoice(autoLang || whisperLangCode(autoLang), langA, langB);
+  if (code && !scriptContradicts(text, code, langA, langB)) return code;
   return "";
 }
 
