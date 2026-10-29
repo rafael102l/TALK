@@ -38,6 +38,9 @@ export class PushService {
         "voipToken" = COALESCE(EXCLUDED."voipToken", "CallDevice"."voipToken"),
         "updatedAt" = CURRENT_TIMESTAMP
     `;
+    if (fcmToken) {
+      await this.prisma.$executeRaw`UPDATE "User" SET "fcmToken" = ${fcmToken} WHERE "id" = ${userId}`;
+    }
     this.logger.log(`call device saved user=${userId} fcm=${Boolean(fcmToken)} voip=${Boolean(voipToken)}`);
     return { ok: true };
   }
@@ -99,10 +102,7 @@ export class PushService {
     });
     try {
       await this.ensureTable();
-      const rows = await this.prisma.$queryRaw<Array<{ fcmToken: string | null }>>`
-        SELECT "fcmToken" FROM "CallDevice" WHERE "userId" = ${userId}
-      `;
-      const token = rows[0]?.fcmToken?.trim();
+      const token = (await this.callDevice(userId)).fcmToken;
       if (!token) {
         this.logger.warn(`chat FCM skipped — no fcmToken user=${userId} id=${transmissionId}`);
       } else if (await this.sendFcmDisplay(token, title, body, data)) {
@@ -146,10 +146,8 @@ export class PushService {
       where: { id: userId },
       select: { expoPushToken: true },
     });
-    const rows = await this.prisma.$queryRaw<Array<{ fcmToken: string | null; voipToken: string | null }>>`
-      SELECT "fcmToken", "voipToken" FROM "CallDevice" WHERE "userId" = ${userId}
-    `;
-    const device = rows[0];
+    const device = await this.callDevice(userId);
+    const fcm = device.fcmToken;
     const data = {
       type: "incoming_call",
       callId: incoming.callId,
@@ -161,27 +159,24 @@ export class PushService {
       video: incoming.video ? "1" : "0",
     };
     let via = "";
-    if (device?.fcmToken) {
-      if (await this.sendFcmCall(device.fcmToken, data, incoming.callerName, incoming.callerPhone || "שיחה נכנסת")) {
+    if (fcm) {
+      if (await this.sendFcmCall(fcm, data, incoming.callerName, incoming.callerPhone || "שיחה נכנסת")) {
         via = "fcm";
       }
     } else {
       this.logger.warn(`call FCM skipped — no fcmToken user=${userId} id=${incoming.callId}`);
     }
-    if (!via && device?.voipToken && (await this.sendVoip(device.voipToken, data))) via = "voip";
+    if (!via && device.voipToken && (await this.sendVoip(device.voipToken, data))) via = "voip";
     if (!via && user?.expoPushToken && (await this.sendExpoCall(user.expoPushToken, incoming, data))) via = "expo";
     if (via) this.logger.log(`call wake user=${userId} id=${incoming.callId} via=${via}`);
-    else this.logger.warn(`call wake missed user=${userId} id=${incoming.callId} fcm=${Boolean(device?.fcmToken)} expo=${Boolean(user?.expoPushToken)}`);
+    else this.logger.warn(`call wake missed user=${userId} id=${incoming.callId} fcm=${Boolean(device.fcmToken)} expo=${Boolean(user?.expoPushToken)}`);
     return Boolean(via);
   }
 
   async notifyCallEnded(userId: string, callId: string, reason = "cancelled") {
     try {
       await this.ensureTable();
-      const rows = await this.prisma.$queryRaw<Array<{ fcmToken: string | null }>>`
-        SELECT "fcmToken" FROM "CallDevice" WHERE "userId" = ${userId}
-      `;
-      const token = rows[0]?.fcmToken?.trim();
+      const token = (await this.callDevice(userId)).fcmToken;
       const data = { type: "call_ended", callId, reason: reason || "cancelled" };
       if (!token) this.logger.warn(`call end FCM skipped — no fcmToken user=${userId} id=${callId}`);
       else if (await this.sendFcmCall(token, data, "TALK", "השיחה הסתיימה")) {
@@ -260,6 +255,21 @@ export class PushService {
     }
   }
 
+  private async callDevice(userId: string) {
+    const rows = await this.prisma.$queryRaw<Array<{ fcmToken: string | null; voipToken: string | null }>>`
+      SELECT "fcmToken", "voipToken" FROM "CallDevice" WHERE "userId" = ${userId}
+    `;
+    const row = rows[0];
+    let fcm = row?.fcmToken?.trim() || "";
+    if (!fcm) {
+      const users = await this.prisma.$queryRaw<Array<{ fcmToken: string | null }>>`
+        SELECT "fcmToken" FROM "User" WHERE "id" = ${userId}
+      `;
+      fcm = users[0]?.fcmToken?.trim() || "";
+    }
+    return { fcmToken: fcm, voipToken: row?.voipToken?.trim() || "" };
+  }
+
   private ensureTable() {
     this.tableReady ??= this.prisma
       .$executeRawUnsafe(
@@ -269,6 +279,9 @@ export class PushService {
           "voipToken" TEXT,
           "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`,
+      )
+      .then(() =>
+        this.prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "fcmToken" TEXT`),
       )
       .then(() => undefined)
       .catch((error: Error) => {
