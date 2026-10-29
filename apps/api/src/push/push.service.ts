@@ -62,7 +62,7 @@ export class PushService {
     if (!userId || !transmissionId) return false;
     const key = `${userId}:${transmissionId}`;
     const now = Date.now();
-    if ((this.lastChatPushAt.get(key) ?? 0) > now - 8_000) return true;
+    if ((this.lastChatPushAt.get(key) ?? 0) > now - 2_000) return true;
     this.lastChatPushAt.set(key, now);
     if (this.lastChatPushAt.size > 200) {
       for (const [id, at] of this.lastChatPushAt) {
@@ -331,7 +331,7 @@ export class PushService {
             defaultSound: false,
             visibility: "public",
             priority: "high",
-            tag: data.transmissionId || "talk-chat",
+            tag: `walkie-${data.transmissionId || "clip"}`,
           },
         },
         apns: {

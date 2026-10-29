@@ -353,21 +353,16 @@ export class TransmissionsService {
       if (!sameLanguage) {
         textOnly += 1;
         if (hear) dubbed.push({ targetId: target.userId, language: hear });
-        if (!this.realtime.hasLiveSocket(target.userId)) {
-          this.logger.warn(`No live socket for transmission:ready user=${target.userId} — sending FCM`);
-          void this.push.notifyOfflineMessage(target.userId, {
-            ...payload,
-            language: hear || payload.language,
-            kind: "walkie",
-          });
-        }
+        void this.push.notifyOfflineMessage(target.userId, {
+          ...payload,
+          language: hear || payload.language,
+          kind: "walkie",
+        });
         continue;
       }
       const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
       this.logger.log(`Deliver walkie ${transmission.id} -> ${target.userId} reached=${reached}`);
-      if (!reached) {
-        void this.push.notifyOfflineMessage(target.userId, { ...payload, kind: "walkie" });
-      }
+      void this.push.notifyOfflineMessage(target.userId, { ...payload, kind: "walkie" });
       void this.prisma.transmissionTarget.update({
         where: { id: target.id },
         data: { deliveredAt: new Date() },
@@ -446,7 +441,7 @@ export class TransmissionsService {
           };
           const reached = this.realtime.emitToUser(row.targetId, SOCKET_EVENTS.TRANSMISSION_READY, dubbedPayload);
           this.logger.log(`Deliver walkie ${transmissionId} -> ${row.targetId} reached=${reached}`);
-          if (!reached) void this.push.notifyOfflineMessage(row.targetId, dubbedPayload);
+          void this.push.notifyOfflineMessage(row.targetId, dubbedPayload);
           this.logger.log(`Walkie dub ${transmissionId} ${speak}->${language} user=${row.targetId} tts`);
         }
       }
@@ -733,7 +728,7 @@ export class TransmissionsService {
         } else if (reached) {
           deliveredJobs.push(this.noteDelivered(target.id, sender.id, transmission.id, target.userId));
         }
-        if (!reached) {
+        if (delivery === "walkie" || !reached) {
           void this.push.notifyOfflineMessage(target.userId, {
             transmissionId: transmission.id,
             channelId: transmission.channelId,
