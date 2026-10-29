@@ -14,7 +14,7 @@ export class MetaController {
 
   @Get("health")
   health() {
-    return { ok: true, name: "talk-api" };
+    return { ok: true, name: "talk-api", chatPush: "display-fcm" };
   }
 
   @Get("install")

@@ -1,7 +1,7 @@
 import { createSign, randomUUID } from "crypto";
 import { connect } from "http2";
 import { Injectable, Logger } from "@nestjs/common";
-import { getApps } from "firebase-admin/app";
+import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
 import { PrismaService } from "../prisma/prisma.service";
 
@@ -19,6 +19,7 @@ export class PushService {
   private tableReady: Promise<void> | null = null;
   private apnsToken = "";
   private apnsTokenAt = 0;
+  private lastChatPushAt = new Map<string, number>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -36,6 +37,92 @@ export class PushService {
         "updatedAt" = CURRENT_TIMESTAMP
     `;
     return { ok: true };
+  }
+
+  /** Visible lock-screen FCM when the recipient has no live socket. */
+  async notifyOfflineMessage(
+    userId: string,
+    input: {
+      transmissionId?: string;
+      kind?: string;
+      type?: string;
+      senderName?: string;
+      senderPhone?: string;
+      senderId?: string;
+      senderAvatarUrl?: string | null;
+      channelId?: string;
+      audioUrl?: string | null;
+      originalText?: string | null;
+      translatedText?: string | null;
+      speakLang?: string;
+      language?: string;
+    },
+  ) {
+    const transmissionId = String(input.transmissionId || "").trim();
+    if (!userId || !transmissionId) return false;
+    const key = `${userId}:${transmissionId}`;
+    const now = Date.now();
+    if ((this.lastChatPushAt.get(key) ?? 0) > now - 8_000) return true;
+    this.lastChatPushAt.set(key, now);
+    if (this.lastChatPushAt.size > 200) {
+      for (const [id, at] of this.lastChatPushAt) {
+        if (now - at > 60_000) this.lastChatPushAt.delete(id);
+      }
+    }
+    const walkie = input.kind === "walkie" || input.type === "walkie";
+    const name = (input.senderName || input.senderPhone || "TALK").trim() || "TALK";
+    const text = String(input.translatedText || input.originalText || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+    const title = name;
+    const body = text || (walkie ? "ווקי-טוקי" : "הודעה חדשה");
+    const data = stringData({
+      type: walkie ? "walkie" : "message",
+      kind: walkie ? "walkie" : input.kind || "text",
+      title,
+      body,
+      transmissionId,
+      channelId: input.channelId || "",
+      senderId: input.senderId || "",
+      senderName: name,
+      senderPhone: input.senderPhone || "",
+      senderAvatarUrl: input.senderAvatarUrl || "",
+      audioUrl: input.audioUrl || "",
+      originalText: input.originalText || "",
+      translatedText: input.translatedText || "",
+      speakLang: input.speakLang || "",
+      language: input.language || "",
+    });
+    try {
+      await this.ensureTable();
+      const rows = await this.prisma.$queryRaw<Array<{ fcmToken: string | null }>>`
+        SELECT "fcmToken" FROM "CallDevice" WHERE "userId" = ${userId}
+      `;
+      const token = rows[0]?.fcmToken?.trim();
+      if (token && (await this.sendFcmDisplay(token, title, body, data))) {
+        this.logger.log(`chat fcm user=${userId} id=${transmissionId} kind=${data.kind}`);
+        return true;
+      }
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { expoPushToken: true },
+      });
+      const expo = user?.expoPushToken?.trim();
+      if (!expo) {
+        this.logger.warn(
+          `chat FCM skipped — no token user=${userId} id=${transmissionId} fcm=${Boolean(token)}`,
+        );
+        return false;
+      }
+      const ok = await this.sendExpoChat(expo, title, body, data);
+      if (ok) this.logger.log(`chat expo user=${userId} id=${transmissionId} kind=${data.kind}`);
+      else this.logger.warn(`chat wake missed user=${userId} id=${transmissionId}`);
+      return ok;
+    } catch (error) {
+      this.logger.warn(`chat wake failed: ${(error as Error).message}`);
+      return false;
+    }
   }
 
   /** Wake a phone that has no live socket. Returns false when there is no token to try. */
@@ -175,9 +262,99 @@ export class PushService {
     }
   }
 
+  private ensureAdmin() {
+    if (getApps().length) return true;
+    try {
+      const raw = process.env.FIREBASE_SERVICE_ACCOUNT?.trim() || "";
+      const b64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64?.trim() || "";
+      const json = b64
+        ? Buffer.from(b64, "base64").toString("utf8")
+        : raw.startsWith("{")
+          ? raw
+          : "";
+      if (!json) return false;
+      initializeApp({ credential: cert(JSON.parse(json) as Record<string, string>) });
+      this.logger.log("FCM admin ready");
+      return true;
+    } catch (error) {
+      this.logger.warn(`FCM admin init failed: ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  private async sendExpoChat(to: string, title: string, body: string, data: Record<string, string>) {
+    const walkie = data.type === "walkie" || data.kind === "walkie";
+    try {
+      const response = await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to,
+          sound: "walkie_talkie",
+          title,
+          body,
+          data,
+          channelId: walkie ? "walkie_talkie_channel" : "talk-ptt",
+          priority: "high",
+          ttl: 300,
+        }),
+      });
+      return response.ok;
+    } catch (error) {
+      this.logger.warn(`chat expo failed: ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  private async sendFcmDisplay(token: string, title: string, body: string, data: Record<string, string>) {
+    try {
+      if (!this.ensureAdmin()) {
+        this.logger.warn("FCM display skipped — Firebase admin is not ready");
+        return false;
+      }
+      const walkie = data.type === "walkie" || data.kind === "walkie";
+      const channelId = "walkie_talkie_channel";
+      await getMessaging().send({
+        token,
+        data,
+        notification: { title, body },
+        android: {
+          priority: "high",
+          ttl: 86_400_000,
+          collapseKey: `chat-${(data.transmissionId || "msg").slice(0, 24)}`,
+          directBootOk: true,
+          notification: {
+            title,
+            body,
+            channelId,
+            sound: "walkie_talkie",
+            defaultSound: false,
+            visibility: "public",
+            priority: "high",
+            tag: data.transmissionId || "talk-chat",
+          },
+        },
+        apns: {
+          payload: {
+            aps: {
+              alert: { title, body },
+              sound: "walkie_talkie.mp3",
+            },
+          },
+          headers: { "apns-priority": "10" },
+        },
+      });
+      this.logger.log(`FCM display channel=${channelId} walkie=${walkie}`);
+      return true;
+    } catch (error) {
+      this.logger.warn(`FCM display failed: ${(error as Error).message}`);
+      return false;
+    }
+  }
+
   private async sendFcmCall(token: string, data: Record<string, string>, title: string, body: string) {
     try {
-      if (!getApps().length) return false;
+      if (!this.ensureAdmin()) return false;
       await getMessaging().send({
         token,
         data,
@@ -205,39 +382,13 @@ export class PushService {
     data: Record<string, string>,
     image?: string | null,
   ) {
-    try {
-      if (!getApps().length) {
-        this.logger.warn("FCM message skipped — Firebase admin is not ready");
-        return false;
-      }
-      const walkie = data.type === "walkie";
-      const channelId = walkie ? "walkie_talkie_channel" : "talk-ptt";
-      const sound = walkie ? "walkie_talkie" : "default";
-      await getMessaging().send({
-        token,
-        data,
-        notification: { title, body, imageUrl: image || undefined },
-        android: {
-          priority: "high",
-          notification: {
-            title,
-            body,
-            channelId,
-            sound,
-            defaultSound: !walkie,
-            imageUrl: image || undefined,
-          },
-        },
-        apns: {
-          payload: { aps: { sound: walkie ? "walkie_talkie.mp3" : "default" } },
-        },
-      });
-      this.logger.log(`FCM ${data.type || "message"} channel=${channelId}`);
-      return true;
-    } catch (error) {
-      this.logger.warn(`FCM message failed: ${(error as Error).message}`);
-      return false;
-    }
+    return this.sendFcmDisplay(token, title, body, {
+      ...data,
+      title,
+      body,
+      type: data.type || "message",
+      ...(image ? { image } : {}),
+    });
   }
 
   private async sendVoip(token: string, data: Record<string, string>) {

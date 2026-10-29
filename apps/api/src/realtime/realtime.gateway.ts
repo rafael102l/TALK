@@ -587,15 +587,27 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     return sent > 0;
   }
 
+  hasLiveSocket(userId: string) {
+    if (!userId || !this.server?.sockets) return false;
+    return this.connectedCount(userId) > 0;
+  }
+
   emitToUser(userId: string, event: string, payload: unknown, retry = true): boolean {
     const room = `user:${userId}`;
     if (!this.server?.sockets) {
       this.logger.debug(`Socket server not ready for ${event} user=${userId}`);
+      this.wakeChatIfNeeded(userId, event, payload);
       return false;
     }
     const n = this.connectedCount(userId);
     if (!n) {
-      this.logger.debug(`No live socket for ${event} user=${userId}`);
+      const chatReady = event === SOCKET_EVENTS.TRANSMISSION_READY;
+      if (chatReady) {
+        this.logger.warn(`No live socket for ${event} user=${userId} — sending FCM`);
+        this.wakeChatIfNeeded(userId, event, payload);
+      } else {
+        this.logger.debug(`No live socket for ${event} user=${userId}`);
+      }
       if (
         retry &&
         (event === SOCKET_EVENTS.TRANSMISSION_READY ||
@@ -613,6 +625,26 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
     this.server.to(room).emit(event, payload);
     return true;
+  }
+
+  private wakeChatIfNeeded(userId: string, event: string, payload: unknown) {
+    if (event !== SOCKET_EVENTS.TRANSMISSION_READY) return;
+    const row = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+    void this.push.notifyOfflineMessage(userId, {
+      transmissionId: String(row.transmissionId || ""),
+      kind: String(row.kind || ""),
+      type: String(row.type || ""),
+      senderName: String(row.senderName || ""),
+      senderPhone: String(row.senderPhone || ""),
+      senderId: String(row.senderId || ""),
+      senderAvatarUrl: typeof row.senderAvatarUrl === "string" ? row.senderAvatarUrl : "",
+      channelId: String(row.channelId || ""),
+      audioUrl: typeof row.audioUrl === "string" ? row.audioUrl : "",
+      originalText: typeof row.originalText === "string" ? row.originalText : "",
+      translatedText: typeof row.translatedText === "string" ? row.translatedText : "",
+      speakLang: String(row.speakLang || ""),
+      language: String(row.language || ""),
+    });
   }
 
   emitToChannel(channelId: string, event: string, payload: unknown) {

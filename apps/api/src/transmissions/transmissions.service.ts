@@ -353,9 +353,21 @@ export class TransmissionsService {
       if (!sameLanguage) {
         textOnly += 1;
         if (hear) dubbed.push({ targetId: target.userId, language: hear });
+        if (!this.realtime.hasLiveSocket(target.userId)) {
+          this.logger.warn(`No live socket for transmission:ready user=${target.userId} — sending FCM`);
+          void this.push.notifyOfflineMessage(target.userId, {
+            ...payload,
+            language: hear || payload.language,
+            kind: "walkie",
+          });
+        }
         continue;
       }
-      this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+      const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+      this.logger.log(`Deliver walkie ${transmission.id} -> ${target.userId} reached=${reached}`);
+      if (!reached) {
+        void this.push.notifyOfflineMessage(target.userId, { ...payload, kind: "walkie" });
+      }
       void this.prisma.transmissionTarget.update({
         where: { id: target.id },
         data: { deliveredAt: new Date() },
@@ -422,7 +434,7 @@ export class TransmissionsService {
         });
         const audioUrl = this.storage.publicUrl(saved);
         for (const row of dubbed.filter((item) => item.language === language)) {
-          this.realtime.emitToUser(row.targetId, SOCKET_EVENTS.TRANSMISSION_READY, {
+          const dubbedPayload = {
             ...payload,
             language,
             audioUrl,
@@ -430,7 +442,11 @@ export class TransmissionsService {
             translatedText: line,
             usedOriginalVoice: false,
             suppressOriginal: true,
-          });
+            kind: "walkie" as const,
+          };
+          const reached = this.realtime.emitToUser(row.targetId, SOCKET_EVENTS.TRANSMISSION_READY, dubbedPayload);
+          this.logger.log(`Deliver walkie ${transmissionId} -> ${row.targetId} reached=${reached}`);
+          if (!reached) void this.push.notifyOfflineMessage(row.targetId, dubbedPayload);
           this.logger.log(`Walkie dub ${transmissionId} ${speak}->${language} user=${row.targetId} tts`);
         }
       }
@@ -717,43 +733,23 @@ export class TransmissionsService {
         } else if (reached) {
           deliveredJobs.push(this.noteDelivered(target.id, sender.id, transmission.id, target.userId));
         }
-        const title = first
-          ? sender.displayName?.trim() || sender.phoneE164
-          : sender.displayName || "TALK";
-        const body = first
-          ? sender.displayName?.trim() && sender.phoneE164 && sender.displayName.trim() !== sender.phoneE164
-            ? sender.phoneE164
-            : "TALK"
-          : delivery === "walkie"
-            ? live
-              ? "שידור חדש הגיע"
-              : "יש שידור שמחכה — לחצו כדי לשמוע"
-            : (payload.translatedText || originalText || "הודעה קולית").slice(0, 180);
-        if (!reached) void this.push.notifyUsers(
-          [target.userId],
-          title,
-          body,
-          {
-            type: delivery === "text" ? "message" : "walkie",
+        if (!reached) {
+          void this.push.notifyOfflineMessage(target.userId, {
             transmissionId: transmission.id,
             channelId: transmission.channelId,
             kind: delivery,
+            type: delivery === "text" ? "message" : "walkie",
             senderId: sender.id,
-            senderName: sender.displayName || "",
+            senderName: sender.displayName || sender.phoneE164,
             senderPhone: sender.phoneE164,
             senderAvatarUrl: senderPublic.avatarUrl || "",
             audioUrl: publicAudio || "",
-            needsAccept: payload.needsAccept ? "1" : "0",
-            live: live ? "1" : "0",
-            usedOriginalVoice: usedOriginalVoice ? "1" : "0",
+            originalText,
+            translatedText: payload.translatedText || originalText || "",
             speakLang: sourceLang,
             language: target.language,
-            voiceGender: voiceGender,
-            originalText: originalText || "",
-            translatedText: payload.translatedText || "",
-          },
-          { image: senderPublic.avatarUrl },
-        );
+          });
+        }
       };
 
       // Same language keeps the original voice. Every other language, including Hebrew, is translated.
