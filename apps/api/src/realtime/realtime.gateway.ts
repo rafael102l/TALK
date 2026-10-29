@@ -665,11 +665,27 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody() body: { targetUserId?: string; callId?: string; video?: boolean },
   ) {
-    if (!client.userId || !(await this.sessionStillValid(client))) return { ok: false };
+    if (!client.userId) return { ok: false };
+    if (!(await this.sessionStillValid(client))) {
+      this.logger.warn(`call-user rejected session user=${client.userId}`);
+      return { ok: false };
+    }
     const targetUserId = (body?.targetUserId || "").slice(0, 80);
     const callId = (body?.callId || "").slice(0, 80);
     if (!targetUserId || !callId || targetUserId === client.userId) return { ok: false };
+    const fromBusy = this.calls.busy(client.userId);
+    const toBusy = this.calls.busy(targetUserId);
+    if (fromBusy) this.dropStuckCall(fromBusy, "caller-redial");
+    if (toBusy && toBusy.callId !== fromBusy?.callId) {
+      const samePair =
+        (toBusy.callerId === client.userId && toBusy.calleeId === targetUserId) ||
+        (toBusy.callerId === targetUserId && toBusy.calleeId === client.userId);
+      if (!toBusy.accepted || samePair) this.dropStuckCall(toBusy, samePair ? "same-pair" : "callee-ringing");
+    }
     if (this.calls.busy(client.userId) || this.calls.busy(targetUserId)) {
+      this.logger.warn(
+        `call-user busy from=${client.userId} to=${targetUserId} id=${callId} stuck=${this.calls.busy(client.userId)?.callId || "-"}/${this.calls.busy(targetUserId)?.callId || "-"}`,
+      );
       client.emit(SOCKET_EVENTS.CALL_BUSY, { callId });
       return { ok: false, reason: "busy" };
     }
@@ -708,7 +724,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (!call || call.calleeId !== client.userId) return { ok: false };
     call.accepted = true;
     if (call.timer) clearTimeout(call.timer);
-    call.timer = undefined;
+    call.timer = setTimeout(() => this.expireCall(call.callId), 30 * 60_000);
     this.emitToUser(call.callerId, SOCKET_EVENTS.ACCEPT_CALL, { callId: call.callId }, false);
     return { ok: true };
   }
@@ -887,9 +903,22 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.logger.warn(`call unavailable id=${callId} to=${targetUserId} no socket`);
   }
 
+  private dropStuckCall(
+    call: { callId: string; callerId: string; calleeId: string; accepted: boolean },
+    why: string,
+  ) {
+    this.logger.warn(`call drop-stuck id=${call.callId} accepted=${String(call.accepted)} why=${why}`);
+    this.finishCall(call, call.accepted ? "ended" : "cancelled");
+  }
+
   private expireCall(callId: string) {
     const call = this.calls.get(callId);
-    if (!call || call.accepted) return;
+    if (!call) return;
+    if (call.accepted) {
+      this.finishCall(call, "ended");
+      this.logger.log(`call expire-accepted id=${callId}`);
+      return;
+    }
     this.finishCall(call, "missed");
     if (this.connectedCount(call.calleeId) === 0) void this.rememberExpiredMiss(call);
     this.logger.log(`call missed id=${callId}`);
