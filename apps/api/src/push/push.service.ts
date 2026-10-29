@@ -410,38 +410,25 @@ export class PushService {
     }
   }
 
-  private async sendFcmCall(token: string, data: Record<string, string>, title: string, body: string) {
+  private async sendFcmCall(token: string, data: Record<string, string>, _title: string, _body: string) {
     try {
       if (!this.ensureAdmin()) {
         this.logger.warn("FCM call skipped — Firebase admin is not ready");
         return false;
       }
       const ended = data.type === "call_ended" || data.type === "call_cancel";
-      const tag = `talk-call-${data.callId || "x"}`;
       await getMessaging().send({
         token,
         data,
-        notification: { title, body },
         android: {
           priority: "high",
           ttl: ended ? 30_000 : 60_000,
-          collapseKey: tag,
+          collapseKey: ended ? `call-end-${data.callId || "x"}` : `call-in-${data.callId || "ring"}`,
           directBootOk: true,
-          notification: {
-            title,
-            body,
-            channelId: ended ? "talk-calls-wake" : "talk-calls-fcm",
-            ...(ended ? {} : { sound: "default", defaultSound: true }),
-            visibility: "public" as const,
-            priority: "max" as const,
-            tag,
-          },
         },
         apns: {
           payload: {
-            aps: ended
-              ? { alert: { title, body }, "content-available": 1 }
-              : { sound: "default", alert: { title, body }, "content-available": 1 },
+            aps: { "content-available": 1 },
           },
         },
       });

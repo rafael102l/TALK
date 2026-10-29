@@ -683,7 +683,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.logger.log(
       `call-user from=${client.userId} sid=${client.id} to=${targetUserId} callId=${callId} calleeSocket=${String(socketLive)} calleeRoom=${this.roomCount(targetUserId)}`,
     );
-    if (!socketLive) void this.push.notifyIncomingCall(targetUserId, incoming);
+    void this.push.notifyIncomingCall(targetUserId, incoming);
     const timer = setTimeout(() => this.expireCall(callId), 45_000);
     this.calls.open({
       callId,

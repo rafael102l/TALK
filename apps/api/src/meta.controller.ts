@@ -14,7 +14,7 @@ export class MetaController {
 
   @Get("health")
   health() {
-    return { ok: true, name: "talk-api", chatPush: "closed-device-fcm-display" };
+    return { ok: true, name: "talk-api", chatPush: "incoming-call-data-fcm" };
   }
 
   @Get("install")
