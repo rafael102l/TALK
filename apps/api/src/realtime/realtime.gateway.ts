@@ -716,12 +716,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage(SOCKET_EVENTS.REJECT_CALL)
   rejectCall(@ConnectedSocket() client: AuthedSocket, @MessageBody() body: { callId?: string }) {
     const call = this.liveCallFor(client.userId, body?.callId);
-    if (!call) return { ok: false };
-    const other = call.callerId === client.userId ? call.calleeId : call.callerId;
-    this.calls.end(call.callId);
-    this.logger.log(`call reject id=${call.callId} by=${client.userId} other=${other}`);
-    this.emitToUser(other, SOCKET_EVENTS.REJECT_CALL, { callId: call.callId }, true);
-    this.emitToUser(other, SOCKET_EVENTS.END_CALL, { callId: call.callId, reason: "cancelled" }, false);
+    if (!call || !client.userId) return { ok: false };
+    this.logger.log(`call reject id=${call.callId} by=${client.userId}`);
+    this.finishCall(call, "cancelled", client.userId);
     return { ok: true };
   }
 
@@ -731,14 +728,38 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     @MessageBody() body: { callId?: string; reason?: string },
   ) {
     const call = this.liveCallFor(client.userId, body?.callId) ?? this.calls.get((body?.callId || "").slice(0, 80));
-    if (!call || (call.callerId !== client.userId && call.calleeId !== client.userId)) return { ok: false };
-    const other = call.callerId === client.userId ? call.calleeId : call.callerId;
+    if (!call || !client.userId || (call.callerId !== client.userId && call.calleeId !== client.userId)) {
+      return { ok: false };
+    }
     const reason = call.accepted ? "ended" : body?.reason || "cancelled";
-    this.calls.end(call.callId);
-    this.logger.log(`call end id=${call.callId} by=${client.userId} other=${other}`);
-    this.emitToUser(other, SOCKET_EVENTS.END_CALL, { callId: call.callId, reason }, true);
-    this.emitToUser(other, SOCKET_EVENTS.REJECT_CALL, { callId: call.callId, reason }, false);
+    this.logger.log(`call end id=${call.callId} by=${client.userId}`);
+    this.finishCall(call, reason, client.userId);
     return { ok: true };
+  }
+
+  async hangupFromHttp(userId: string, callId: string, reason = "cancelled") {
+    const id = callId.slice(0, 80);
+    const call = this.calls.get(id);
+    if (!call || (call.callerId !== userId && call.calleeId !== userId)) {
+      return { ok: false };
+    }
+    this.finishCall(call, call.accepted ? "ended" : reason || "cancelled", userId);
+    this.logger.log(`call http-end id=${call.callId} by=${userId}`);
+    return { ok: true };
+  }
+
+  private finishCall(
+    call: { callId: string; callerId: string; calleeId: string },
+    reason: string,
+    exceptUserId?: string,
+  ) {
+    this.calls.end(call.callId);
+    const targets = [call.callerId, call.calleeId].filter((id) => id && id !== exceptUserId);
+    for (const userId of targets) {
+      this.emitToUser(userId, SOCKET_EVENTS.END_CALL, { callId: call.callId, reason }, true);
+      this.emitToUser(userId, SOCKET_EVENTS.REJECT_CALL, { callId: call.callId, reason }, false);
+      void this.push.notifyCallEnded(userId, call.callId, reason);
+    }
   }
 
   @SubscribeMessage(SOCKET_EVENTS.CALL_OFFER)
@@ -869,9 +890,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   private expireCall(callId: string) {
     const call = this.calls.get(callId);
     if (!call || call.accepted) return;
-    this.calls.end(callId);
-    this.emitToUser(call.callerId, SOCKET_EVENTS.END_CALL, { callId, reason: "missed" }, false);
-    this.emitToUser(call.calleeId, SOCKET_EVENTS.END_CALL, { callId, reason: "missed" }, false);
+    this.finishCall(call, "missed");
     if (this.connectedCount(call.calleeId) === 0) void this.rememberExpiredMiss(call);
     this.logger.log(`call missed id=${callId}`);
   }

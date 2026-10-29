@@ -158,9 +158,38 @@ export class PushService {
     let woke = false;
     if (device?.fcmToken) woke = (await this.sendFcmCall(device.fcmToken, data, incoming.callerName, incoming.callerPhone || "שיחה נכנסת")) || woke;
     if (device?.voipToken) woke = (await this.sendVoip(device.voipToken, data)) || woke;
-    if (user?.expoPushToken) woke = (await this.sendExpoCall(user.expoPushToken, incoming, data)) || woke;
+    if (!woke && user?.expoPushToken) {
+      woke = (await this.sendExpoCall(user.expoPushToken, incoming, data)) || woke;
+    }
     if (woke) this.logger.log(`call wake user=${userId} id=${incoming.callId}`);
     return woke;
+  }
+
+  async notifyCallEnded(userId: string, callId: string, reason = "cancelled") {
+    try {
+      await this.ensureTable();
+      const rows = await this.prisma.$queryRaw<Array<{ fcmToken: string | null }>>`
+        SELECT "fcmToken" FROM "CallDevice" WHERE "userId" = ${userId}
+      `;
+      const token = rows[0]?.fcmToken?.trim();
+      const data = { type: "call_ended", callId, reason: reason || "cancelled" };
+      if (token && (await this.sendFcmCall(token, data, "TALK", "השיחה הסתיימה"))) {
+        this.logger.log(`call end fcm user=${userId} id=${callId} reason=${reason}`);
+        return true;
+      }
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { expoPushToken: true },
+      });
+      const expo = user?.expoPushToken?.trim();
+      if (!expo) return false;
+      const ok = await this.sendExpoCallSilent(expo, data);
+      if (ok) this.logger.log(`call end expo user=${userId} id=${callId}`);
+      return ok;
+    } catch (error) {
+      this.logger.warn(`Call end wake failed: ${(error as Error).message}`);
+      return false;
+    }
   }
 
   async notifyUsers(
@@ -190,8 +219,8 @@ export class PushService {
       .map((u) => u.expoPushToken)
       .filter((t): t is string => Boolean(t));
     if (!tokens.length) return;
-    const walkie = payload.type === "walkie";
-    const channelId = walkie ? "walkie_talkie_channel" : "talk-ptt";
+    const walkie = payload.type === "walkie" || payload.kind === "walkie";
+    const channelId = walkie ? "walkie_talkie_channel" : "talk-text";
     const sound = walkie ? "walkie_talkie" : "default";
     const messages = tokens.map((to) => ({
       to,
@@ -238,7 +267,7 @@ export class PushService {
     return this.tableReady;
   }
 
-  private async sendExpoCall(to: string, incoming: CallWake, data: Record<string, string>) {
+  private async sendExpoCallSilent(to: string, data: Record<string, string>) {
     try {
       const response = await fetch("https://exp.host/--/api/v2/push/send", {
         method: "POST",
@@ -247,10 +276,31 @@ export class PushService {
           to,
           priority: "high",
           channelId: "talk-calls",
+          ttl: 0,
+          data,
+          _contentAvailable: true,
+        }),
+      });
+      return response.ok;
+    } catch (error) {
+      this.logger.warn(`Call end expo failed: ${(error as Error).message}`);
+      return false;
+    }
+  }
+
+  private async sendExpoCall(to: string, incoming: CallWake, data: Record<string, string>) {
+    try {
+      const response = await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to,
+          priority: "high",
+          channelId: "talk-calls-wake",
           title: incoming.callerName,
           body: incoming.callerPhone || "שיחה נכנסת",
           categoryId: "incoming-call",
-          sound: "default",
+          sound: null,
           ttl: 0,
           data,
         }),
@@ -290,11 +340,11 @@ export class PushService {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           to,
-          sound: "walkie_talkie",
+          sound: walkie ? "walkie_talkie" : "default",
           title,
           body,
           data,
-          channelId: walkie ? "walkie_talkie_channel" : "talk-ptt",
+          channelId: walkie ? "walkie_talkie_channel" : "talk-text",
           priority: "high",
           ttl: 300,
         }),
@@ -313,32 +363,37 @@ export class PushService {
         return false;
       }
       const walkie = data.type === "walkie" || data.kind === "walkie";
-      const channelId = "walkie_talkie_channel";
+      const channelId = walkie ? "walkie_talkie_channel" : "talk-text";
+      const sound = walkie ? "walkie_talkie" : "default";
       await getMessaging().send({
         token,
         data,
-        notification: { title, body },
+        ...(walkie ? {} : { notification: { title, body } }),
         android: {
           priority: "high",
           ttl: 86_400_000,
-          collapseKey: `chat-${(data.transmissionId || "msg").slice(0, 24)}`,
+          collapseKey: `${walkie ? "walkie" : "text"}-${(data.transmissionId || "msg").slice(0, 24)}`,
           directBootOk: true,
-          notification: {
-            title,
-            body,
-            channelId,
-            sound: "walkie_talkie",
-            defaultSound: false,
-            visibility: "public",
-            priority: "high",
-            tag: `walkie-${data.transmissionId || "clip"}`,
-          },
+          ...(walkie
+            ? {}
+            : {
+                notification: {
+                  title,
+                  body,
+                  channelId,
+                  sound,
+                  defaultSound: true,
+                  visibility: "public" as const,
+                  priority: "high" as const,
+                  tag: `text-${data.transmissionId || "clip"}`,
+                },
+              }),
         },
         apns: {
           payload: {
             aps: {
               alert: { title, body },
-              sound: "walkie_talkie.mp3",
+              sound: walkie ? "walkie_talkie.mp3" : "default",
             },
           },
           headers: { "apns-priority": "10" },
@@ -355,17 +410,20 @@ export class PushService {
   private async sendFcmCall(token: string, data: Record<string, string>, title: string, body: string) {
     try {
       if (!this.ensureAdmin()) return false;
+      const ended = data.type === "call_ended" || data.type === "call_cancel";
       await getMessaging().send({
         token,
         data,
         android: {
           priority: "high",
-          ttl: 0,
-          collapseKey: "incoming-call",
+          ttl: ended ? 15_000 : 45_000,
+          collapseKey: ended ? `call-end-${data.callId || "x"}` : `call-${data.callId || "ring"}`,
           directBootOk: true,
         },
         apns: {
-          payload: { aps: { sound: "default", "content-available": 1 } },
+          payload: {
+            aps: ended ? { "content-available": 1 } : { sound: "default", "content-available": 1 },
+          },
         },
       });
       return true;

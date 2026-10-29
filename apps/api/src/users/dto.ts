@@ -48,3 +48,14 @@ export class CallPushDto {
   @MaxLength(4096)
   voipToken?: string;
 }
+
+export class CallEndDto {
+  @IsString()
+  @MaxLength(80)
+  callId!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  reason?: string;
+}

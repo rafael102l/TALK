@@ -15,7 +15,8 @@ import { User } from "@prisma/client";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PushService } from "../push/push.service";
-import { CallPushDto, PushTokenDto, UpdateProfileDto } from "./dto";
+import { RealtimeGateway } from "../realtime/realtime.gateway";
+import { CallEndDto, CallPushDto, PushTokenDto, UpdateProfileDto } from "./dto";
 import { UsersService } from "./users.service";
 
 @Controller("users")
@@ -24,6 +25,7 @@ export class UsersController {
   constructor(
     private readonly users: UsersService,
     private readonly push: PushService,
+    private readonly realtime: RealtimeGateway,
   ) {}
 
   @Get("me")
@@ -45,6 +47,11 @@ export class UsersController {
   @Post("me/call-push")
   callPush(@CurrentUser() user: User, @Body() body: CallPushDto) {
     return this.push.saveCallDevice(user.id, body);
+  }
+
+  @Post("me/call-end")
+  callEnd(@CurrentUser() user: User, @Body() body: CallEndDto) {
+    return this.realtime.hangupFromHttp(user.id, body.callId, body.reason || "cancelled");
   }
 
   @Post("me/voice-sample")
