@@ -1,5 +1,7 @@
 import { createSign, randomUUID } from "crypto";
+import { existsSync } from "fs";
 import { connect } from "http2";
+import { isAbsolute, resolve } from "path";
 import { Injectable, Logger } from "@nestjs/common";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
@@ -36,6 +38,7 @@ export class PushService {
         "voipToken" = COALESCE(EXCLUDED."voipToken", "CallDevice"."voipToken"),
         "updatedAt" = CURRENT_TIMESTAMP
     `;
+    this.logger.log(`call device saved user=${userId} fcm=${Boolean(fcmToken)} voip=${Boolean(voipToken)}`);
     return { ok: true };
   }
 
@@ -100,7 +103,9 @@ export class PushService {
         SELECT "fcmToken" FROM "CallDevice" WHERE "userId" = ${userId}
       `;
       const token = rows[0]?.fcmToken?.trim();
-      if (token && (await this.sendFcmDisplay(token, title, body, data))) {
+      if (!token) {
+        this.logger.warn(`chat FCM skipped — no fcmToken user=${userId} id=${transmissionId}`);
+      } else if (await this.sendFcmDisplay(token, title, body, data)) {
         this.logger.log(`chat fcm user=${userId} id=${transmissionId} kind=${data.kind}`);
         return true;
       }
@@ -111,13 +116,13 @@ export class PushService {
       const expo = user?.expoPushToken?.trim();
       if (!expo) {
         this.logger.warn(
-          `chat FCM skipped — no token user=${userId} id=${transmissionId} fcm=${Boolean(token)}`,
+          `chat wake missed user=${userId} id=${transmissionId} fcm=${Boolean(token)} expo=no`,
         );
         return false;
       }
       const ok = await this.sendExpoChat(expo, title, body, data);
       if (ok) this.logger.log(`chat expo user=${userId} id=${transmissionId} kind=${data.kind}`);
-      else this.logger.warn(`chat wake missed user=${userId} id=${transmissionId}`);
+      else this.logger.warn(`chat wake missed user=${userId} id=${transmissionId} expo=fail`);
       return ok;
     } catch (error) {
       this.logger.warn(`chat wake failed: ${(error as Error).message}`);
@@ -155,14 +160,19 @@ export class PushService {
       gender: incoming.caller.gender || "male",
       video: incoming.video ? "1" : "0",
     };
-    let woke = false;
-    if (device?.fcmToken) woke = (await this.sendFcmCall(device.fcmToken, data, incoming.callerName, incoming.callerPhone || "שיחה נכנסת")) || woke;
-    if (device?.voipToken) woke = (await this.sendVoip(device.voipToken, data)) || woke;
-    if (!woke && user?.expoPushToken) {
-      woke = (await this.sendExpoCall(user.expoPushToken, incoming, data)) || woke;
+    let via = "";
+    if (device?.fcmToken) {
+      if (await this.sendFcmCall(device.fcmToken, data, incoming.callerName, incoming.callerPhone || "שיחה נכנסת")) {
+        via = "fcm";
+      }
+    } else {
+      this.logger.warn(`call FCM skipped — no fcmToken user=${userId} id=${incoming.callId}`);
     }
-    if (woke) this.logger.log(`call wake user=${userId} id=${incoming.callId}`);
-    return woke;
+    if (!via && device?.voipToken && (await this.sendVoip(device.voipToken, data))) via = "voip";
+    if (!via && user?.expoPushToken && (await this.sendExpoCall(user.expoPushToken, incoming, data))) via = "expo";
+    if (via) this.logger.log(`call wake user=${userId} id=${incoming.callId} via=${via}`);
+    else this.logger.warn(`call wake missed user=${userId} id=${incoming.callId} fcm=${Boolean(device?.fcmToken)} expo=${Boolean(user?.expoPushToken)}`);
+    return Boolean(via);
   }
 
   async notifyCallEnded(userId: string, callId: string, reason = "cancelled") {
@@ -173,7 +183,8 @@ export class PushService {
       `;
       const token = rows[0]?.fcmToken?.trim();
       const data = { type: "call_ended", callId, reason: reason || "cancelled" };
-      if (token && (await this.sendFcmCall(token, data, "TALK", "השיחה הסתיימה"))) {
+      if (!token) this.logger.warn(`call end FCM skipped — no fcmToken user=${userId} id=${callId}`);
+      else if (await this.sendFcmCall(token, data, "TALK", "השיחה הסתיימה")) {
         this.logger.log(`call end fcm user=${userId} id=${callId} reason=${reason}`);
         return true;
       }
@@ -268,62 +279,40 @@ export class PushService {
   }
 
   private async sendExpoCallSilent(to: string, data: Record<string, string>) {
-    try {
-      const response = await fetch("https://exp.host/--/api/v2/push/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          to,
-          priority: "high",
-          channelId: "talk-calls",
-          ttl: 0,
-          data,
-          _contentAvailable: true,
-        }),
-      });
-      return response.ok;
-    } catch (error) {
-      this.logger.warn(`Call end expo failed: ${(error as Error).message}`);
-      return false;
-    }
+    return this.postExpo({
+      to,
+      priority: "high",
+      channelId: "talk-calls",
+      ttl: 60,
+      title: "TALK",
+      body: "השיחה הסתיימה",
+      data,
+    }, "call-end expo");
   }
 
   private async sendExpoCall(to: string, incoming: CallWake, data: Record<string, string>) {
-    try {
-      const response = await fetch("https://exp.host/--/api/v2/push/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          to,
-          priority: "high",
-          channelId: "talk-calls-wake",
-          title: incoming.callerName,
-          body: incoming.callerPhone || "שיחה נכנסת",
-          categoryId: "incoming-call",
-          sound: null,
-          ttl: 0,
-          data,
-        }),
-      });
-      return response.ok;
-    } catch (error) {
-      this.logger.warn(`Call push failed: ${(error as Error).message}`);
-      return false;
-    }
+    return this.postExpo({
+      to,
+      priority: "high",
+      channelId: "talk-calls-fcm",
+      title: incoming.callerName,
+      body: incoming.callerPhone || "שיחה נכנסת",
+      categoryId: "incoming-call",
+      sound: "default",
+      ttl: 60,
+      data,
+    }, "call expo");
   }
 
   private ensureAdmin() {
     if (getApps().length) return true;
     try {
-      const raw = process.env.FIREBASE_SERVICE_ACCOUNT?.trim() || "";
-      const b64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64?.trim() || "";
-      const json = b64
-        ? Buffer.from(b64, "base64").toString("utf8")
-        : raw.startsWith("{")
-          ? raw
-          : "";
-      if (!json) return false;
-      initializeApp({ credential: cert(JSON.parse(json) as Record<string, string>) });
+      const cred = loadFirebaseCert();
+      if (!cred) {
+        this.logger.warn("FCM admin skipped — no service account");
+        return false;
+      }
+      initializeApp({ credential: typeof cred === "string" ? cert(cred) : cert(cred) });
       this.logger.log("FCM admin ready");
       return true;
     } catch (error) {
@@ -334,24 +323,41 @@ export class PushService {
 
   private async sendExpoChat(to: string, title: string, body: string, data: Record<string, string>) {
     const walkie = data.type === "walkie" || data.kind === "walkie";
+    return this.postExpo({
+      to,
+      sound: walkie ? "walkie_talkie" : "default",
+      title,
+      body,
+      data,
+      channelId: walkie ? "walkie_talkie_channel" : "talk-text",
+      priority: "high",
+      ttl: 300,
+    }, "chat expo");
+  }
+
+  private async postExpo(message: Record<string, unknown>, label: string) {
     try {
       const response = await fetch("https://exp.host/--/api/v2/push/send", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          to,
-          sound: walkie ? "walkie_talkie" : "default",
-          title,
-          body,
-          data,
-          channelId: walkie ? "walkie_talkie_channel" : "talk-text",
-          priority: "high",
-          ttl: 300,
-        }),
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(message),
       });
-      return response.ok;
+      const json = (await response.json().catch(() => null)) as
+        | { data?: { status?: string; message?: string; details?: { error?: string } } | Array<{ status?: string; message?: string; details?: { error?: string } }> }
+        | null;
+      const tickets = Array.isArray(json?.data) ? json.data : json?.data ? [json.data] : [];
+      const err = tickets.find((row) => row.status === "error");
+      if (err) {
+        this.logger.warn(`${label} ticket ${err.message || err.details?.error || "error"}`);
+        return false;
+      }
+      if (!response.ok) {
+        this.logger.warn(`${label} http ${response.status}`);
+        return false;
+      }
+      return tickets.length ? tickets.some((row) => row.status === "ok") : true;
     } catch (error) {
-      this.logger.warn(`chat expo failed: ${(error as Error).message}`);
+      this.logger.warn(`${label} failed: ${(error as Error).message}`);
       return false;
     }
   }
@@ -365,29 +371,26 @@ export class PushService {
       const walkie = data.type === "walkie" || data.kind === "walkie";
       const channelId = walkie ? "walkie_talkie_channel" : "talk-text";
       const sound = walkie ? "walkie_talkie" : "default";
+      const tag = `${walkie ? "walkie" : "text"}-${(data.transmissionId || "clip").slice(0, 24)}`;
       await getMessaging().send({
         token,
         data,
-        ...(walkie ? {} : { notification: { title, body } }),
+        notification: { title, body },
         android: {
           priority: "high",
           ttl: 86_400_000,
-          collapseKey: `${walkie ? "walkie" : "text"}-${(data.transmissionId || "msg").slice(0, 24)}`,
+          collapseKey: tag,
           directBootOk: true,
-          ...(walkie
-            ? {}
-            : {
-                notification: {
-                  title,
-                  body,
-                  channelId,
-                  sound,
-                  defaultSound: true,
-                  visibility: "public" as const,
-                  priority: "high" as const,
-                  tag: `text-${data.transmissionId || "clip"}`,
-                },
-              }),
+          notification: {
+            title,
+            body,
+            channelId,
+            sound,
+            defaultSound: !walkie,
+            visibility: "public" as const,
+            priority: "high" as const,
+            tag,
+          },
         },
         apns: {
           payload: {
@@ -409,20 +412,36 @@ export class PushService {
 
   private async sendFcmCall(token: string, data: Record<string, string>, title: string, body: string) {
     try {
-      if (!this.ensureAdmin()) return false;
+      if (!this.ensureAdmin()) {
+        this.logger.warn("FCM call skipped — Firebase admin is not ready");
+        return false;
+      }
       const ended = data.type === "call_ended" || data.type === "call_cancel";
+      const tag = `talk-call-${data.callId || "x"}`;
       await getMessaging().send({
         token,
         data,
+        notification: { title, body },
         android: {
           priority: "high",
-          ttl: ended ? 15_000 : 45_000,
-          collapseKey: ended ? `call-end-${data.callId || "x"}` : `call-${data.callId || "ring"}`,
+          ttl: ended ? 30_000 : 60_000,
+          collapseKey: tag,
           directBootOk: true,
+          notification: {
+            title,
+            body,
+            channelId: ended ? "talk-calls-wake" : "talk-calls-fcm",
+            ...(ended ? {} : { sound: "default", defaultSound: true }),
+            visibility: "public" as const,
+            priority: "max" as const,
+            tag,
+          },
         },
         apns: {
           payload: {
-            aps: ended ? { "content-available": 1 } : { sound: "default", "content-available": 1 },
+            aps: ended
+              ? { alert: { title, body }, "content-available": 1 }
+              : { sound: "default", alert: { title, body }, "content-available": 1 },
           },
         },
       });
@@ -523,6 +542,27 @@ function stringData(data: Record<string, string>) {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(data)) out[key] = value == null ? "" : String(value);
   return out;
+}
+
+function loadFirebaseCert(): string | Record<string, string> | null {
+  const fromBase64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64?.trim();
+  if (fromBase64) {
+    return JSON.parse(Buffer.from(fromBase64, "base64").toString("utf8")) as Record<string, string>;
+  }
+  let inline = process.env.FIREBASE_SERVICE_ACCOUNT?.trim() || "";
+  if (inline) {
+    if (
+      (inline.startsWith("'") && inline.endsWith("'")) ||
+      (inline.startsWith('"') && inline.endsWith('"') && !inline.startsWith('{"'))
+    ) {
+      inline = inline.slice(1, -1);
+    }
+    if (inline.startsWith("{")) return JSON.parse(inline) as Record<string, string>;
+  }
+  const configured = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "./serviceAccountKey.json";
+  const credPath = isAbsolute(configured) ? configured : resolve(process.cwd(), configured);
+  if (!existsSync(credPath)) return null;
+  return credPath;
 }
 
 function derToJose(der: Buffer) {
