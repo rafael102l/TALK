@@ -80,7 +80,7 @@ export class PushService {
     const text = String(input.translatedText || input.originalText || "")
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 180);
+      .slice(0, 900);
     const title = name;
     const body = text || (walkie ? "ווקי-טוקי" : "הודעה חדשה");
     const data = stringData({
@@ -383,27 +383,15 @@ export class PushService {
       }
       const walkie = data.type === "walkie" || data.kind === "walkie";
       const channelId = walkie ? "walkie_talkie_channel" : "talk-text";
-      const sound = walkie ? "walkie_talkie" : "default";
       const tag = `${walkie ? "walkie" : "text"}-${(data.transmissionId || "clip").slice(0, 24)}`;
       await getMessaging().send({
         token,
-        data,
-        notification: { title, body },
+        data: { ...data, title, body },
         android: {
           priority: "high",
           ttl: 86_400_000,
           collapseKey: tag,
           directBootOk: true,
-          notification: {
-            title,
-            body,
-            channelId,
-            sound,
-            defaultSound: !walkie,
-            visibility: "public" as const,
-            priority: "high" as const,
-            tag,
-          },
         },
         apns: {
           payload: {
