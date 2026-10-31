@@ -694,10 +694,20 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       select: { displayName: true, avatarUrl: true, voiceGender: true, phoneE164: true },
     });
     if (!caller) return { ok: false };
-    const group = Boolean(body?.channelId) || targets.length > 1;
+    const channelId = (body?.channelId || "").slice(0, 80);
+    let groupName = (body?.groupName || "").trim().slice(0, 80);
+    if (channelId && !groupName) {
+      const channel = await this.prisma.channel.findUnique({
+        where: { id: channelId },
+        select: { name: true },
+      });
+      groupName = (channel?.name || "").trim().slice(0, 80);
+    }
+    const group = Boolean(channelId) || targets.length > 1;
     const incoming = this.incomingBody(callId, client.userId, caller, Boolean(body?.video), {
-      channelId: body?.channelId,
-      groupName: body?.groupName,
+      channelId: channelId || undefined,
+      groupId: channelId || undefined,
+      groupName: groupName || undefined,
       group,
     });
     let call = this.calls.get(callId);
@@ -709,8 +719,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         calleeId: targets[0],
         invitedIds: [...targets],
         joinedIds: [client.userId],
-        channelId: body?.channelId,
-        groupName: body?.groupName,
+        channelId: channelId || undefined,
+        groupName: groupName || undefined,
         callerName: incoming.callerName,
         callerPhone: incoming.callerPhone,
         callerAvatar: caller.avatarUrl ? this.storage.publicUrl(caller.avatarUrl) : null,
@@ -900,7 +910,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     });
     const allowed = new Set(members.map((row) => row.userId));
     if (!unique.length) return [...allowed];
-    return unique.filter((id) => allowed.has(id));
+    const filtered = unique.filter((id) => allowed.has(id));
+    return filtered.length ? filtered : [...allowed];
   }
 
   private connectedCount(userId: string) {
@@ -949,18 +960,22 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     callerId: string,
     caller: { displayName: string | null; phoneE164: string; avatarUrl: string | null; voiceGender: string | null },
     video = false,
-    extra?: { channelId?: string; groupName?: string; group?: boolean },
+    extra?: { channelId?: string; groupId?: string; groupName?: string; group?: boolean },
   ) {
-    const callerName = extra?.groupName || caller.displayName || caller.phoneE164;
-    const callerPhone = caller.phoneE164;
+    const groupId = (extra?.groupId || extra?.channelId || "").trim();
+    const group = Boolean(extra?.group || extra?.groupName || groupId);
+    const groupName = (extra?.groupName || "").trim();
+    const callerName = group ? groupName || "קבוצה" : caller.displayName || caller.phoneE164;
+    const callerPhone = group ? "" : caller.phoneE164;
     return {
       callId,
       callerName,
       callerPhone,
       video,
-      channelId: extra?.channelId || null,
-      groupName: extra?.groupName || null,
-      group: Boolean(extra?.group),
+      channelId: groupId || null,
+      groupId: groupId || null,
+      groupName: group ? callerName : null,
+      group,
       caller: {
         id: callerId,
         name: caller.displayName || caller.phoneE164,
@@ -1093,19 +1108,37 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.logger.log(`call missed id=${callId}`);
   }
 
-  private async rememberExpiredMiss(call: { callId: string; callerId: string; calleeId: string }) {
+  private async rememberExpiredMiss(call: {
+    callId: string;
+    callerId: string;
+    calleeId: string;
+    channelId?: string;
+    groupName?: string;
+    invitedIds?: string[];
+    joinedIds?: string[];
+  }) {
+    const groupId = (call.channelId || "").trim();
+    const groupName = (call.groupName || "").trim();
     const caller = await this.prisma.user.findUnique({
       where: { id: call.callerId },
       select: { displayName: true, avatarUrl: true, voiceGender: true },
     });
-    this.calls.rememberMissed(call.calleeId, {
+    const missed = {
       callId: call.callId,
-      peerId: call.callerId,
-      peerName: caller?.displayName || "",
-      avatarUrl: caller?.avatarUrl ?? null,
+      peerId: groupId || call.callerId,
+      peerName: groupName || caller?.displayName || "",
+      avatarUrl: groupId ? null : caller?.avatarUrl ?? null,
       gender: caller?.voiceGender || "male",
       at: new Date().toISOString(),
-    });
+      groupId: groupId || undefined,
+      groupName: groupName || undefined,
+    };
+    const targets = [...new Set([call.calleeId, ...(call.invitedIds || [])])].filter(
+      (id) => id && id !== call.callerId && !(call.joinedIds || []).includes(id),
+    );
+    for (const userId of targets.length ? targets : [call.calleeId]) {
+      this.calls.rememberMissed(userId, missed);
+    }
   }
 
   private readToken(client: Socket) {

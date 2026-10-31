@@ -12,6 +12,10 @@ type CallWake = {
   callerName: string;
   callerPhone: string;
   video?: boolean;
+  channelId?: string | null;
+  groupId?: string | null;
+  groupName?: string | null;
+  group?: boolean;
   caller: { id: string; name: string; phone: string; avatarUrl?: string | null; gender?: string | null };
 };
 
@@ -164,19 +168,28 @@ export class PushService implements OnModuleInit {
     });
     const device = await this.callDevice(userId);
     const fcm = device.fcmToken;
+    const groupId = (incoming.groupId || incoming.channelId || "").trim();
+    const group = Boolean(incoming.group || incoming.groupName || groupId);
+    const groupName = (incoming.groupName || (group ? incoming.callerName : "") || "").trim();
+    const shownName = group ? groupName || incoming.callerName : incoming.callerName;
+    const shownBody = group ? "שיחה קבוצתית" : incoming.callerPhone || "שיחה נכנסת";
     const data = {
       type: "incoming_call",
       callId: incoming.callId,
       callerId: incoming.caller.id,
-      callerName: incoming.callerName,
-      callerPhone: incoming.callerPhone,
+      callerName: shownName,
+      callerPhone: group ? "" : incoming.callerPhone || "",
       avatarUrl: incoming.caller.avatarUrl || "",
       gender: incoming.caller.gender || "male",
       video: incoming.video ? "1" : "0",
+      group: group ? "1" : "0",
+      groupId: group ? groupId : "",
+      groupName: group ? shownName : "",
+      channelId: group ? groupId : "",
     };
     let via = "";
     if (fcm) {
-      if (await this.sendFcmCall(fcm, data, incoming.callerName, incoming.callerPhone || "שיחה נכנסת")) {
+      if (await this.sendFcmCall(fcm, data, shownName, shownBody)) {
         via = "fcm";
       }
     } else {
@@ -324,8 +337,8 @@ export class PushService implements OnModuleInit {
       to,
       priority: "high",
       channelId: "talk-calls-fcm",
-      title: incoming.callerName,
-      body: incoming.callerPhone || "שיחה נכנסת",
+      title: incoming.group ? incoming.groupName || incoming.callerName : incoming.callerName,
+      body: incoming.group ? "שיחה קבוצתית" : incoming.callerPhone || "שיחה נכנסת",
       categoryId: "incoming-call",
       sound: "default",
       ttl: 60,

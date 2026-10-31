@@ -26,6 +26,8 @@ export type MissedCall = {
   avatarUrl: string | null;
   gender: string;
   at: string;
+  groupId?: string;
+  groupName?: string;
 };
 
 const CALL_TTL_SEC = 90;
