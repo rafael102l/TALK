@@ -2,7 +2,7 @@ import { createSign, randomUUID } from "crypto";
 import { existsSync } from "fs";
 import { connect } from "http2";
 import { isAbsolute, resolve } from "path";
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
 import { PrismaService } from "../prisma/prisma.service";
@@ -16,7 +16,7 @@ type CallWake = {
 };
 
 @Injectable()
-export class PushService {
+export class PushService implements OnModuleInit {
   private readonly logger = new Logger(PushService.name);
   private tableReady: Promise<void> | null = null;
   private apnsToken = "";
@@ -25,21 +25,37 @@ export class PushService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  onModuleInit() {
+    void this.ensureTable();
+  }
+
   async saveCallDevice(userId: string, input: { fcmToken?: string; voipToken?: string }) {
     const fcmToken = input.fcmToken?.trim() || null;
     const voipToken = input.voipToken?.trim() || null;
-    if (!fcmToken && !voipToken) return { ok: true };
+    if (!fcmToken && !voipToken) {
+      this.logger.warn(`call-push empty user=${userId}`);
+      return { ok: true };
+    }
     await this.ensureTable();
-    await this.prisma.$executeRaw`
-      INSERT INTO "CallDevice" ("userId", "fcmToken", "voipToken", "updatedAt")
-      VALUES (${userId}, ${fcmToken}, ${voipToken}, CURRENT_TIMESTAMP)
-      ON CONFLICT ("userId") DO UPDATE SET
-        "fcmToken" = COALESCE(EXCLUDED."fcmToken", "CallDevice"."fcmToken"),
-        "voipToken" = COALESCE(EXCLUDED."voipToken", "CallDevice"."voipToken"),
-        "updatedAt" = CURRENT_TIMESTAMP
-    `;
+    try {
+      await this.prisma.$executeRaw`
+        INSERT INTO "CallDevice" ("userId", "fcmToken", "voipToken", "updatedAt")
+        VALUES (${userId}, ${fcmToken}, ${voipToken}, CURRENT_TIMESTAMP)
+        ON CONFLICT ("userId") DO UPDATE SET
+          "fcmToken" = COALESCE(EXCLUDED."fcmToken", "CallDevice"."fcmToken"),
+          "voipToken" = COALESCE(EXCLUDED."voipToken", "CallDevice"."voipToken"),
+          "updatedAt" = CURRENT_TIMESTAMP
+      `;
+    } catch (error) {
+      this.logger.warn(`call-push insert user=${userId}: ${(error as Error).message}`);
+      throw error;
+    }
     if (fcmToken) {
-      await this.prisma.$executeRaw`UPDATE "User" SET "fcmToken" = ${fcmToken} WHERE "id" = ${userId}`;
+      try {
+        await this.prisma.$executeRaw`UPDATE "User" SET "fcmToken" = ${fcmToken} WHERE "id" = ${userId}`;
+      } catch (error) {
+        this.logger.warn(`call-push user column user=${userId}: ${(error as Error).message}`);
+      }
     }
     this.logger.log(`call device saved user=${userId} fcm=${Boolean(fcmToken)} voip=${Boolean(voipToken)}`);
     return { ok: true };
@@ -350,9 +366,12 @@ export class PushService {
 
   private async postExpo(message: Record<string, unknown>, label: string) {
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+      const expoAuth = process.env.EXPO_ACCESS_TOKEN?.trim();
+      if (expoAuth) headers.Authorization = `Bearer ${expoAuth}`;
       const response = await fetch("https://exp.host/--/api/v2/push/send", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers,
         body: JSON.stringify(message),
       });
       const json = (await response.json().catch(() => null)) as

@@ -52,6 +52,8 @@ model User {
   voiceCloneStatus VoiceCloneStatus @default(NONE)
   plan             AccountPlan      @default(FREE)
   expoPushToken    String?
+  /** Android FCM token for lock-screen / killed-app incoming calls. */
+  fcmToken         String?
   /** Optional recovery email — required when moving the account to a new device. */
   email            String?
   /** False after explicit logout; true while a device holds a valid session. */
@@ -67,6 +69,15 @@ model User {
   transmissionsSent   Transmission[]
   transmissionTargets TransmissionTarget[]
   otpCodes            OtpCode[]
+  callDevice          CallDevice?
+}
+
+model CallDevice {
+  userId    String   @id
+  fcmToken  String?
+  voipToken String?
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model OtpCode {

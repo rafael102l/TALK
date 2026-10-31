@@ -51,7 +51,8 @@ function prisma(args) {
 }
 const generated = prisma(["generate", "--schema", "prisma/schema.runtime.prisma"]);
 if (generated) {
-  prisma(["db", "push", "--skip-generate", "--accept-data-loss", "--schema", "prisma/schema.runtime.prisma"]);
+  // Never accept data loss — a missing model in schema.prisma was wiping CallDevice / fcmToken on every Render boot.
+  prisma(["db", "push", "--skip-generate", "--schema", "prisma/schema.runtime.prisma"]);
 }
 console.log("[ensure-db] schema step finished");
 process.exit(0);

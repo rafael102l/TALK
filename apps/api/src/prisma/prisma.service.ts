@@ -37,6 +37,15 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         `ALTER TABLE "Channel" ADD COLUMN IF NOT EXISTS "disappearAfterSec" INTEGER NOT NULL DEFAULT 0`,
       );
       await this.$executeRawUnsafe(`ALTER TABLE "Transmission" ADD COLUMN IF NOT EXISTS "expiresAt" TIMESTAMP(3)`);
+      await this.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "fcmToken" TEXT`);
+      await this.$executeRawUnsafe(
+        `CREATE TABLE IF NOT EXISTS "CallDevice" (
+          "userId" TEXT PRIMARY KEY,
+          "fcmToken" TEXT,
+          "voipToken" TEXT,
+          "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`,
+      );
       console.log("[db] optional columns ready");
     } catch (error) {
       console.error(`[db] alter columns: ${(error as Error).message}`);

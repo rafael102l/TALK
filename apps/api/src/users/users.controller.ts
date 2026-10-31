@@ -46,6 +46,7 @@ export class UsersController {
   /** FCM device token (Android) and PushKit VoIP token (iOS). */
   @Post("me/call-push")
   callPush(@CurrentUser() user: User, @Body() body: CallPushDto) {
+    console.log(`[HIT] call-push user=${user.id} fcm=${Boolean(body.fcmToken)} voip=${Boolean(body.voipToken)}`);
     return this.push.saveCallDevice(user.id, body);
   }
 
