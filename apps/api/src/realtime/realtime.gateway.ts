@@ -963,10 +963,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     extra?: { channelId?: string; groupId?: string; groupName?: string; group?: boolean },
   ) {
     const groupId = (extra?.groupId || extra?.channelId || "").trim();
-    const group = Boolean(extra?.group || extra?.groupName || groupId);
+    const isGroupCall = Boolean(extra?.group || extra?.groupName || groupId);
     const groupName = (extra?.groupName || "").trim();
-    const callerName = group ? groupName || "קבוצה" : caller.displayName || caller.phoneE164;
-    const callerPhone = group ? "" : caller.phoneE164;
+    const callerPhone = caller.phoneE164;
+    const callerName = isGroupCall
+      ? groupName || "קבוצה"
+      : caller.displayName || callerPhone;
     return {
       callId,
       callerName,
@@ -974,8 +976,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       video,
       channelId: groupId || null,
       groupId: groupId || null,
-      groupName: group ? callerName : null,
-      group,
+      groupName: isGroupCall ? callerName : null,
+      group: isGroupCall,
+      isGroupCall,
+      callerId,
       caller: {
         id: callerId,
         name: caller.displayName || caller.phoneE164,

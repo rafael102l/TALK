@@ -16,6 +16,7 @@ type CallWake = {
   groupId?: string | null;
   groupName?: string | null;
   group?: boolean;
+  isGroupCall?: boolean;
   caller: { id: string; name: string; phone: string; avatarUrl?: string | null; gender?: string | null };
 };
 
@@ -169,23 +170,26 @@ export class PushService implements OnModuleInit {
     const device = await this.callDevice(userId);
     const fcm = device.fcmToken;
     const groupId = (incoming.groupId || incoming.channelId || "").trim();
-    const group = Boolean(incoming.group || incoming.groupName || groupId);
-    const groupName = (incoming.groupName || (group ? incoming.callerName : "") || "").trim();
-    const shownName = group ? groupName || incoming.callerName : incoming.callerName;
-    const shownBody = group ? "שיחה קבוצתית" : incoming.callerPhone || "שיחה נכנסת";
+    const isGroupCall = Boolean(incoming.group || incoming.isGroupCall || incoming.groupName || groupId);
+    const groupName = (incoming.groupName || (isGroupCall ? incoming.callerName : "") || "").trim();
+    const shownName = isGroupCall ? groupName || incoming.callerName : incoming.callerName;
+    const shownBody = isGroupCall ? "שיחה קבוצתית" : incoming.callerPhone || "שיחה נכנסת";
+    const callerId = incoming.caller.id;
+    const callerPhone = incoming.callerPhone || incoming.caller.phone || "";
     const data = {
       type: "incoming_call",
       callId: incoming.callId,
-      callerId: incoming.caller.id,
+      callerId,
       callerName: shownName,
-      callerPhone: group ? "" : incoming.callerPhone || "",
+      callerPhone,
       avatarUrl: incoming.caller.avatarUrl || "",
       gender: incoming.caller.gender || "male",
       video: incoming.video ? "1" : "0",
-      group: group ? "1" : "0",
-      groupId: group ? groupId : "",
-      groupName: group ? shownName : "",
-      channelId: group ? groupId : "",
+      isGroupCall: isGroupCall ? "1" : "0",
+      group: isGroupCall ? "1" : "0",
+      groupId: isGroupCall ? groupId : "",
+      groupName: isGroupCall ? shownName : "",
+      channelId: isGroupCall ? groupId : "",
     };
     let via = "";
     if (fcm) {
