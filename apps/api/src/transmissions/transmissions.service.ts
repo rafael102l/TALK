@@ -228,25 +228,23 @@ export class TransmissionsService {
       const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
       this.logger.log(`Deliver ${kind} ${transmission.id} -> ${target.userId} reached=${reached}`);
       if (reached) void this.noteDelivered(target.id, sender.id, transmission.id, target.userId);
-      if (!reached) {
-        void this.push.notifyUsers(
-          [target.userId],
-          sender.displayName?.trim() || sender.phoneE164,
-          transmission.viewOnce ? (kind === "video" ? "סרטון חד-פעמי" : "תמונה חד-פעמית") : kind === "video" ? "סרטון" : "תמונה",
-          {
-            type: "message",
-            transmissionId: transmission.id,
-            channelId: transmission.channelId,
-            kind,
-            senderId: sender.id,
-            senderName: sender.displayName || "",
-            senderPhone: sender.phoneE164,
-            senderAvatarUrl: senderPublic.avatarUrl || "",
-            audioUrl: mediaUrl,
-            viewOnce: transmission.viewOnce ? "1" : "0",
-          },
-        );
-      }
+      void this.push.notifyUsers(
+        [target.userId],
+        sender.displayName?.trim() || sender.phoneE164,
+        transmission.viewOnce ? (kind === "video" ? "סרטון חד-פעמי" : "תמונה חד-פעמית") : kind === "video" ? "סרטון" : "תמונה",
+        {
+          type: "message",
+          transmissionId: transmission.id,
+          channelId: transmission.channelId,
+          kind,
+          senderId: sender.id,
+          senderName: sender.displayName || "",
+          senderPhone: sender.phoneE164,
+          senderAvatarUrl: senderPublic.avatarUrl || "",
+          audioUrl: mediaUrl,
+          viewOnce: transmission.viewOnce ? "1" : "0",
+        },
+      );
     }
     void Promise.all(
       users.map(async (target) => {
@@ -728,7 +726,7 @@ export class TransmissionsService {
         } else if (reached) {
           deliveredJobs.push(this.noteDelivered(target.id, sender.id, transmission.id, target.userId));
         }
-        if (delivery === "walkie" || !reached) {
+        if (delivery !== "walkie" || !reached) {
           void this.push.notifyOfflineMessage(target.userId, {
             transmissionId: transmission.id,
             channelId: transmission.channelId,
