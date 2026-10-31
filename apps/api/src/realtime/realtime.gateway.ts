@@ -17,7 +17,7 @@ import { Server, Socket } from "socket.io";
 import { loadChannelIds, loadUser } from "../auth/load-user";
 import { PrismaService } from "../prisma/prisma.service";
 import { JwtPayload } from "../auth/jwt-payload";
-import { CallRegistry } from "./call.registry";
+import { CallRegistry, type LiveCall } from "./call.registry";
 import { FloorService } from "./floor.service";
 import { PresenceService } from "./presence.service";
 import { PushService } from "../push/push.service";
@@ -589,6 +589,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   hasLiveSocket(userId: string) {
     if (!userId || !this.server?.sockets) return false;
+    if (this.roomCount(userId) > 0) return true;
     return this.connectedCount(userId) > 0;
   }
 
@@ -596,27 +597,31 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const room = `user:${userId}`;
     if (!this.server?.sockets) {
       this.logger.debug(`Socket server not ready for ${event} user=${userId}`);
-      this.wakeChatIfNeeded(userId, event, payload);
+      this.wakeOffline(userId, event, payload);
       return false;
     }
+    if (this.emitLive(userId, event, payload)) return true;
     const n = this.connectedCount(userId);
     if (!n) {
-      const chatReady = event === SOCKET_EVENTS.TRANSMISSION_READY;
-      if (chatReady) {
+      const callEvent =
+        event === SOCKET_EVENTS.END_CALL ||
+        event === SOCKET_EVENTS.REJECT_CALL ||
+        event === SOCKET_EVENTS.INCOMING_CALL;
+      const walkieReady = event === SOCKET_EVENTS.TRANSMISSION_READY && isWalkiePayload(payload);
+      if (callEvent || walkieReady) {
         this.logger.warn(`No live socket for ${event} user=${userId} — sending FCM`);
-        this.wakeChatIfNeeded(userId, event, payload);
-      } else {
-        this.logger.debug(`No live socket for ${event} user=${userId}`);
+        this.wakeOffline(userId, event, payload);
+        return false;
       }
+      this.logger.debug(`No live socket for ${event} user=${userId}`);
       if (
         retry &&
         (event === SOCKET_EVENTS.TRANSMISSION_READY ||
           event === SOCKET_EVENTS.CHAT_REACTION ||
+          event === SOCKET_EVENTS.CHAT_EDIT ||
           event === SOCKET_EVENTS.CHAT_RECEIPT ||
           event === "chat:receipt" ||
-          event === SOCKET_EVENTS.TRANSMISSION_REMOVED ||
-          event === SOCKET_EVENTS.END_CALL ||
-          event === SOCKET_EVENTS.REJECT_CALL)
+          event === SOCKET_EVENTS.TRANSMISSION_REMOVED)
       ) {
         setTimeout(() => this.emitToUser(userId, event, payload, false), 2000);
         setTimeout(() => this.emitToUser(userId, event, payload, false), 8000);
@@ -627,24 +632,20 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     return true;
   }
 
-  private wakeChatIfNeeded(userId: string, event: string, payload: unknown) {
-    if (event !== SOCKET_EVENTS.TRANSMISSION_READY) return;
+  private wakeOffline(userId: string, event: string, payload: unknown) {
     const row = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
-    void this.push.notifyOfflineMessage(userId, {
-      transmissionId: String(row.transmissionId || ""),
-      kind: String(row.kind || ""),
-      type: String(row.type || ""),
-      senderName: String(row.senderName || ""),
-      senderPhone: String(row.senderPhone || ""),
-      senderId: String(row.senderId || ""),
-      senderAvatarUrl: typeof row.senderAvatarUrl === "string" ? row.senderAvatarUrl : "",
-      channelId: String(row.channelId || ""),
-      audioUrl: typeof row.audioUrl === "string" ? row.audioUrl : "",
-      originalText: typeof row.originalText === "string" ? row.originalText : "",
-      translatedText: typeof row.translatedText === "string" ? row.translatedText : "",
-      speakLang: String(row.speakLang || ""),
-      language: String(row.language || ""),
-    });
+    const callId = String(row.callId || "");
+    if (event === SOCKET_EVENTS.INCOMING_CALL) {
+      void this.push.notifyIncomingCall(userId, payload as Parameters<PushService["notifyIncomingCall"]>[1]);
+      return;
+    }
+    if ((event === SOCKET_EVENTS.END_CALL || event === SOCKET_EVENTS.REJECT_CALL) && callId) {
+      void this.push.notifyCallEnded(userId, callId, String(row.reason || "cancelled"));
+      return;
+    }
+    if (event === SOCKET_EVENTS.TRANSMISSION_READY && isWalkiePayload(payload)) {
+      void this.push.notifyWalkie(userId, row as Parameters<PushService["notifyWalkie"]>[1]);
+    }
   }
 
   emitToChannel(channelId: string, event: string, payload: unknown) {
@@ -663,29 +664,28 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage(SOCKET_EVENTS.CALL_USER)
   async callUser(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { targetUserId?: string; callId?: string; video?: boolean },
+    @MessageBody()
+    body: {
+      targetUserId?: string;
+      targetUserIds?: string[];
+      channelId?: string;
+      groupName?: string;
+      callId?: string;
+      video?: boolean;
+    },
   ) {
     if (!client.userId) return { ok: false };
     if (!(await this.sessionStillValid(client))) {
       this.logger.warn(`call-user rejected session user=${client.userId}`);
       return { ok: false };
     }
-    const targetUserId = (body?.targetUserId || "").slice(0, 80);
     const callId = (body?.callId || "").slice(0, 80);
-    if (!targetUserId || !callId || targetUserId === client.userId) return { ok: false };
-    const fromBusy = this.calls.busy(client.userId);
-    const toBusy = this.calls.busy(targetUserId);
-    if (fromBusy) this.dropStuckCall(fromBusy, "caller-redial");
-    if (toBusy && toBusy.callId !== fromBusy?.callId) {
-      const samePair =
-        (toBusy.callerId === client.userId && toBusy.calleeId === targetUserId) ||
-        (toBusy.callerId === targetUserId && toBusy.calleeId === client.userId);
-      if (!toBusy.accepted || samePair) this.dropStuckCall(toBusy, samePair ? "same-pair" : "callee-ringing");
-    }
-    if (this.calls.busy(client.userId) || this.calls.busy(targetUserId)) {
-      this.logger.warn(
-        `call-user busy from=${client.userId} to=${targetUserId} id=${callId} stuck=${this.calls.busy(client.userId)?.callId || "-"}/${this.calls.busy(targetUserId)?.callId || "-"}`,
-      );
+    if (!callId) return { ok: false };
+    const targets = await this.resolveCallTargets(client.userId, body);
+    if (!targets.length) return { ok: false };
+    await this.clearBusy(client.userId, callId, "caller-redial");
+    if (await this.calls.busyNow(client.userId, callId)) {
+      this.logger.warn(`call-user busy from=${client.userId} id=${callId} stuck=${this.calls.busy(client.userId, callId)?.callId || "-"}`);
       client.emit(SOCKET_EVENTS.CALL_BUSY, { callId });
       return { ok: false, reason: "busy" };
     }
@@ -694,47 +694,89 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       select: { displayName: true, avatarUrl: true, voiceGender: true, phoneE164: true },
     });
     if (!caller) return { ok: false };
-    const incoming = this.incomingBody(callId, client.userId, caller, Boolean(body?.video));
-    const socketLive = this.connectedCount(targetUserId) > 0;
-    this.logger.log(
-      `call-user from=${client.userId} sid=${client.id} to=${targetUserId} callId=${callId} calleeSocket=${String(socketLive)} calleeRoom=${this.roomCount(targetUserId)}`,
-    );
-    void this.push.notifyIncomingCall(targetUserId, incoming);
-    const timer = setTimeout(() => this.expireCall(callId), 45_000);
-    this.calls.open({
-      callId,
-      callerId: client.userId,
-      calleeId: targetUserId,
-      callerName: incoming.callerName,
-      callerPhone: incoming.callerPhone,
-      callerAvatar: caller.avatarUrl,
-      callerGender: caller.voiceGender || "male",
-      video: Boolean(body?.video),
-      accepted: false,
-      timer,
+    const group = Boolean(body?.channelId) || targets.length > 1;
+    const incoming = this.incomingBody(callId, client.userId, caller, Boolean(body?.video), {
+      channelId: body?.channelId,
+      groupName: body?.groupName,
+      group,
     });
-    this.emitToUser(targetUserId, SOCKET_EVENTS.INCOMING_CALL, incoming, false);
-    this.logger.log(`call open id=${callId} from=${client.userId} to=${targetUserId} socket=${String(socketLive)}`);
+    let call = this.calls.get(callId);
+    if (!call) {
+      const timer = setTimeout(() => this.expireCall(callId), 45_000);
+      call = {
+        callId,
+        callerId: client.userId,
+        calleeId: targets[0],
+        invitedIds: [...targets],
+        joinedIds: [client.userId],
+        channelId: body?.channelId,
+        groupName: body?.groupName,
+        callerName: incoming.callerName,
+        callerPhone: incoming.callerPhone,
+        callerAvatar: caller.avatarUrl ? this.storage.publicUrl(caller.avatarUrl) : null,
+        callerGender: caller.voiceGender || "male",
+        video: Boolean(body?.video),
+        accepted: false,
+        openedAt: Date.now(),
+        timer,
+      };
+      this.calls.open(call);
+    } else if (call.callerId !== client.userId) {
+      client.emit(SOCKET_EVENTS.CALL_BUSY, { callId });
+      return { ok: false, reason: "busy" };
+    } else {
+      for (const id of targets) {
+        if (!call.invitedIds.includes(id) && !call.joinedIds.includes(id)) call.invitedIds.push(id);
+      }
+      this.calls.touch(call);
+    }
+    const ring = call.invitedIds.filter((id) => !call!.joinedIds.includes(id));
+    for (const targetUserId of ring) {
+      const toBusy = (await this.calls.busyNow(targetUserId, callId)) ?? this.calls.busy(targetUserId, callId);
+      if (toBusy) {
+        const samePair =
+          (toBusy.callerId === client.userId && toBusy.calleeId === targetUserId) ||
+          (toBusy.callerId === targetUserId && toBusy.calleeId === client.userId) ||
+          toBusy.invitedIds.includes(client.userId);
+        if (!toBusy.accepted || samePair) this.dropStuckCall(toBusy, samePair ? "same-pair" : "callee-ringing");
+        else this.ensureExpire(toBusy);
+      }
+      if (this.calls.busy(targetUserId, callId) || (await this.calls.busyNow(targetUserId, callId))) {
+        this.logger.warn(`call-user busy to=${targetUserId} id=${callId}`);
+        client.emit(SOCKET_EVENTS.CALL_BUSY, { callId, userId: targetUserId });
+        continue;
+      }
+      void this.push.notifyIncomingCall(targetUserId, incoming);
+      this.emitToUser(targetUserId, SOCKET_EVENTS.INCOMING_CALL, incoming, true);
+      this.logger.log(`call-user from=${client.userId} to=${targetUserId} id=${callId} group=${String(group)}`);
+    }
     return { ok: true, callId };
   }
 
   @SubscribeMessage(SOCKET_EVENTS.ACCEPT_CALL)
   acceptCall(@ConnectedSocket() client: AuthedSocket, @MessageBody() body: { callId?: string }) {
-    const call = this.liveCallFor(client.userId, body?.callId);
-    if (!call || call.calleeId !== client.userId) return { ok: false };
-    call.accepted = true;
-    if (call.timer) clearTimeout(call.timer);
-    call.timer = setTimeout(() => this.expireCall(call.callId), 30 * 60_000);
-    this.emitToUser(call.callerId, SOCKET_EVENTS.ACCEPT_CALL, { callId: call.callId }, false);
-    return { ok: true };
+    if (!client.userId) return { ok: false };
+    return this.markAccepted(client.userId, body?.callId);
   }
 
   @SubscribeMessage(SOCKET_EVENTS.REJECT_CALL)
   rejectCall(@ConnectedSocket() client: AuthedSocket, @MessageBody() body: { callId?: string }) {
     const call = this.liveCallFor(client.userId, body?.callId);
     if (!call || !client.userId) return { ok: false };
+    const group = call.invitedIds.length > 1 || Boolean(call.channelId);
+    if (group && call.callerId !== client.userId) {
+      call.invitedIds = call.invitedIds.filter((id) => id !== client.userId);
+      call.joinedIds = call.joinedIds.filter((id) => id !== client.userId);
+      this.calls.touch(call);
+      this.emitToUser(call.callerId, SOCKET_EVENTS.REJECT_CALL, { callId: call.callId, userId: client.userId }, false);
+      this.emitToUser(call.callerId, SOCKET_EVENTS.CALL_PEER_LEFT, { callId: call.callId, userId: client.userId }, false);
+      if (call.joinedIds.length <= 1 && call.invitedIds.every((id) => call.joinedIds.includes(id))) {
+        this.finishLiveCall(call, "cancelled", client.userId);
+      }
+      return { ok: true };
+    }
+    this.finishLiveCall(call, "cancelled", client.userId);
     this.logger.log(`call reject id=${call.callId} by=${client.userId}`);
-    this.finishCall(call, "cancelled", client.userId);
     return { ok: true };
   }
 
@@ -744,77 +786,121 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     @MessageBody() body: { callId?: string; reason?: string },
   ) {
     const call = this.liveCallFor(client.userId, body?.callId) ?? this.calls.get((body?.callId || "").slice(0, 80));
-    if (!call || !client.userId || (call.callerId !== client.userId && call.calleeId !== client.userId)) {
-      return { ok: false };
+    if (!call || !client.userId || !this.calls.inCall(call, client.userId)) return { ok: false };
+    const group = call.invitedIds.length > 1 || Boolean(call.channelId);
+    if (group && call.callerId !== client.userId) {
+      call.invitedIds = call.invitedIds.filter((id) => id !== client.userId);
+      call.joinedIds = call.joinedIds.filter((id) => id !== client.userId);
+      this.calls.touch(call);
+      for (const userId of this.calls.others(call.callId, client.userId)) {
+        this.emitToUser(userId, SOCKET_EVENTS.CALL_PEER_LEFT, { callId: call.callId, userId: client.userId }, false);
+      }
+      if (call.joinedIds.length <= 1) this.finishLiveCall(call, "ended", client.userId);
+      return { ok: true };
     }
     const reason = call.accepted ? "ended" : body?.reason || "cancelled";
+    this.finishLiveCall(call, reason, client.userId);
     this.logger.log(`call end id=${call.callId} by=${client.userId}`);
-    this.finishCall(call, reason, client.userId);
     return { ok: true };
-  }
-
-  async hangupFromHttp(userId: string, callId: string, reason = "cancelled") {
-    const id = callId.slice(0, 80);
-    const call = this.calls.get(id);
-    if (!call || (call.callerId !== userId && call.calleeId !== userId)) {
-      return { ok: false };
-    }
-    this.finishCall(call, call.accepted ? "ended" : reason || "cancelled", userId);
-    this.logger.log(`call http-end id=${call.callId} by=${userId}`);
-    return { ok: true };
-  }
-
-  private finishCall(
-    call: { callId: string; callerId: string; calleeId: string },
-    reason: string,
-    exceptUserId?: string,
-  ) {
-    this.calls.end(call.callId);
-    const targets = [call.callerId, call.calleeId].filter((id) => id && id !== exceptUserId);
-    for (const userId of targets) {
-      this.emitToUser(userId, SOCKET_EVENTS.END_CALL, { callId: call.callId, reason }, true);
-      this.emitToUser(userId, SOCKET_EVENTS.REJECT_CALL, { callId: call.callId, reason }, false);
-      void this.push.notifyCallEnded(userId, call.callId, reason);
-    }
   }
 
   @SubscribeMessage(SOCKET_EVENTS.CALL_OFFER)
   callOffer(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { callId?: string; sdp?: string },
+    @MessageBody() body: { callId?: string; sdp?: string; toUserId?: string },
   ) {
-    return this.relaySignal(client, body?.callId, SOCKET_EVENTS.CALL_OFFER, { sdp: body?.sdp || "" });
+    return this.relaySignal(client, body?.callId, SOCKET_EVENTS.CALL_OFFER, { sdp: body?.sdp || "" }, body?.toUserId);
   }
 
   @SubscribeMessage(SOCKET_EVENTS.CALL_ANSWER)
   callAnswer(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { callId?: string; sdp?: string },
+    @MessageBody() body: { callId?: string; sdp?: string; toUserId?: string },
   ) {
-    return this.relaySignal(client, body?.callId, SOCKET_EVENTS.CALL_ANSWER, { sdp: body?.sdp || "" });
+    return this.relaySignal(client, body?.callId, SOCKET_EVENTS.CALL_ANSWER, { sdp: body?.sdp || "" }, body?.toUserId);
   }
 
   @SubscribeMessage(SOCKET_EVENTS.CALL_ICE)
   callIce(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { callId?: string; candidate?: unknown },
+    @MessageBody() body: { callId?: string; candidate?: unknown; toUserId?: string },
   ) {
-    return this.relaySignal(client, body?.callId, SOCKET_EVENTS.CALL_ICE, { candidate: body?.candidate ?? null });
+    return this.relaySignal(
+      client,
+      body?.callId,
+      SOCKET_EVENTS.CALL_ICE,
+      { candidate: body?.candidate ?? null },
+      body?.toUserId,
+    );
   }
 
-  private relaySignal(client: AuthedSocket, callId: string | undefined, event: string, extra: object) {
+  private relaySignal(
+    client: AuthedSocket,
+    callId: string | undefined,
+    event: string,
+    extra: object,
+    toUserId?: string,
+  ) {
     const call = this.liveCallFor(client.userId, callId);
-    if (!call) return { ok: false };
-    const other = call.callerId === client.userId ? call.calleeId : call.callerId;
-    this.emitToUser(other, event, { callId: call.callId, ...extra }, false);
+    if (!call || !client.userId) return { ok: false };
+    const target =
+      toUserId && this.calls.inCall(call, toUserId)
+        ? toUserId
+        : call.callerId === client.userId
+          ? call.calleeId
+          : call.callerId;
+    if (!target || target === client.userId) return { ok: false };
+    this.emitToUser(target, event, { callId: call.callId, fromUserId: client.userId, toUserId: target, ...extra }, false);
     return { ok: true };
+  }
+
+  private markAccepted(userId: string, callId: string | undefined) {
+    const call = this.liveCallFor(userId, callId) ?? this.calls.get((callId || "").slice(0, 80));
+    if (!call || call.callerId === userId || !this.calls.inCall(call, userId)) return { ok: false };
+    call.accepted = true;
+    if (!call.joinedIds.includes(userId)) call.joinedIds.push(userId);
+    if (call.timer) clearTimeout(call.timer);
+    call.timer = setTimeout(() => this.expireCall(call.callId), 30 * 60_000);
+    this.calls.touch(call);
+    setTimeout(() => this.expireIfNoSignal(call.callId), 20_000);
+    const already = call.joinedIds.filter((id) => id !== userId);
+    const joiner = { callId: call.callId, userId };
+    this.emitToUser(call.callerId, SOCKET_EVENTS.ACCEPT_CALL, joiner, false);
+    for (const peerId of already) {
+      if (peerId === call.callerId) continue;
+      this.emitToUser(peerId, SOCKET_EVENTS.CALL_PEER_JOINED, joiner, false);
+    }
+    return { ok: true, participants: already };
   }
 
   private liveCallFor(userId: string | undefined, callId: string | undefined) {
     if (!userId || !callId) return undefined;
     const call = this.calls.get(callId);
-    if (!call || (call.callerId !== userId && call.calleeId !== userId)) return undefined;
+    if (!call || !this.calls.inCall(call, userId)) return undefined;
     return call;
+  }
+
+  private async resolveCallTargets(
+    callerId: string,
+    body: { targetUserId?: string; targetUserIds?: string[]; channelId?: string },
+  ) {
+    const listed = [...(body.targetUserIds || []), body.targetUserId || ""]
+      .map((id) => id.slice(0, 80))
+      .filter((id) => id && id !== callerId);
+    const unique = [...new Set(listed)];
+    const channelId = (body.channelId || "").slice(0, 80);
+    if (!channelId) return unique;
+    const member = await this.prisma.channelMember.findUnique({
+      where: { channelId_userId: { channelId, userId: callerId } },
+    });
+    if (!member) return unique;
+    const members = await this.prisma.channelMember.findMany({
+      where: { channelId, userId: { not: callerId } },
+      select: { userId: true },
+    });
+    const allowed = new Set(members.map((row) => row.userId));
+    if (!unique.length) return [...allowed];
+    return unique.filter((id) => allowed.has(id));
   }
 
   private connectedCount(userId: string) {
@@ -844,6 +930,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       callerName: call.callerName,
       callerPhone: call.callerPhone,
       video: Boolean(call.video),
+      channelId: call.channelId || null,
+      groupName: call.groupName || null,
+      group: Boolean(call.channelId) || call.invitedIds.length > 1,
       caller: {
         id: call.callerId,
         name: call.callerName,
@@ -860,19 +949,23 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     callerId: string,
     caller: { displayName: string | null; phoneE164: string; avatarUrl: string | null; voiceGender: string | null },
     video = false,
+    extra?: { channelId?: string; groupName?: string; group?: boolean },
   ) {
-    const callerName = caller.displayName || caller.phoneE164;
+    const callerName = extra?.groupName || caller.displayName || caller.phoneE164;
     const callerPhone = caller.phoneE164;
     return {
       callId,
       callerName,
       callerPhone,
       video,
+      channelId: extra?.channelId || null,
+      groupName: extra?.groupName || null,
+      group: Boolean(extra?.group),
       caller: {
         id: callerId,
-        name: callerName,
+        name: caller.displayName || caller.phoneE164,
         phone: callerPhone,
-        avatarUrl: caller.avatarUrl,
+        avatarUrl: caller.avatarUrl ? this.storage.publicUrl(caller.avatarUrl) : null,
         gender: caller.voiceGender || "male",
       },
     };
@@ -903,24 +996,100 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.logger.warn(`call unavailable id=${callId} to=${targetUserId} no socket`);
   }
 
+  async acceptFromHttp(userId: string, callId: string) {
+    const id = (callId || "").slice(0, 80);
+    if (!id) return { ok: false };
+    const call = this.calls.get(id) ?? (await this.calls.load(id));
+    if (!call) return { ok: false };
+    this.ensureExpire(call);
+    const result = this.markAccepted(userId, id);
+    this.logger.log(`call http-accept id=${id} by=${userId} ok=${String(result.ok)}`);
+    return result;
+  }
+
+  async hangupFromHttp(userId: string, callId: string, reason = "cancelled") {
+    const id = callId.slice(0, 80);
+    const call = this.calls.get(id) ?? (await this.calls.load(id));
+    if (!call || !this.calls.inCall(call, userId)) {
+      void this.push.notifyCallEnded(userId, id, reason);
+      return { ok: false };
+    }
+    this.finishLiveCall(call, reason);
+    this.logger.log(`call http-end id=${call.callId} by=${userId}`);
+    return { ok: true };
+  }
+
+  private finishLiveCall(
+    call: { callId: string; callerId: string; calleeId: string; invitedIds?: string[]; joinedIds?: string[] },
+    reason: string,
+    exceptSocketUserId?: string,
+  ) {
+    this.calls.end(call.callId);
+    const targets = [...new Set([call.callerId, call.calleeId, ...(call.invitedIds || []), ...(call.joinedIds || [])])].filter(
+      (id) => Boolean(id),
+    );
+    for (const userId of targets) {
+      const other = this.calls.busy(userId);
+      if (other && other.callId !== call.callId) {
+        this.logger.log(`call skip-end user=${userId} stale=${call.callId} live=${other.callId}`);
+        continue;
+      }
+      if (userId !== exceptSocketUserId) {
+        this.emitToUser(userId, SOCKET_EVENTS.END_CALL, { callId: call.callId, reason }, false);
+        this.emitToUser(userId, SOCKET_EVENTS.REJECT_CALL, { callId: call.callId, reason }, false);
+      }
+      void this.push.notifyCallEnded(userId, call.callId, reason);
+    }
+  }
+
+  private async clearBusy(userId: string, exceptCallId: string, why: string) {
+    const seen = new Set<string>();
+    for (let i = 0; i < 4; i += 1) {
+      const stuck = (await this.calls.busyNow(userId, exceptCallId)) ?? this.calls.busy(userId, exceptCallId);
+      if (!stuck || seen.has(stuck.callId)) break;
+      seen.add(stuck.callId);
+      this.ensureExpire(stuck);
+      this.dropStuckCall(stuck, why);
+    }
+  }
+
+  private ensureExpire(call: LiveCall) {
+    if (call.timer) return;
+    const age = Date.now() - (call.openedAt || Date.now());
+    const wait = call.accepted ? 30 * 60_000 : Math.max(0, 45_000 - age);
+    call.timer = setTimeout(() => this.expireCall(call.callId), wait);
+    this.calls.touch(call);
+  }
+
+  private expireIfNoSignal(callId: string) {
+    const call = this.calls.get(callId);
+    if (!call?.accepted) return;
+    const parties = [...new Set([call.callerId, call.calleeId, ...call.joinedIds])].filter(Boolean);
+    const live = parties.filter((id) => this.hasLiveSocket(id)).length;
+    if (live >= 2) return;
+    this.logger.warn(`call expire-no-signal id=${callId} sockets=${live}`);
+    this.finishLiveCall(call, "ended");
+  }
+
   private dropStuckCall(
-    call: { callId: string; callerId: string; calleeId: string; accepted: boolean },
+    call: { callId: string; callerId: string; calleeId: string; invitedIds?: string[]; joinedIds?: string[]; accepted: boolean },
     why: string,
   ) {
     this.logger.warn(`call drop-stuck id=${call.callId} accepted=${String(call.accepted)} why=${why}`);
-    this.finishCall(call, call.accepted ? "ended" : "cancelled");
+    this.finishLiveCall(call, call.accepted ? "ended" : "cancelled");
   }
 
   private expireCall(callId: string) {
     const call = this.calls.get(callId);
     if (!call) return;
     if (call.accepted) {
-      this.finishCall(call, "ended");
+      this.finishLiveCall(call, "ended");
       this.logger.log(`call expire-accepted id=${callId}`);
       return;
     }
-    this.finishCall(call, "missed");
-    if (this.connectedCount(call.calleeId) === 0) void this.rememberExpiredMiss(call);
+    const calleeId = call.calleeId;
+    this.finishLiveCall(call, "missed");
+    if (this.connectedCount(calleeId) === 0) void this.rememberExpiredMiss(call);
     this.logger.log(`call missed id=${callId}`);
   }
 
@@ -946,4 +1115,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     if (header) return header.replace(/^Bearer\s+/i, "");
     throw new Error("missing token");
   }
+}
+
+function isWalkiePayload(payload: unknown) {
+  if (!payload || typeof payload !== "object") return false;
+  const row = payload as { kind?: unknown; type?: unknown };
+  return row.kind === "walkie" || row.type === "walkie";
 }
