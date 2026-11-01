@@ -426,8 +426,14 @@ export class TransmissionsService {
                 langB: language,
                 gender: voiceGender,
               });
+        const src = (next.sourceLang || "").slice(0, 2).toLowerCase();
+        const dst = (next.targetLang || "").slice(0, 2).toLowerCase();
         const line = (
-          language === speak ? next.sourceText || originalText : next.translatedText || next.sourceText || ""
+          language === src
+            ? next.sourceText || originalText
+            : language === dst
+              ? next.translatedText || ""
+              : next.translatedText || next.sourceText || ""
         ).replace(/\s+/g, " ").trim();
         if (!line || /^\[unclear\]$/i.test(line)) {
           this.logger.warn(`Walkie dub no translation ${transmissionId} ${speak}->${language}`);
