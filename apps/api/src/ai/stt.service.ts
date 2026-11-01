@@ -158,18 +158,45 @@ export class SttService {
     const spoken = liveSpeech(stt);
     if (!key || !spoken) return { text: "", raw: "" };
     const grammatical = speakerGender === "female" || speakerGender === "child" ? "female" : "male";
-    const genderLine =
+    const extra = (src: string, out: string) => {
+      const clean = (out || "").replace(/\s+/g, " ").trim();
+      if (!clean) return false;
+      const count = (line: string) =>
+        line.split(/[.!?…؟。！？]+/u).map((part) => part.trim()).filter(Boolean).length || (line.trim() ? 1 : 0);
+      if (count(clean) > count(src)) return true;
+      const srcWords = src.split(/\s+/).filter(Boolean).length;
+      const outWords = clean.split(/\s+/).filter(Boolean).length;
+      return outWords > srcWords + 5 && outWords > Math.ceil(srcWords * 1.8);
+    };
+    const instruction = [
+      `Translate ONLY the spoken words into ${langName(targetLang)}.`,
       grammatical === "female"
-        ? `Translate the text into ${langName(targetLang)}, ensuring all verbs, adjectives, and grammar are strictly in the feminine grammatical gender (לשון נקבה).`
-        : `Translate the text into ${langName(targetLang)}, ensuring all verbs, adjectives, and grammar are strictly in the masculine grammatical gender (לשון זכר).`;
-    const instruction = `${genderLine} ${LIVE_LITERAL} ${LIVE_ONLY}`;
+        ? "Use feminine grammar (לשון נקבה) only where the source requires it."
+        : "Use masculine grammar (לשון זכר) only where the source requires it.",
+      "The translation must be the same utterance in the other language.",
+      "Do not add names, greetings, questions, explanations, or any word that was not spoken.",
+      "Do not complete, repair, soften, or invent.",
+      "If the source is short, keep the translation short.",
+      "Return only the translation.",
+    ].join(" ");
     this.logger.log(`LOG [TRANSLATION] gender=${grammatical}`);
     const translationStarted = Date.now();
-    const translated = await this.geminiLive(key, instruction, [{ text: spoken }], LIVE_TRANSLATION_TOKENS);
+    let translated = await this.geminiLive(key, instruction, [{ text: spoken }], LIVE_TRANSLATION_TOKENS);
+    if (extra(spoken, translated.text)) {
+      this.logger.warn(`LOG [TRANSLATION] extra words retry ${JSON.stringify(translated.raw)}`);
+      translated = await this.geminiLive(
+        key,
+        `${instruction} Previous output added words that were not spoken. Translate again using only the source.`,
+        [{ text: spoken }],
+        80,
+      );
+    }
+    const text = extra(spoken, translated.text) ? "" : translated.text;
+    if (!text && translated.text) this.logger.warn(`LOG [TRANSLATION] extra words dropped ${JSON.stringify(translated.raw)}`);
     this.logger.log(`LOG [PERF] Gemini Translation duration: ${Date.now() - translationStarted} ms`);
     this.logger.log(`LOG [TRACE] Gemini Output: ${JSON.stringify(translated.raw)}`);
-    this.logger.log(`LOG [TRANSLATION] Translated text: ${JSON.stringify(translated.raw)}`);
-    return { text: translated.text, raw: translated.raw };
+    this.logger.log(`LOG [TRANSLATION] Translated text: ${JSON.stringify(text || translated.raw)}`);
+    return { text, raw: translated.raw };
   }
 
   private async geminiLive(
