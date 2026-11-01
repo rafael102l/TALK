@@ -151,6 +151,28 @@ export class PushService implements OnModuleInit {
     }
   }
 
+  /** High-priority FCM when the listener has no live socket. */
+  async notifyWalkie(
+    userId: string,
+    payload: {
+      transmissionId?: string;
+      channelId?: string;
+      senderId?: string;
+      senderName?: string;
+      senderPhone?: string;
+      senderAvatarUrl?: string | null;
+      audioUrl?: string | null;
+      kind?: string;
+      speakLang?: string;
+      language?: string;
+      originalText?: string | null;
+      translatedText?: string | null;
+      voiceGender?: string;
+    },
+  ) {
+    return this.notifyOfflineMessage(userId, { ...payload, kind: "walkie", type: "walkie" });
+  }
+
   /** Wake a phone that has no live socket. Returns false when there is no token to try. */
   async notifyIncomingCall(userId: string, incoming: CallWake) {
     try {
