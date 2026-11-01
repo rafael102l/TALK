@@ -17,6 +17,7 @@ export const SOCKET_EVENTS = {
   CHAT_TYPING: "chat:typing",
   CHAT_REACTION: "chat:reaction",
   CHAT_RECEIPT: "chat:receipt",
+  CHAT_EDIT: "chat:edit",
   INCOMING: "incoming:transmission",
   CONTACT_REQUEST: "contact:request",
   CONTACT_ACCEPTED: "contact:accepted",
@@ -32,6 +33,8 @@ export const SOCKET_EVENTS = {
   CALL_ICE: "call-ice",
   CALL_UNAVAILABLE: "call-unavailable",
   CALL_BUSY: "call-busy",
+  CALL_PEER_JOINED: "call-peer-joined",
+  CALL_PEER_LEFT: "call-peer-left",
   /** Missed calls that arrived while this phone had no socket. Sent once on reconnect. */
   CALL_MISSED_SYNC: "call-missed-sync",
 } as const;
