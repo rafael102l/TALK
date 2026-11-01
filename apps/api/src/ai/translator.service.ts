@@ -52,6 +52,8 @@ type Turn = {
   sourceLang: string;
   targetLang: string;
 };
+const recentTurns = new Map<string, { at: number; turn: Turn }>();
+const inflightTurns = new Map<string, Promise<Turn>>();
 
 @Injectable()
 export class TranslatorService {
@@ -77,7 +79,25 @@ export class TranslatorService {
       return this.finishTurn(preset, sourceLang, targetLang);
     }
     if (input.audio?.length) {
-      return (await this.hearAndTranslate(input.audio, input.mime || "audio/mp4", input.ext || "m4a", langA, langB)) || empty;
+      let hash = input.audio.length;
+      const step = Math.max(1, Math.floor(input.audio.length / 80));
+      for (let i = 0; i < input.audio.length; i += step) hash = (Math.imul(hash, 31) + input.audio[i]) | 0;
+      const pair = langA < langB ? `${langA}:${langB}` : `${langB}:${langA}`;
+      const key = `${input.audio.length}:${hash}:${pair}`;
+      const hit = recentTurns.get(key);
+      if (hit && Date.now() - hit.at < 45_000) return hit.turn;
+      const pending = inflightTurns.get(key);
+      if (pending) return pending;
+      const job = (async () =>
+        (await this.hearAndTranslate(input.audio!, input.mime || "audio/mp4", input.ext || "m4a", langA, langB)) || empty)();
+      inflightTurns.set(key, job);
+      try {
+        const turn = await job;
+        if (turn.sourceText) recentTurns.set(key, { at: Date.now(), turn });
+        return turn;
+      } finally {
+        inflightTurns.delete(key);
+      }
     }
     return empty;
   }

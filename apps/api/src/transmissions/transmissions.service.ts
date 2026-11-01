@@ -22,6 +22,7 @@ import {
   usableSpeech,
 } from "../ai/stt.service";
 import { TranslateService } from "../ai/translate.service";
+import { TranslatorService } from "../ai/translator.service";
 import { TtsService } from "../ai/tts.service";
 import { ChannelsService } from "../channels/channels.service";
 import { ContactsService } from "../contacts/contacts.service";
@@ -43,6 +44,7 @@ export class TransmissionsService {
     private readonly channels: ChannelsService,
     private readonly contacts: ContactsService,
     private readonly stt: SttService,
+    private readonly translator: TranslatorService,
     private readonly translate: TranslateService,
     private readonly tts: TtsService,
     private readonly realtime: RealtimeGateway,
@@ -393,8 +395,17 @@ export class TransmissionsService {
   ) {
     try {
       const ext = extFrom(file);
-      const heard = await this.stt.hearClip(file.buffer, file.mimetype || "audio/wav", ext, speak);
-      const originalText = heard.stt.trim();
+      const languages = [...new Set(dubbed.map((row) => row.language))];
+      const hear = languages[0] || (speak === "he" ? "en" : "he");
+      const turn = await this.translator.runTurn({
+        audio: file.buffer,
+        mime: file.mimetype || "audio/wav",
+        ext,
+        langA: speak,
+        langB: hear,
+        gender: voiceGender,
+      });
+      const originalText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
       if (!originalText) {
         this.logger.warn(`Walkie dub empty stt ${transmissionId}`);
         return;
@@ -403,10 +414,21 @@ export class TransmissionsService {
         where: { id: transmissionId },
         data: { originalText },
       });
-      const languages = [...new Set(dubbed.map((row) => row.language))];
       for (const language of languages) {
-        const translated = await this.stt.translateHeard(originalText, language, voiceGender);
-        const line = translated.text.replace(/\s+/g, " ").trim();
+        const next =
+          language === hear
+            ? turn
+            : await this.translator.runTurn({
+                audio: file.buffer,
+                mime: file.mimetype || "audio/wav",
+                ext,
+                langA: speak,
+                langB: language,
+                gender: voiceGender,
+              });
+        const line = (
+          language === speak ? next.sourceText || originalText : next.translatedText || next.sourceText || ""
+        ).replace(/\s+/g, " ").trim();
         if (!line || /^\[unclear\]$/i.test(line)) {
           this.logger.warn(`Walkie dub no translation ${transmissionId} ${speak}->${language}`);
           continue;
