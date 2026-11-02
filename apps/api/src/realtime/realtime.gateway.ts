@@ -195,6 +195,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const rows = await this.prisma.transmissionTarget.findMany({
       where: {
         userId,
+        // Only never-delivered rows. Replaying delivered-but-unread chat was
+        // re-firing the same heads-up on every app open (playedAt stays null).
+        deliveredAt: null,
         playedAt: null,
         transmission: {
           senderId: { not: userId },
@@ -245,6 +248,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         releasedAt: tx.createdAt.getTime(),
       };
       if (!this.emitToUser(userId, SOCKET_EVENTS.TRANSMISSION_READY, payload, false)) break;
+      await this.prisma.transmissionTarget.updateMany({
+        where: { id: row.id, deliveredAt: null },
+        data: { deliveredAt: new Date() },
+      });
       delivered += 1;
     }
     if (delivered) this.logger.log(`Chat replay user=${userId} count=${delivered}`);
