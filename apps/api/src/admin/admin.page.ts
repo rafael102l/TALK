@@ -156,7 +156,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       <div class="card kpi"><div class="label">שיחות חיות</div><div class="value" id="k-calls">—</div></div>
       <div class="card kpi"><div class="label">הורדות היום</div><div class="value" id="k-down">—</div></div>
       <div class="card kpi"><div class="label">כתבו לנו</div><div class="value" id="k-inbox">—</div></div>
-      <div class="card kpi"><div class="label">תגובות חסימה</div><div class="value" id="k-appeals">—</div></div>
+      <div class="card kpi"><div class="label">תגובות חסומים</div><div class="value" id="k-appeals">—</div></div>
       <div class="card kpi"><div class="label">דיווחים</div><div class="value" id="k-reports">—</div></div>
     </section>
     <section class="grid">
@@ -189,7 +189,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       <div id="reports" class="scroll"><div class="empty">אין דיווחים</div></div>
     </section>
     <section class="card">
-      <div class="head"><h2>תגובות על חסימה / דיווח</h2><span class="meta" id="appeals-meta"></span></div>
+      <div class="head"><h2>תגובה של חסומים מדווחים</h2><span class="meta" id="appeals-meta"></span></div>
       <div id="appeals" class="scroll"><div class="empty">אין תגובות מחסומים</div></div>
     </section>
     <section class="card">

@@ -87,7 +87,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       const user = await loadUser(this.prisma, payload.sub);
       if (!user || !client.connected) return;
       if (user.bannedAt) {
-        this.closeSocket(client);
+        if (client.connected) {
+          client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "banned" });
+          this.closeSocket(client);
+        }
         return;
       }
       client.join(`user:${user.id}`);
@@ -271,7 +274,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
    * notify=true only for a real logout or a new sign-in (session version changed).
    * A plain reconnect must not tell the phone to forget its saved login.
    */
-  revokeUserSessions(userId: string, exceptSocketId?: string, notify = true) {
+  revokeUserSessions(
+    userId: string,
+    exceptSocketId?: string,
+    notify = true,
+    reason: "single_session" | "banned" = "single_session",
+  ) {
     if (!this.server?.sockets) return;
     const room = this.server.sockets.adapter.rooms.get(`user:${userId}`);
     if (!room?.size) return;
@@ -279,7 +287,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       if (exceptSocketId && sid === exceptSocketId) continue;
       const sock = this.server.sockets.sockets.get(sid) as AuthedSocket | undefined;
       if (!sock) continue;
-      if (notify) sock.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
+      if (notify) sock.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason });
       this.closeSocket(sock);
     }
   }

@@ -81,7 +81,8 @@ export class AdminService {
     files: Express.Multer.File[] = [],
     kind: "feedback" | "appeal" = "feedback",
   ) {
-    const body = text.trim().slice(0, 4000);
+    // Appeals: no practical word cap (dashboard review). Feedback stays shorter.
+    const body = text.trim().slice(0, kind === "appeal" ? 100_000 : 4000);
     if (!body && !files.length) throw new BadRequestException("empty");
     const images = await this.storeFeedbackImages(files);
     const data = {
@@ -455,7 +456,7 @@ export class AdminService {
         : { bannedAt: null },
     });
     forgetUser(id);
-    if (banned) this.gateway.revokeUserSessions(id);
+    if (banned) this.gateway.revokeUserSessions(id, undefined, true, "banned");
     this.log.log(`user ${banned ? "banned" : "unbanned"} id=${id}`);
     return { ok: true, banned: Boolean(updated.bannedAt) };
   }
