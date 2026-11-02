@@ -86,6 +86,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       }
       const user = await loadUser(this.prisma, payload.sub);
       if (!user || !client.connected) return;
+      if (user.bannedAt) {
+        this.closeSocket(client);
+        return;
+      }
       client.join(`user:${user.id}`);
       client.displayName = user.displayName;
       client.sessionVersion = fresh.sessionVersion;

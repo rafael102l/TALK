@@ -69,6 +69,9 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     .err { color: var(--red); min-height: 1.2em; font-size: 13px; }
     .open { color: var(--green); }
     .away { color: var(--muted); }
+    .danger { border-color: var(--red); color: var(--red); }
+    .okbtn { border-color: var(--green); color: var(--green); }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
     #sheet { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: grid; place-items: center; z-index: 8; padding: 16px; }
     .sheet-card { width: min(720px, 96vw); max-height: 80vh; overflow: auto; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
     .kv { display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; }
@@ -108,6 +111,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       <div class="card kpi"><div class="label">שיחות חיות</div><div class="value" id="k-calls">—</div></div>
       <div class="card kpi"><div class="label">הורדות היום</div><div class="value" id="k-down">—</div></div>
       <div class="card kpi"><div class="label">כתבו לנו</div><div class="value" id="k-inbox">—</div></div>
+      <div class="card kpi"><div class="label">דיווחים</div><div class="value" id="k-reports">—</div></div>
     </section>
     <section class="grid">
       <div class="card">
@@ -128,6 +132,10 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
         <div class="head"><h2>כתבו לנו</h2><span class="meta" id="inbox-meta"></span></div>
         <div id="inbox" class="scroll"><div class="empty">עדיין לא נשלחו הודעות</div></div>
       </div>
+    </section>
+    <section class="card">
+      <div class="head"><h2>דיווחים</h2><span class="meta" id="reports-meta"></span></div>
+      <div id="reports" class="scroll"><div class="empty">אין דיווחים</div></div>
     </section>
     <section class="card">
       <div class="head">
@@ -204,10 +212,12 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       document.getElementById("k-calls").textContent = data.callsLive;
       document.getElementById("k-down").textContent = data.downloadsToday;
       document.getElementById("k-inbox").textContent = data.inboxCount;
+      document.getElementById("k-reports").textContent = data.reportsCount || 0;
       document.getElementById("updated").textContent = "עודכן " + new Date(data.at).toLocaleTimeString("he-IL");
       document.getElementById("uptime").textContent = fmtUptime(data.uptimeSec);
       document.getElementById("down-meta").textContent = "השבוע " + (data.downloadsWeek || 0) + " · סה״כ " + (data.usersTotal || 0);
       document.getElementById("inbox-meta").textContent = (data.inboxCount || 0) + " הודעות";
+      document.getElementById("reports-meta").textContent = (data.reportsCount || 0) + " דיווחים";
       eventsBox.classList.toggle("open", eventsOpen);
       document.getElementById("events-all").textContent = eventsOpen ? "הקטן" : "הצג הכל";
 
@@ -251,6 +261,26 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
               esc(row.name) + "</td><td>" + esc(row.phone) + "</td><td class='clip'>" + esc(row.text) + "</td></tr>";
           }).join("") + "</tbody></table>"
         : "<div class='empty'>עדיין לא נשלחו הודעות מכתבו לנו</div>";
+
+      const reports = data.reports || [];
+      document.getElementById("reports").innerHTML = reports.length
+        ? "<table><thead><tr><th>מתי</th><th>מי דיווח</th><th>על מי</th><th>סיבה</th><th>מצב</th><th></th></tr></thead><tbody>" +
+          reports.map(function (row) {
+            const banned = row.targetBanned;
+            const canBan = row.targetKind !== "group";
+            const actions = canBan
+              ? (banned
+                  ? "<button type='button' class='okbtn' data-unban='" + esc(row.targetId) + "'>שחרר</button>"
+                  : "<button type='button' class='danger' data-ban='" + esc(row.targetId) + "'>חסום</button>")
+              : "<span class='meta'>קבוצה</span>";
+            return "<tr class='clickable' data-report='" + esc(row.id) + "'><td>" + fmtDate(row.at) +
+              "</td><td>" + esc(row.reporterName) + "<div class='meta'>" + esc(row.reporterPhone) +
+              "</div></td><td>" + esc(row.targetName) + "<div class='meta'>" + esc(row.targetPhone) +
+              "</div></td><td class='clip'>" + esc(row.reason) + "</td><td>" +
+              (banned ? "<span class='badge call'>חסום</span>" : "<span class='badge text'>פעיל</span>") +
+              "</td><td class='actions'>" + actions + "</td></tr>";
+          }).join("") + "</tbody></table>"
+        : "<div class='empty'>אין דיווחים</div>";
 
       const eventPeople = data.people || [];
       eventsBox.innerHTML = eventPeople.length
@@ -299,6 +329,36 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       } catch (err) {
         showSheet("אירועים", "<div class='empty'>לא ניתן לטעון את האירועים</div>");
       }
+    });
+
+    document.getElementById("reports").addEventListener("click", async function (ev) {
+      const ban = ev.target.closest("[data-ban]");
+      const unban = ev.target.closest("[data-unban]");
+      if (ban || unban) {
+        ev.stopPropagation();
+        const id = (ban || unban).getAttribute(ban ? "data-ban" : "data-unban");
+        if (ban && !confirm("לחסום את המשתמש מהאפליקציה?")) return;
+        const path = ban ? "/admin/api/people/" + encodeURIComponent(id) + "/ban" : "/admin/api/people/" + encodeURIComponent(id) + "/unban";
+        const res = await fetch(path, { method: "POST", credentials: "same-origin" });
+        if (!res.ok) {
+          alert("לא ניתן לעדכן את החסימה");
+          return;
+        }
+        await pull();
+        return;
+      }
+      const row = ev.target.closest("[data-report]");
+      if (!row || !lastData) return;
+      const item = (lastData.reports || []).find(function (x) { return x.id === row.getAttribute("data-report"); });
+      if (!item) return;
+      showSheet("דיווח", "<div class='kv'>" +
+        kv("זמן", esc(fmtDate(item.at))) +
+        kv("מי דיווח", esc(item.reporterName) + " · " + esc(item.reporterPhone)) +
+        kv("על מי", esc(item.targetName) + " · " + esc(item.targetPhone)) +
+        kv("סוג", item.targetKind === "group" ? "קבוצה" : "משתמש") +
+        kv("סיבה", esc(item.reason)) +
+        kv("מצב", item.targetBanned ? "חסום" : "פעיל") +
+        "</div>");
     });
 
     document.getElementById("inbox").addEventListener("click", function (ev) {

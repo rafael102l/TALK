@@ -1,10 +1,12 @@
 import { BadRequestException, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import type { User } from "@prisma/client";
 import type { Socket } from "socket.io";
+import { forgetUser } from "../auth/load-user";
 import { PrismaService } from "../prisma/prisma.service";
 import { CallRegistry } from "../realtime/call.registry";
 import { PresenceService } from "../realtime/presence.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
+import { CreateReportDto } from "./admin.dto";
 import { adminTokenConfigured, adminTokensMatch } from "./admin.guard";
 
 type AuthedSocket = Socket & { userId?: string; displayName?: string };
@@ -81,7 +83,7 @@ export class AdminService {
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const channelRooms = this.readChannelRooms(io);
     const channelIds = channelRooms.map((room) => room.id);
-    const [users, channels, peopleGroups, usersTotal, eventsLastHour, downloads, downloadsToday, downloadsWeek, inbox] =
+    const [users, channels, peopleGroups, usersTotal, eventsLastHour, downloads, downloadsToday, downloadsWeek, inbox, reports] =
       await Promise.all([
         connectedIds.length
           ? this.prisma.user.findMany({
@@ -112,6 +114,7 @@ export class AdminService {
         this.prisma.user.count({ where: { createdAt: { gte: startToday } } }),
         this.prisma.user.count({ where: { createdAt: { gte: weekAgo } } }),
         this.readInbox(),
+        this.readReports(),
       ]);
 
     const byUser = new Map(users.map((user) => [user.id, user]));
@@ -180,6 +183,7 @@ export class AdminService {
       downloadsToday,
       downloadsWeek,
       inboxCount: inbox.length,
+      reportsCount: reports.length,
       connected,
       rooms,
       calls: liveCalls,
@@ -190,6 +194,7 @@ export class AdminService {
         at: row.createdAt.toISOString(),
       })),
       inbox,
+      reports,
       people: peopleGroups.map((row) => {
         const sender = senderById.get(row.senderId);
         return {
@@ -201,6 +206,59 @@ export class AdminService {
         };
       }),
     };
+  }
+
+  async saveReport(reporter: User, body: CreateReportDto) {
+    const targetId = body.targetId.trim().slice(0, 80);
+    const kind = body.targetKind === "group" ? "group" : "user";
+    let targetName = (body.targetName || "").trim().slice(0, 80);
+    let targetPhone = "";
+    if (kind === "user") {
+      const target = await this.prisma.user.findUnique({
+        where: { id: targetId },
+        select: { displayName: true, phoneE164: true },
+      });
+      if (target) {
+        targetName = target.displayName || targetName || target.phoneE164;
+        targetPhone = target.phoneE164;
+      }
+    }
+    const data = {
+      reporterId: reporter.id,
+      reporterName: (reporter.displayName || "").trim(),
+      reporterPhone: reporter.phoneE164 || "",
+      targetId,
+      targetName: targetName || "—",
+      targetPhone,
+      targetKind: kind,
+      reason: (body.reason || "").trim() || "ללא פירוט",
+    };
+    try {
+      const row = await this.prisma.userReport.create({ data, select: { id: true, createdAt: true } });
+      this.log.log(`report saved reporter=${reporter.id} target=${targetId}`);
+      return row;
+    } catch (error) {
+      this.log.warn(`report create failed, ensuring table: ${(error as Error).message}`);
+      await this.ensureReportTable();
+      const row = await this.prisma.userReport.create({ data, select: { id: true, createdAt: true } });
+      this.log.log(`report saved reporter=${reporter.id} target=${targetId}`);
+      return row;
+    }
+  }
+
+  async setBanned(userId: string, banned: boolean) {
+    const id = userId.trim().slice(0, 40);
+    await this.ensureBanColumn();
+    const updated = await this.prisma.user.update({
+      where: { id },
+      data: banned
+        ? { bannedAt: new Date(), sessionActive: false, sessionVersion: { increment: 1 } }
+        : { bannedAt: null },
+    });
+    forgetUser(id);
+    if (banned) this.gateway.revokeUserSessions(id);
+    this.log.log(`user ${banned ? "banned" : "unbanned"} id=${id}`);
+    return { ok: true, banned: Boolean(updated.bannedAt) };
   }
 
   async eventsForUser(userId: string) {
@@ -262,6 +320,63 @@ export class AdminService {
       this.log.warn(`feedback inbox unavailable: ${(error as Error).message}`);
       return [];
     }
+  }
+
+  private async readReports() {
+    try {
+      const rows = await this.prisma.userReport.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      });
+      const targetIds = [...new Set(rows.filter((row) => row.targetKind === "user").map((row) => row.targetId))];
+      const banned = targetIds.length
+        ? await this.prisma.user.findMany({
+            where: { id: { in: targetIds }, bannedAt: { not: null } },
+            select: { id: true },
+          })
+        : [];
+      const bannedIds = new Set(banned.map((row) => row.id));
+      return rows.map((row) => ({
+        id: row.id,
+        at: row.createdAt.toISOString(),
+        reason: row.reason,
+        reporterId: row.reporterId,
+        reporterName: row.reporterName || "—",
+        reporterPhone: row.reporterPhone,
+        targetId: row.targetId,
+        targetName: row.targetName || "—",
+        targetPhone: row.targetPhone,
+        targetKind: row.targetKind,
+        targetBanned: bannedIds.has(row.targetId),
+      }));
+    } catch (error) {
+      this.log.warn(`reports unavailable: ${(error as Error).message}`);
+      return [];
+    }
+  }
+
+  private async ensureReportTable() {
+    await this.prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "UserReport" (
+        "id" TEXT NOT NULL,
+        "reporterId" TEXT NOT NULL,
+        "reporterName" TEXT NOT NULL DEFAULT '',
+        "reporterPhone" TEXT NOT NULL DEFAULT '',
+        "targetId" TEXT NOT NULL,
+        "targetName" TEXT NOT NULL DEFAULT '',
+        "targetPhone" TEXT NOT NULL DEFAULT '',
+        "targetKind" TEXT NOT NULL DEFAULT 'user',
+        "reason" TEXT NOT NULL,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "UserReport_pkey" PRIMARY KEY ("id")
+      )
+    `);
+    await this.prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "UserReport_createdAt_idx" ON "UserReport"("createdAt")`);
+    await this.prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "UserReport_targetId_idx" ON "UserReport"("targetId")`);
+  }
+
+  private async ensureBanColumn() {
+    await this.prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "bannedAt" TIMESTAMP(3)`);
   }
 
   private readChannelRooms(io: RealtimeGateway["server"] | undefined) {

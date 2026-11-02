@@ -55,6 +55,7 @@ export class AuthService {
   }
 
   private async issueSession(user: User) {
+    if (user.bannedAt) throw new UnauthorizedException("החשבון חסום");
     const updated = await this.prisma.user.update({
       where: { id: user.id },
       data: {

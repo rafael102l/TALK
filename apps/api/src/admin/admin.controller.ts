@@ -50,4 +50,18 @@ export class AdminController {
   userEvents(@Param("userId") userId: string) {
     return this.admin.eventsForUser(userId);
   }
+
+  @Post("api/people/:userId/ban")
+  @UseGuards(AdminGuard)
+  @HttpCode(200)
+  ban(@Param("userId") userId: string) {
+    return this.admin.setBanned(userId, true);
+  }
+
+  @Post("api/people/:userId/unban")
+  @UseGuards(AdminGuard)
+  @HttpCode(200)
+  unban(@Param("userId") userId: string) {
+    return this.admin.setBanned(userId, false);
+  }
 }

@@ -60,6 +60,8 @@ model User {
   sessionActive    Boolean          @default(false)
   /** Bumped on each successful login / logout; JWT must carry matching sv (single active device). */
   sessionVersion   Int              @default(0)
+  /** Set by the admin dashboard — banned accounts cannot sign in. */
+  bannedAt         DateTime?
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
@@ -71,6 +73,7 @@ model User {
   otpCodes            OtpCode[]
   callDevice          CallDevice?
   feedbackNotes       FeedbackNote[]
+  reportsFiled        UserReport[]         @relation("ReportsFiled")
 }
 
 model CallDevice {
@@ -191,4 +194,21 @@ model FeedbackNote {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([createdAt])
+}
+
+model UserReport {
+  id            String   @id @default(cuid())
+  reporterId    String
+  reporterName  String   @default("")
+  reporterPhone String   @default("")
+  targetId      String
+  targetName    String   @default("")
+  targetPhone   String   @default("")
+  targetKind    String   @default("user")
+  reason        String
+  createdAt     DateTime @default(now())
+  reporter      User     @relation("ReportsFiled", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([targetId])
 }

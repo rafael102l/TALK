@@ -31,6 +31,10 @@ export async function loadUser(prisma: PrismaService, id: string): Promise<User 
   return hit?.user ?? null;
 }
 
+export function forgetUser(id: string) {
+  users.delete(id);
+}
+
 export async function loadChannelIds(prisma: PrismaService, userId: string): Promise<string[]> {
   const hit = channels.get(userId);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.ids;

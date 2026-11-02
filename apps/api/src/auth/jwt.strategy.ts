@@ -17,6 +17,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   async validate(payload: JwtPayload) {
     const user = await loadUser(this.prisma, payload.sub);
     if (!user) throw new UnauthorizedException("session expired");
+    if (user.bannedAt) throw new UnauthorizedException("account banned");
     if (typeof payload.sv !== "number" || payload.sv !== user.sessionVersion) {
       throw new UnauthorizedException("session replaced");
     }
