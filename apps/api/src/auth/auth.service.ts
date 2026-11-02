@@ -153,6 +153,23 @@ export class AuthService {
       return { ...session, isNew: true };
     }
 
+    if (user.bannedAt) {
+      const appealToken = await this.jwt.signAsync(
+        { typ: "ban_appeal", sub: user.id, phone: user.phoneE164 },
+        { expiresIn: "14d" },
+      );
+      return {
+        banned: true,
+        appealToken,
+        message: "החשבון חסום כרגע",
+        user: {
+          id: user.id,
+          phoneE164: user.phoneE164,
+          displayName: user.displayName || "",
+        },
+      };
+    }
+
     // One SMS is enough. Signing in here replaces the other device.
     const session = await this.issueSession(user);
     return { ...session, isNew: false };

@@ -1,11 +1,13 @@
-import { BadRequestException, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import type { User } from "@prisma/client";
+import { toE164 } from "@talk/shared";
 import type { Socket } from "socket.io";
 import { forgetUser } from "../auth/load-user";
 import { PrismaService } from "../prisma/prisma.service";
 import { CallRegistry } from "../realtime/call.registry";
 import { PresenceService } from "../realtime/presence.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
+import { StorageService } from "../storage/storage.service";
 import { CreateReportDto } from "./admin.dto";
 import { adminTokenConfigured, adminTokensMatch } from "./admin.guard";
 import {
@@ -29,6 +31,7 @@ export class AdminService {
     private readonly presence: PresenceService,
     private readonly calls: CallRegistry,
     private readonly prisma: PrismaService,
+    private readonly storage: StorageService,
   ) {}
 
   assertToken(given: string) {
@@ -72,25 +75,71 @@ export class AdminService {
     return { ok: true };
   }
 
-  async saveFeedback(user: User, text: string) {
+  async saveFeedback(
+    user: Pick<User, "id" | "displayName" | "phoneE164">,
+    text: string,
+    files: Express.Multer.File[] = [],
+    kind: "feedback" | "appeal" = "feedback",
+  ) {
     const body = text.trim().slice(0, 4000);
-    if (!body) throw new BadRequestException("empty");
+    if (!body && !files.length) throw new BadRequestException("empty");
+    const images = await this.storeFeedbackImages(files);
     const data = {
       userId: user.id,
       name: (user.displayName || "").trim(),
       phone: user.phoneE164 || "",
-      text: body,
+      text: body || (kind === "appeal" ? "תגובה לחסימה (עם תמונות)" : "הודעה עם תמונות"),
+      kind,
+      images: JSON.stringify(images),
     };
     try {
-      const row = await this.prisma.feedbackNote.create({ data, select: { id: true, createdAt: true } });
-      this.log.log(`feedback saved user=${user.id}`);
-      return row;
-    } catch (error) {
-      this.log.warn(`feedback create failed, ensuring table: ${(error as Error).message}`);
       await this.ensureFeedbackTable();
-      const row = await this.prisma.feedbackNote.create({ data, select: { id: true, createdAt: true } });
-      this.log.log(`feedback saved user=${user.id}`);
-      return row;
+      const row = await this.prisma.feedbackNote.create({
+        data,
+        select: { id: true, createdAt: true, kind: true, images: true },
+      });
+      this.log.log(`${kind} saved user=${user.id} images=${images.length}`);
+      return { ...row, images };
+    } catch (error) {
+      this.log.warn(`${kind} create failed, ensuring table: ${(error as Error).message}`);
+      await this.ensureFeedbackTable();
+      const row = await this.prisma.feedbackNote.create({
+        data,
+        select: { id: true, createdAt: true, kind: true, images: true },
+      });
+      this.log.log(`${kind} saved user=${user.id} images=${images.length}`);
+      return { ...row, images };
+    }
+  }
+
+  async setBannedByPhone(phone: string, banned: boolean) {
+    const e164 = toE164(phone);
+    if (!e164) throw new BadRequestException("מספר טלפון לא תקין");
+    const user = await this.prisma.user.findUnique({ where: { phoneE164: e164 }, select: { id: true } });
+    if (!user) throw new NotFoundException("משתמש לא נמצא");
+    return this.setBanned(user.id, banned);
+  }
+
+  private async storeFeedbackImages(files: Express.Multer.File[]) {
+    const out: string[] = [];
+    for (const file of (files || []).slice(0, 12)) {
+      if (!file?.buffer?.length) continue;
+      const mime = String(file.mimetype || "");
+      if (!mime.startsWith("image/")) continue;
+      const ext =
+        mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "jpg";
+      const path = await this.storage.save(file.buffer, ext, "chat");
+      out.push(path);
+    }
+    return out;
+  }
+
+  private parseImages(raw: string | null | undefined) {
+    try {
+      const parsed = JSON.parse(raw || "[]") as unknown;
+      return Array.isArray(parsed) ? parsed.map((x) => String(x)).filter(Boolean).slice(0, 12) : [];
+    } catch {
+      return [] as string[];
     }
   }
 
@@ -102,11 +151,16 @@ export class AdminService {
         "name" TEXT NOT NULL DEFAULT '',
         "phone" TEXT NOT NULL DEFAULT '',
         "text" TEXT NOT NULL,
+        "kind" TEXT NOT NULL DEFAULT 'feedback',
+        "images" TEXT NOT NULL DEFAULT '[]',
         "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
         CONSTRAINT "FeedbackNote_pkey" PRIMARY KEY ("id")
       )
     `);
+    await this.prisma.$executeRawUnsafe(`ALTER TABLE "FeedbackNote" ADD COLUMN IF NOT EXISTS "kind" TEXT NOT NULL DEFAULT 'feedback'`);
+    await this.prisma.$executeRawUnsafe(`ALTER TABLE "FeedbackNote" ADD COLUMN IF NOT EXISTS "images" TEXT NOT NULL DEFAULT '[]'`);
     await this.prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "FeedbackNote_createdAt_idx" ON "FeedbackNote"("createdAt")`);
+    await this.prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "FeedbackNote_kind_createdAt_idx" ON "FeedbackNote"("kind", "createdAt")`);
   }
 
   async snapshot() {
@@ -254,7 +308,8 @@ export class AdminService {
       eventsLastHour,
       downloadsToday,
       downloadsWeek,
-      inboxCount: inbox.length,
+      inboxCount: inbox.filter((row) => row.kind !== "appeal").length,
+      appealsCount: inbox.filter((row) => row.kind === "appeal").length,
       reportsCount: reports.length,
       connected,
       rooms,
@@ -265,7 +320,8 @@ export class AdminService {
         phone: row.phoneE164,
         at: row.createdAt.toISOString(),
       })),
-      inbox,
+      inbox: inbox.filter((row) => row.kind !== "appeal"),
+      appeals: inbox.filter((row) => row.kind === "appeal"),
       reports,
       people: peopleGroups.map((row) => {
         const sender = senderById.get(row.senderId);
@@ -447,16 +503,29 @@ export class AdminService {
 
   private async readInbox() {
     try {
+      await this.ensureFeedbackTable();
       const rows = await this.prisma.feedbackNote.findMany({
         orderBy: { createdAt: "desc" },
-        take: 100,
-        select: { id: true, name: true, phone: true, text: true, createdAt: true },
+        take: 120,
+        select: { id: true, userId: true, name: true, phone: true, text: true, kind: true, images: true, createdAt: true },
       });
+      const userIds = [...new Set(rows.map((row) => row.userId))];
+      const banned = userIds.length
+        ? await this.prisma.user.findMany({
+            where: { id: { in: userIds }, bannedAt: { not: null } },
+            select: { id: true },
+          })
+        : [];
+      const bannedIds = new Set(banned.map((row) => row.id));
       return rows.map((row) => ({
         id: row.id,
+        userId: row.userId,
         name: row.name || "—",
         phone: row.phone,
         text: row.text,
+        kind: row.kind === "appeal" ? "appeal" : "feedback",
+        images: this.parseImages(row.images),
+        banned: bannedIds.has(row.userId),
         at: row.createdAt.toISOString(),
       }));
     } catch (error) {

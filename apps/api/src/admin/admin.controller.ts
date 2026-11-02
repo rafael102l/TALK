@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Header, HttpCode, Param, Post, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import { ADMIN_DASHBOARD_HTML } from "./admin.page";
-import { AdminLoginDto } from "./admin.dto";
+import { AdminLoginDto, BanPhoneDto } from "./admin.dto";
 import { ADMIN_COOKIE, AdminGuard } from "./admin.guard";
 import { AdminService } from "./admin.service";
 
@@ -63,6 +63,20 @@ export class AdminController {
   @HttpCode(200)
   unban(@Param("userId") userId: string) {
     return this.admin.setBanned(userId, false);
+  }
+
+  @Post("api/people/ban-phone")
+  @UseGuards(AdminGuard)
+  @HttpCode(200)
+  banPhone(@Body() body: BanPhoneDto) {
+    return this.admin.setBannedByPhone(body.phone, true);
+  }
+
+  @Post("api/people/unban-phone")
+  @UseGuards(AdminGuard)
+  @HttpCode(200)
+  unbanPhone(@Body() body: BanPhoneDto) {
+    return this.admin.setBannedByPhone(body.phone, false);
   }
 
   @Post("api/incidents/clear")

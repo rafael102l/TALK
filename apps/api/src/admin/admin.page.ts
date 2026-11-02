@@ -106,6 +106,14 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     .event-list { max-height: 52vh; overflow: auto; border: 1px solid var(--line); border-radius: 12px; margin-top: 12px; }
     .issue { padding: 10px 0; border-bottom: 1px solid var(--line); }
     .issue:last-child { border-bottom: 0; }
+    .thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .thumbs a { display: block; }
+    .thumbs img { width: 72px; height: 72px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); background: #0c0e12; }
+    .ban-box { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+    .ban-box input {
+      flex: 1; min-width: 180px; margin: 0; padding: 10px 12px; border-radius: 10px;
+      border: 1px solid var(--line); background: #0c0e12; color: var(--text); font: inherit;
+    }
   </style>
 </head>
 <body>
@@ -148,6 +156,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       <div class="card kpi"><div class="label">שיחות חיות</div><div class="value" id="k-calls">—</div></div>
       <div class="card kpi"><div class="label">הורדות היום</div><div class="value" id="k-down">—</div></div>
       <div class="card kpi"><div class="label">כתבו לנו</div><div class="value" id="k-inbox">—</div></div>
+      <div class="card kpi"><div class="label">תגובות חסימה</div><div class="value" id="k-appeals">—</div></div>
       <div class="card kpi"><div class="label">דיווחים</div><div class="value" id="k-reports">—</div></div>
     </section>
     <section class="grid">
@@ -172,7 +181,16 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     </section>
     <section class="card">
       <div class="head"><h2>דיווחים</h2><span class="meta" id="reports-meta"></span></div>
+      <div class="ban-box">
+        <input id="ban-phone" type="tel" placeholder="חסימה לפי מספר · למשל +9725..." />
+        <button type="button" class="danger" id="ban-phone-btn">חסום מספר</button>
+        <button type="button" class="okbtn" id="unban-phone-btn">שחרר מספר</button>
+      </div>
       <div id="reports" class="scroll"><div class="empty">אין דיווחים</div></div>
+    </section>
+    <section class="card">
+      <div class="head"><h2>תגובות על חסימה / דיווח</h2><span class="meta" id="appeals-meta"></span></div>
+      <div id="appeals" class="scroll"><div class="empty">אין תגובות מחסומים</div></div>
     </section>
     <section class="card">
       <div class="head">
@@ -241,6 +259,24 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
 
     function kv(label, value) {
       return "<b>" + esc(label) + "</b><div class='note'>" + (value || "—") + "</div>";
+    }
+
+    function thumbsHtml(images) {
+      const list = images || [];
+      if (!list.length) return "";
+      return "<div class='thumbs'>" + list.map(function (src) {
+        const url = String(src || "");
+        return "<a href='" + esc(url) + "' target='_blank' rel='noopener'><img src='" + esc(url) + "' alt=''></a>";
+      }).join("") + "</div>";
+    }
+
+    function noteRow(row, kind) {
+      const badge = kind === "appeal"
+        ? (row.banned ? "<span class='badge call'>חסום</span>" : "<span class='badge text'>שוחרר</span>")
+        : ((row.images && row.images.length) ? "<span class='badge text'>" + row.images.length + " תמונות</span>" : "");
+      return "<tr class='clickable' data-" + kind + "='" + esc(row.id) + "'><td>" + fmtDate(row.at) +
+        "</td><td>" + esc(row.name) + "<div class='meta'>" + esc(row.phone) + "</div></td><td class='clip'>" +
+        esc(row.text) + "</td><td>" + badge + "</td></tr>";
     }
 
     function showSheet(title, html) {
@@ -335,11 +371,13 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       document.getElementById("k-total-down").textContent = fmtDownloads(data.usersTotal);
       document.getElementById("k-down").textContent = data.downloadsToday;
       document.getElementById("k-inbox").textContent = data.inboxCount;
+      document.getElementById("k-appeals").textContent = data.appealsCount || 0;
       document.getElementById("k-reports").textContent = data.reportsCount || 0;
       document.getElementById("updated").textContent = "עודכן " + new Date(data.at).toLocaleTimeString("he-IL");
       document.getElementById("uptime").textContent = fmtUptime(data.uptimeSec);
       document.getElementById("down-meta").textContent = "השבוע " + (data.downloadsWeek || 0) + " · היום " + (data.downloadsToday || 0);
       document.getElementById("inbox-meta").textContent = (data.inboxCount || 0) + " הודעות";
+      document.getElementById("appeals-meta").textContent = (data.appealsCount || 0) + " תגובות";
       document.getElementById("reports-meta").textContent = (data.reportsCount || 0) + " דיווחים";
       eventsBox.classList.toggle("open", eventsOpen);
       document.getElementById("events-all").textContent = eventsOpen ? "הקטן" : "הצג הכל";
@@ -379,12 +417,15 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
 
       const inbox = data.inbox || [];
       document.getElementById("inbox").innerHTML = inbox.length
-        ? "<table><thead><tr><th>מתי</th><th>שם</th><th>טלפון</th><th>הודעה</th></tr></thead><tbody>" +
-          inbox.map(function (row) {
-            return "<tr class='clickable' data-inbox='" + esc(row.id) + "'><td>" + fmtDate(row.at) + "</td><td>" +
-              esc(row.name) + "</td><td>" + esc(row.phone) + "</td><td class='clip'>" + esc(row.text) + "</td></tr>";
-          }).join("") + "</tbody></table>"
+        ? "<table><thead><tr><th>מתי</th><th>מי</th><th>הודעה</th><th></th></tr></thead><tbody>" +
+          inbox.map(function (row) { return noteRow(row, "inbox"); }).join("") + "</tbody></table>"
         : "<div class='empty'>עדיין לא נשלחו הודעות מכתבו לנו</div>";
+
+      const appeals = data.appeals || [];
+      document.getElementById("appeals").innerHTML = appeals.length
+        ? "<table><thead><tr><th>מתי</th><th>מי כתב</th><th>תגובה</th><th>מצב</th></tr></thead><tbody>" +
+          appeals.map(function (row) { return noteRow(row, "appeal"); }).join("") + "</tbody></table>"
+        : "<div class='empty'>אין תגובות מחסומים</div>";
 
       const reports = data.reports || [];
       document.getElementById("reports").innerHTML = reports.length
@@ -488,18 +529,73 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
         "</div>");
     });
 
+    function openNoteSheet(title, item, allowUnban) {
+      const actions = allowUnban && item.banned
+        ? "<div class='actions' style='margin-top:14px'><button type='button' class='okbtn' id='sheet-unban'>שחרר מחסימה</button></div>"
+        : "";
+      showSheet(title, "<div class='kv'>" +
+        kv("זמן", esc(fmtDate(item.at))) +
+        kv("שם", esc(item.name)) +
+        kv("טלפון", esc(item.phone)) +
+        kv("הודעה", esc(item.text)) +
+        kv("מצב", item.banned ? "חסום" : "פעיל") +
+        "</div>" + thumbsHtml(item.images) + actions);
+      const unbanBtn = document.getElementById("sheet-unban");
+      if (unbanBtn) {
+        unbanBtn.onclick = async function () {
+          const res = await fetch("/admin/api/people/" + encodeURIComponent(item.userId) + "/unban", {
+            method: "POST", credentials: "same-origin"
+          });
+          if (!res.ok) {
+            alert("לא ניתן לשחרר");
+            return;
+          }
+          await pull();
+          sheet.classList.add("hidden");
+        };
+      }
+    }
+
     document.getElementById("inbox").addEventListener("click", function (ev) {
       const row = ev.target.closest("[data-inbox]");
       if (!row || !lastData) return;
       const item = (lastData.inbox || []).find(function (x) { return x.id === row.getAttribute("data-inbox"); });
       if (!item) return;
-      showSheet("כתבו לנו", "<div class='kv'>" +
-        kv("זמן", esc(fmtDate(item.at))) +
-        kv("שם", esc(item.name)) +
-        kv("טלפון", esc(item.phone)) +
-        kv("הודעה", esc(item.text)) +
-        "</div>");
+      openNoteSheet("כתבו לנו", item, false);
     });
+
+    document.getElementById("appeals").addEventListener("click", function (ev) {
+      const row = ev.target.closest("[data-appeal]");
+      if (!row || !lastData) return;
+      const item = (lastData.appeals || []).find(function (x) { return x.id === row.getAttribute("data-appeal"); });
+      if (!item) return;
+      openNoteSheet("תגובה על חסימה", item, true);
+    });
+
+    async function banByPhone(ban) {
+      const phone = document.getElementById("ban-phone").value.trim();
+      if (!phone) {
+        alert("הזינו מספר טלפון");
+        return;
+      }
+      if (ban && !confirm("לחסום את המספר " + phone + "?")) return;
+      const path = ban ? "/admin/api/people/ban-phone" : "/admin/api/people/unban-phone";
+      const res = await fetch(path, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: phone })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(function () { return {}; });
+        alert(err.message || "לא ניתן לעדכן חסימה");
+        return;
+      }
+      document.getElementById("ban-phone").value = "";
+      await pull();
+    }
+    document.getElementById("ban-phone-btn").addEventListener("click", function () { banByPhone(true); });
+    document.getElementById("unban-phone-btn").addEventListener("click", function () { banByPhone(false); });
 
     document.getElementById("sheet-close").addEventListener("click", function () {
       sheet.classList.add("hidden");

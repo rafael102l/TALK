@@ -33,3 +33,10 @@ export class CreateReportDto {
   @MaxLength(2000)
   reason?: string;
 }
+
+export class BanPhoneDto {
+  @IsString()
+  @MinLength(8)
+  @MaxLength(32)
+  phone!: string;
+}

@@ -190,10 +190,15 @@ model FeedbackNote {
   name      String   @default("")
   phone     String   @default("")
   text      String
+  /** feedback = כתבו לנו · appeal = תגובה לחסימה */
+  kind      String   @default("feedback")
+  /** JSON string array of /media/... paths */
+  images    String   @default("[]")
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([createdAt])
+  @@index([kind, createdAt])
 }
 
 model UserReport {

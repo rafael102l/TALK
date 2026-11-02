@@ -1,14 +1,21 @@
 import { Logger, Module, OnModuleInit } from "@nestjs/common";
+import { JwtModule } from "@nestjs/jwt";
 import { RealtimeModule } from "../realtime/realtime.module";
 import { AdminController } from "./admin.controller";
 import { AdminGuard } from "./admin.guard";
 import { AdminService } from "./admin.service";
+import { AppealController } from "./appeal.controller";
 import { FeedbackInboxController } from "./feedback-inbox.controller";
 import { ReportInboxController } from "./report-inbox.controller";
 
 @Module({
-  imports: [RealtimeModule],
-  controllers: [AdminController, FeedbackInboxController, ReportInboxController],
+  imports: [
+    RealtimeModule,
+    JwtModule.register({
+      secret: process.env.JWT_SECRET ?? "talk-dev-jwt-secret-change-in-production",
+    }),
+  ],
+  controllers: [AdminController, FeedbackInboxController, ReportInboxController, AppealController],
   providers: [AdminService, AdminGuard],
 })
 export class AdminModule implements OnModuleInit {
@@ -17,7 +24,7 @@ export class AdminModule implements OnModuleInit {
   constructor(private readonly admin: AdminService) {}
 
   async onModuleInit() {
-    this.log.log("loaded — GET /admin  POST /feedback  POST /reports  GET /admin/api/snapshot");
+    this.log.log("loaded — GET /admin  POST /feedback  POST /appeals  POST /reports");
     await this.admin.ensureSchema();
   }
 }
