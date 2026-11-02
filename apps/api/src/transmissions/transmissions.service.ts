@@ -351,11 +351,9 @@ export class TransmissionsService {
       if (!sameLanguage) {
         textOnly += 1;
         if (hear) dubbed.push({ targetId: target.userId, language: hear });
-        void this.push.notifyOfflineMessage(target.userId, {
-          ...payload,
-          language: hear || payload.language,
-          kind: "walkie",
-        });
+        // Cross-lang: never FCM the original clip. Early offline push plays the
+        // speaker's language; the dubbed TTS arrives later and "fixes" it.
+        // dubWalkie notifies once with the translated audio.
         continue;
       }
       const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
@@ -417,13 +415,15 @@ export class TransmissionsService {
         if (language !== speak) {
           const live = await this.stt.translateHeard(originalText, language, voiceGender);
           line = (live.text || "").replace(/\s+/g, " ").trim();
-          if (!line) {
-            // Strict walkie path only — never accept a freer rewrite that invents meaning.
+          const sameAsSource = (value: string) =>
+            value.replace(/\s+/g, " ").trim().toLowerCase() === originalText.toLowerCase();
+          // Echoed source text is not a translation — try cloud, else drop.
+          if (!line || sameAsSource(line)) {
             const cloud = await this.translate.translate(originalText, speak, language);
             line = (cloud.text || "").replace(/\s+/g, " ").trim();
-            if (cloud.reason) {
+            if (cloud.reason || !line || sameAsSource(line)) {
               this.logger.warn(
-                `Walkie dub reject loose translate ${transmissionId} ${speak}->${language} reason=${cloud.reason}`,
+                `Walkie dub reject ${transmissionId} ${speak}->${language} reason=${cloud.reason || "source-echo"}`,
               );
               line = "";
             }
@@ -469,7 +469,12 @@ export class TransmissionsService {
           };
           const reached = this.realtime.emitToUser(row.targetId, SOCKET_EVENTS.TRANSMISSION_READY, dubbedPayload);
           this.logger.log(`Deliver walkie ${transmissionId} -> ${row.targetId} reached=${reached}`);
+          // Closed app: first (and only) FCM — already translated TTS.
           void this.push.notifyOfflineMessage(row.targetId, dubbedPayload);
+          void this.prisma.transmissionTarget.updateMany({
+            where: { transmissionId, userId: row.targetId, deliveredAt: null },
+            data: { deliveredAt: new Date() },
+          });
           this.logger.log(`Walkie dub ${transmissionId} ${speak}->${language} user=${row.targetId} tts`);
         }
         }),
