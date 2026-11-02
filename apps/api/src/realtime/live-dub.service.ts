@@ -179,7 +179,6 @@ export class LiveDubService {
     press.chunks.push(pcm);
     if (!press.ready) press.relayBacklog.push(pcm);
     if (rms(pcm) >= LOUD) press.speechMs += FRAME_MS;
-    this.maybePreview(press);
   }
 
   /** Store the phone's finished WAV. Same-language ears hear it in order. Gemini hears this exact file. */
@@ -228,8 +227,6 @@ export class LiveDubService {
     }
     if (this.presses.get(socketId) === press) this.presses.delete(socketId);
     press.closed = true;
-    // Start / refresh STT immediately on release so translate can begin sooner.
-    this.kickPreview(press, true);
     void this.enqueue(press);
   }
 

@@ -418,8 +418,15 @@ export class TransmissionsService {
           const live = await this.stt.translateHeard(originalText, language, voiceGender);
           line = (live.text || "").replace(/\s+/g, " ").trim();
           if (!line) {
+            // Strict walkie path only — never accept a freer rewrite that invents meaning.
             const cloud = await this.translate.translate(originalText, speak, language);
             line = (cloud.text || "").replace(/\s+/g, " ").trim();
+            if (cloud.reason) {
+              this.logger.warn(
+                `Walkie dub reject loose translate ${transmissionId} ${speak}->${language} reason=${cloud.reason}`,
+              );
+              line = "";
+            }
           }
         }
         if (!line || /^\[unclear\]$/i.test(line)) {

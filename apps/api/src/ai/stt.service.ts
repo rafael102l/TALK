@@ -180,14 +180,13 @@ export class SttService {
       return outWords > srcWords + 2 && outWords > Math.ceil(srcWords * 1.5);
     };
     const instruction = [
-      `Translate ONLY the spoken words into ${langName(targetLang)}.`,
+      LIVE_ONLY,
+      LIVE_LITERAL,
+      `Target language: ${langName(targetLang)}.`,
       grammatical === "female"
         ? "Use feminine grammar (לשון נקבה) only where the source requires it."
         : "Use masculine grammar (לשון זכר) only where the source requires it.",
-      "The translation must be the same utterance in the other language.",
-      "Do not add names, greetings, questions, explanations, or any word that was not spoken.",
-      "Do not complete, repair, soften, or invent.",
-      "If the source is short, keep the translation short.",
+      "Do not paraphrase into a different sentence. Same words, same meaning, nothing invented.",
       "Return only the translation.",
     ].join(" ");
     this.logger.log(`LOG [TRANSLATION] gender=${grammatical}`);
@@ -197,7 +196,7 @@ export class SttService {
       this.logger.warn(`LOG [TRANSLATION] extra words retry ${JSON.stringify(translated.raw)}`);
       translated = await this.geminiLive(
         key,
-        `${instruction} Previous output added words that were not spoken. Translate again using only the source.`,
+        `${instruction} Previous output changed or added meaning. Translate again using only the source words.`,
         [{ text: spoken }],
         80,
       );
@@ -655,13 +654,17 @@ function pickFaithfulTranscript(gemini: string, whisper: string) {
   if (!g) return w;
   if (!w) return stripStock(g);
   const extraGemini = stockHits(g).some((hit) => !stockHits(w).includes(hit));
-  if (extraGemini) return w;
+  if (extraGemini) return stripStock(w) || stripStock(g);
+  const extraWhisper = stockHits(w).some((hit) => !stockHits(g).includes(hit));
+  // Whisper invents less on short walkie clips — prefer it when both are usable.
+  if (!extraWhisper && !isStutterGarbage(w) && w.split(/\s+/).filter(Boolean).length >= 1) {
+    return stripStock(w);
+  }
   const gw = g.split(/\s+/).filter(Boolean).length;
   const ww = w.split(/\s+/).filter(Boolean).length;
-  if (gw > ww + 3 && gw > Math.ceil(ww * 1.6)) return w;
-  // Same-ish length but different content: prefer Whisper (less inventive).
-  if (ww >= 2 && textOverlap(g, w) < 0.45) return w;
-  return stripStock(g) || w;
+  if (gw > ww + 3 && gw > Math.ceil(ww * 1.6)) return stripStock(w) || stripStock(g);
+  if (ww >= 2 && textOverlap(g, w) < 0.55) return stripStock(w) || stripStock(g);
+  return stripStock(w) || stripStock(g);
 }
 
 function textOverlap(left: string, right: string) {
