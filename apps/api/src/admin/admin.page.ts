@@ -38,6 +38,15 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
     .kpi .label { color: var(--muted); font-size: 12px; }
     .kpi .value { font-size: 28px; font-weight: 800; margin-top: 4px; }
+    .odo-wrap {
+      background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+      padding: 18px 22px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    }
+    .odo-label { color: var(--muted); font-size: 13px; font-weight: 700; letter-spacing: .08em; }
+    .odo {
+      font-size: clamp(28px, 6vw, 52px); font-weight: 800; letter-spacing: .12em;
+      font-variant-numeric: tabular-nums; color: var(--accent); direction: ltr; unicode-bidi: isolate;
+    }
     .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
     .head h2 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 700; letter-spacing: .06em; }
     table { width: 100%; border-collapse: collapse; }
@@ -104,6 +113,10 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     </div>
   </header>
   <main>
+    <section class="odo-wrap">
+      <div class="odo-label">סה״כ הורדות</div>
+      <div class="odo" id="k-total-down">00000000</div>
+    </section>
     <section class="kpis">
       <div class="card kpi"><div class="label">סוקטים פעילים</div><div class="value" id="k-sockets">—</div></div>
       <div class="card kpi"><div class="label">משתמשים מחוברים</div><div class="value" id="k-users">—</div></div>
@@ -187,6 +200,12 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       return new Date(iso).toLocaleString("he-IL");
     }
 
+    function fmtDownloads(n) {
+      const num = Number(n) || 0;
+      if (num >= 1000000) return num.toLocaleString("en-US");
+      return String(num).padStart(8, "0");
+    }
+
     function esc(value) {
       return String(value || "").replace(/[&<>"']/g, function (ch) {
         return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch];
@@ -210,12 +229,13 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       document.getElementById("k-users").textContent = data.usersOnline;
       document.getElementById("k-rooms").textContent = data.roomsActive;
       document.getElementById("k-calls").textContent = data.callsLive;
+      document.getElementById("k-total-down").textContent = fmtDownloads(data.usersTotal);
       document.getElementById("k-down").textContent = data.downloadsToday;
       document.getElementById("k-inbox").textContent = data.inboxCount;
       document.getElementById("k-reports").textContent = data.reportsCount || 0;
       document.getElementById("updated").textContent = "עודכן " + new Date(data.at).toLocaleTimeString("he-IL");
       document.getElementById("uptime").textContent = fmtUptime(data.uptimeSec);
-      document.getElementById("down-meta").textContent = "השבוע " + (data.downloadsWeek || 0) + " · סה״כ " + (data.usersTotal || 0);
+      document.getElementById("down-meta").textContent = "השבוע " + (data.downloadsWeek || 0) + " · היום " + (data.downloadsToday || 0);
       document.getElementById("inbox-meta").textContent = (data.inboxCount || 0) + " הודעות";
       document.getElementById("reports-meta").textContent = (data.reportsCount || 0) + " דיווחים";
       eventsBox.classList.toggle("open", eventsOpen);
