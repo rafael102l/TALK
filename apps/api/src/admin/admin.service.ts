@@ -36,15 +36,38 @@ export class AdminService {
   async saveFeedback(user: User, text: string) {
     const body = text.trim().slice(0, 4000);
     if (!body) throw new BadRequestException("empty");
-    return this.prisma.feedbackNote.create({
-      data: {
-        userId: user.id,
-        name: (user.displayName || "").trim(),
-        phone: user.phoneE164 || "",
-        text: body,
-      },
-      select: { id: true, createdAt: true },
-    });
+    const data = {
+      userId: user.id,
+      name: (user.displayName || "").trim(),
+      phone: user.phoneE164 || "",
+      text: body,
+    };
+    try {
+      const row = await this.prisma.feedbackNote.create({ data, select: { id: true, createdAt: true } });
+      this.log.log(`feedback saved user=${user.id}`);
+      return row;
+    } catch (error) {
+      this.log.warn(`feedback create failed, ensuring table: ${(error as Error).message}`);
+      await this.ensureFeedbackTable();
+      const row = await this.prisma.feedbackNote.create({ data, select: { id: true, createdAt: true } });
+      this.log.log(`feedback saved user=${user.id}`);
+      return row;
+    }
+  }
+
+  private async ensureFeedbackTable() {
+    await this.prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "FeedbackNote" (
+        "id" TEXT NOT NULL,
+        "userId" TEXT NOT NULL,
+        "name" TEXT NOT NULL DEFAULT '',
+        "phone" TEXT NOT NULL DEFAULT '',
+        "text" TEXT NOT NULL,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "FeedbackNote_pkey" PRIMARY KEY ("id")
+      )
+    `);
+    await this.prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "FeedbackNote_createdAt_idx" ON "FeedbackNote"("createdAt")`);
   }
 
   async snapshot() {
