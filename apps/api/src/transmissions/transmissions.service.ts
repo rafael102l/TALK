@@ -411,7 +411,8 @@ export class TransmissionsService {
         audioUrl: null,
         kind: "walkie" as const,
       });
-      for (const language of languages) {
+      await Promise.all(
+        languages.map(async (language) => {
         let line = originalText;
         if (language !== speak) {
           const live = await this.stt.translateHeard(originalText, language, voiceGender);
@@ -423,16 +424,16 @@ export class TransmissionsService {
         }
         if (!line || /^\[unclear\]$/i.test(line)) {
           this.logger.warn(`Walkie dub no translation ${transmissionId} ${speak}->${language}`);
-          continue;
+          return;
         }
         const saved = await this.tts.speak(line, language, null, voiceGender, {
           allowEleven: true,
           preferEleven: true,
-          timeoutMs: 12000,
+          timeoutMs: 6000,
         });
         if (!saved) {
           this.logger.warn(`Walkie dub no tts ${transmissionId} ${speak}->${language}`);
-          continue;
+          return;
         }
         await this.prisma.transmissionRender.upsert({
           where: { transmissionId_language: { transmissionId, language } },
@@ -464,7 +465,8 @@ export class TransmissionsService {
           void this.push.notifyOfflineMessage(row.targetId, dubbedPayload);
           this.logger.log(`Walkie dub ${transmissionId} ${speak}->${language} user=${row.targetId} tts`);
         }
-      }
+        }),
+      );
     } catch (error) {
       this.logger.warn(`Walkie dub failed ${transmissionId}: ${(error as Error).message}`);
     }

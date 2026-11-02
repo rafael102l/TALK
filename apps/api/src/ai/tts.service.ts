@@ -99,7 +99,7 @@ export class TtsService {
       allowEleven && (native || opts.preferEleven !== false || Boolean(voiceId && !voiceId.startsWith("mock-")));
 
     if (preferEleven) {
-      const eleven = await this.viaEleven(clean, voiceId, gender, Math.max(timeoutMs, 7000), lang).catch(
+      const eleven = await this.viaEleven(clean, voiceId, gender, Math.max(timeoutMs, 4500), lang).catch(
         (error) => {
           this.logger.warn(`ElevenLabs TTS ${(error as Error).message}`);
           return null as string | null;
@@ -111,7 +111,7 @@ export class TtsService {
       }
     }
 
-    const openai = await this.viaOpenAi(clean, gender, Math.max(timeoutMs, 8000)).catch((error) => {
+    const openai = await this.viaOpenAi(clean, gender, Math.max(timeoutMs, 5000)).catch((error) => {
       this.logger.warn(`OpenAI TTS ${(error as Error).message}`);
       return null as string | null;
     });
@@ -143,7 +143,8 @@ export class TtsService {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "tts-1-hd",
+        // Hot path uses the faster model; quality difference is small for short walkie lines.
+        model: "tts-1",
         input: text.slice(0, 4000),
         voice: OPENAI_VOICE[gender] || "onyx",
         response_format: "mp3",

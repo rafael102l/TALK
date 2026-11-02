@@ -128,6 +128,9 @@ export class SttService {
     this.logger.log(`LOG [TRACE] Raw Audio Length: ${wavSeconds(audio).toFixed(2)} sec`);
     this.logger.log(`LOG [TRACE] Audio format: ${describeWav(audio)}`);
     this.logger.log(`LOG [TRACE] STT language: ${tag}`);
+    // Run Gemini and Whisper together — serial awaits were the main post-release delay.
+    // If Gemini already has usable speech, only wait briefly for Whisper as a quality check.
+    const whisperJob = this.viaOpenAi(audio, ext, mime, 10000, code).catch(() => ({ text: "", lang: "" }));
     const heard = await this.geminiLive(
       key,
       hear,
@@ -137,8 +140,16 @@ export class SttService {
       ],
       LIVE_STT_TOKENS,
     );
-    const whisper = await this.viaOpenAi(audio, ext, mime, 12000, code);
-    const spoken = pickFaithfulTranscript(liveSpeech(heard.text), liveSpeech(usableSpeech(whisper.text)));
+    const geminiSpeech = liveSpeech(heard.text);
+    const whisper = geminiSpeech
+      ? await Promise.race([
+          whisperJob,
+          new Promise<{ text: string; lang: string }>((resolve) =>
+            setTimeout(() => resolve({ text: "", lang: "" }), 1200),
+          ),
+        ])
+      : await whisperJob;
+    const spoken = pickFaithfulTranscript(geminiSpeech, liveSpeech(usableSpeech(whisper.text)));
     this.logger.log(`LOG [PERF] STT duration: ${Date.now() - started} ms`);
     this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(spoken || heard.raw)}`);
     this.logger.log(`LOG [TRACE] STT Output: ${JSON.stringify(spoken || heard.raw)}`);

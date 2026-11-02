@@ -40,6 +40,11 @@ type Press = {
   loading: boolean;
   targetIds: string[];
   pressId: string;
+  /** Speculative STT while the user is still holding PTT. */
+  previewStt: string;
+  previewBytes: number;
+  previewJob: Promise<string> | null;
+  previewStartedAt: number;
 };
 
 const FRAME_MS = 20;
@@ -49,9 +54,9 @@ const LOUD = 160;
 /**
  * Same language stays raw PCM, sent once when the button is released.
  * A different listen language keeps every frame of that press and is translated
- * once, on release, as one complete clip. Nothing is sent to Gemini while the
- * button is still down. FREE sends the full caption. PLUS attaches the voice file
- * to that same caption.
+ * on release. While the button is down we may start a speculative STT on the
+ * growing clip so release mostly waits on translate+TTS. FREE sends the full
+ * caption. PLUS attaches the voice file to that same caption.
  */
 @Injectable()
 export class LiveDubService {
@@ -118,6 +123,10 @@ export class LiveDubService {
         speakerId,
         speakLang: "",
         speakerGender: "male",
+        previewStt: "",
+        previewBytes: 0,
+        previewJob: null,
+        previewStartedAt: 0,
         genderFromClient: false,
         langFromClient: false,
         relay: new Set(),
@@ -170,6 +179,7 @@ export class LiveDubService {
     press.chunks.push(pcm);
     if (!press.ready) press.relayBacklog.push(pcm);
     if (rms(pcm) >= LOUD) press.speechMs += FRAME_MS;
+    this.maybePreview(press);
   }
 
   /** Store the phone's finished WAV. Same-language ears hear it in order. Gemini hears this exact file. */
@@ -218,6 +228,8 @@ export class LiveDubService {
     }
     if (this.presses.get(socketId) === press) this.presses.delete(socketId);
     press.closed = true;
+    // Start / refresh STT immediately on release so translate can begin sooner.
+    this.kickPreview(press, true);
     void this.enqueue(press);
   }
 
@@ -368,8 +380,8 @@ export class LiveDubService {
       this.idle(press, wav.length);
       return;
     }
-    const heardOnce = await this.stt.hearClip(wav, "audio/wav", "wav", sourceLang);
-    const stt = heardOnce.stt;
+    const pipelineStarted = Date.now();
+    const stt = await this.resolveStt(press, wav, sourceLang);
     const translations: string[] = [];
     await Promise.all(
       [...byLang.entries()].map(async ([listenLang, ears]) => {
@@ -396,9 +408,68 @@ export class LiveDubService {
       forSpeaker: true,
       voiceGender: press.speakerGender,
     });
-    this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - heardOnce.started} ms`);
+    this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - pipelineStarted} ms`);
     this.logger.log(`live dub sender press=${press.pressId || "-"} stt=${JSON.stringify(stt)} translated=${JSON.stringify(translatedText)}`);
     this.idle(press, wav.length);
+  }
+
+  private maybePreview(press: Press) {
+    if (!press.ready || !press.dub.length || !press.speakLang || press.closed) return;
+    if (press.previewJob) return;
+    if (press.speechMs < 900) return;
+    const bytes = press.chunks.reduce((sum, frame) => sum + frame.length, 0);
+    // Re-run when ~0.7s of new PCM arrived (16kHz mono 16-bit ≈ 32KB/s).
+    if (bytes - press.previewBytes < 22_000) return;
+    this.kickPreview(press, false);
+  }
+
+  private kickPreview(press: Press, force: boolean) {
+    if (!press.speakLang) return;
+    if (!force && press.previewJob) return;
+    const pcm = press.wav ? wavPcm(press.wav) : Buffer.concat(press.chunks);
+    if (pcm.length < 3200) return;
+    const wav = press.wav ?? wavBytes(pcm);
+    const bytes = Math.max(0, wav.length - 44);
+    press.previewBytes = bytes;
+    press.previewStartedAt = Date.now();
+    const job = this.stt
+      .hearClip(wav, "audio/wav", "wav", press.speakLang)
+      .then((heard) => {
+        if (heard.stt) {
+          press.previewStt = heard.stt;
+          this.logger.log(
+            `live dub preview stt press=${press.pressId || "-"} ms=${Date.now() - press.previewStartedAt} "${heard.stt.slice(0, 80)}"`,
+          );
+        }
+        return heard.stt || "";
+      })
+      .catch((error: Error) => {
+        this.logger.warn(`live dub preview failed: ${error.message}`);
+        return "";
+      })
+      .finally(() => {
+        if (press.previewJob === job) press.previewJob = null;
+      });
+    press.previewJob = job;
+  }
+
+  private async resolveStt(press: Press, wav: Buffer, sourceLang: string) {
+    const pcmBytes = Math.max(0, wav.length - 44);
+    if (press.previewJob) {
+      await Promise.race([
+        press.previewJob,
+        new Promise<string>((resolve) => setTimeout(() => resolve(""), 1800)),
+      ]);
+    }
+    const coverage = press.previewBytes / Math.max(1, pcmBytes);
+    if (press.previewStt && coverage >= 0.82) {
+      this.logger.log(
+        `live dub reuse preview press=${press.pressId || "-"} coverage=${coverage.toFixed(2)}`,
+      );
+      return press.previewStt;
+    }
+    const heardOnce = await this.stt.hearClip(wav, "audio/wav", "wav", sourceLang);
+    return heardOnce.stt || press.previewStt || "";
   }
 
   private idle(press: Press, bytes: number) {
