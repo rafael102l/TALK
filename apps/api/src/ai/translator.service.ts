@@ -135,20 +135,14 @@ export class TranslatorService {
     }
     const sourceText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
     const translatedText = (turn.translatedText || "").replace(/\s+/g, " ").trim();
-    let audio: Buffer | null = null;
-    if (translatedText) {
-      try {
-        audio = await this.speakTranslation(translatedText, targetLang, input.gender || "male");
-      } catch {
-        audio = null;
-      }
-    }
+    // Translator page: return text immediately. Speech is played on-device via
+    // /ai/translator/speak (or local TTS) after the panes update — do not block on TTS here.
     return {
       sourceText,
       translatedText,
       sourceLang,
       targetLang,
-      audioBase64: audio?.length ? audio.toString("base64") : "",
+      audioBase64: "",
       mime: "audio/mpeg" as const,
     };
   }
