@@ -58,7 +58,7 @@ export class AdminService {
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const channelRooms = this.readChannelRooms(io);
     const channelIds = channelRooms.map((room) => room.id);
-    const [users, channels, events, usersTotal, eventsLastHour, downloads, downloadsToday, downloadsWeek, inbox] =
+    const [users, channels, peopleGroups, usersTotal, eventsLastHour, downloads, downloadsToday, downloadsWeek, inbox] =
       await Promise.all([
         connectedIds.length
           ? this.prisma.user.findMany({
@@ -72,20 +72,12 @@ export class AdminService {
               select: { id: true, name: true, type: true, _count: { select: { members: true } } },
             })
           : Promise.resolve([]),
-        this.prisma.transmission.findMany({
-          orderBy: { createdAt: "desc" },
-          take: EVENT_TAKE,
-          select: {
-            id: true,
-            kind: true,
-            status: true,
-            originalText: true,
-            durationMs: true,
-            createdAt: true,
-            sender: { select: { id: true, displayName: true, phoneE164: true } },
-            channel: { select: { id: true, name: true, type: true } },
-            _count: { select: { targets: true } },
-          },
+        this.prisma.transmission.groupBy({
+          by: ["senderId"],
+          _count: { id: true },
+          _max: { createdAt: true },
+          orderBy: { _max: { createdAt: "desc" } },
+          take: 150,
         }),
         this.prisma.user.count(),
         this.prisma.transmission.count({ where: { createdAt: { gte: hourAgo } } }),
@@ -144,6 +136,15 @@ export class AdminService {
       openedAt: call.openedAt,
     }));
 
+    const senderIds = peopleGroups.map((row) => row.senderId);
+    const senders = senderIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: senderIds } },
+          select: { id: true, displayName: true, phoneE164: true },
+        })
+      : [];
+    const senderById = new Map(senders.map((row) => [row.id, row]));
+
     return {
       at: Date.now(),
       uptimeSec: Math.floor(process.uptime()),
@@ -166,15 +167,53 @@ export class AdminService {
         at: row.createdAt.toISOString(),
       })),
       inbox,
-      events: events.map((row) => ({
+      people: peopleGroups.map((row) => {
+        const sender = senderById.get(row.senderId);
+        return {
+          id: row.senderId,
+          name: sender?.displayName || sender?.phoneE164 || "—",
+          phone: sender?.phoneE164 || "",
+          count: row._count.id,
+          lastAt: row._max.createdAt?.toISOString() || "",
+        };
+      }),
+    };
+  }
+
+  async eventsForUser(userId: string) {
+    const id = userId.trim().slice(0, 40);
+    const [user, rows] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id },
+        select: { id: true, displayName: true, phoneE164: true },
+      }),
+      this.prisma.transmission.findMany({
+        where: { senderId: id },
+        orderBy: { createdAt: "desc" },
+        take: EVENT_TAKE,
+        select: {
+          id: true,
+          kind: true,
+          status: true,
+          originalText: true,
+          durationMs: true,
+          createdAt: true,
+          channel: { select: { name: true, type: true } },
+          _count: { select: { targets: true } },
+        },
+      }),
+    ]);
+    return {
+      id,
+      name: user?.displayName || user?.phoneE164 || "—",
+      phone: user?.phoneE164 || "",
+      events: rows.map((row) => ({
         id: row.id,
         kind: row.kind,
         status: row.status,
         text: row.originalText || "",
         durationMs: row.durationMs,
         at: row.createdAt.toISOString(),
-        sender: row.sender.displayName || row.sender.phoneE164,
-        senderPhone: row.sender.phoneE164,
         channel: row.channel.name || row.channel.type,
         channelType: row.channel.type,
         targets: row._count.targets,

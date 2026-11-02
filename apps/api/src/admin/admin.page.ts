@@ -70,9 +70,10 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     .open { color: var(--green); }
     .away { color: var(--muted); }
     #sheet { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: grid; place-items: center; z-index: 8; padding: 16px; }
-    .sheet-card { width: min(640px, 96vw); max-height: 80vh; overflow: auto; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
+    .sheet-card { width: min(720px, 96vw); max-height: 80vh; overflow: auto; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
     .kv { display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; }
     .kv b { color: var(--muted); font-weight: 700; }
+    .event-list { max-height: 52vh; overflow: auto; border: 1px solid var(--line); border-radius: 12px; margin-top: 12px; }
   </style>
 </head>
 <body>
@@ -130,7 +131,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     </section>
     <section class="card">
       <div class="head">
-        <h2>אירועים אחרונים</h2>
+        <h2>אירועים אחרונים · משתמשים</h2>
         <button type="button" id="events-all">הצג הכל</button>
       </div>
       <div id="events" class="scroll"><div class="empty">אין אירועים עדיין</div></div>
@@ -251,15 +252,13 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
           }).join("") + "</tbody></table>"
         : "<div class='empty'>עדיין לא נשלחו הודעות מכתבו לנו</div>";
 
-      const events = data.events || [];
-      eventsBox.innerHTML = events.length
-        ? "<table><thead><tr><th>זמן</th><th>סוג</th><th>שולח</th><th>יעד</th><th>תוכן</th></tr></thead><tbody>" +
-          events.map(function (row) {
-            const preview = eventsOpen ? (row.text || row.status) : (row.text || row.status || "").slice(0, 80);
-            return "<tr class='clickable' data-event='" + esc(row.id) + "'><td>" + fmtWhen(row.at) +
-              "</td><td><span class='badge " + kindClass(row.kind) + "'>" + kindLabel(row.kind) +
-              "</span></td><td>" + esc(row.sender) + "</td><td>" + esc(row.channel) + " · " + row.targets +
-              "</td><td class='" + (eventsOpen ? "note" : "clip") + "'>" + esc(preview) + "</td></tr>";
+      const eventPeople = data.people || [];
+      eventsBox.innerHTML = eventPeople.length
+        ? "<table><thead><tr><th>שם</th><th>טלפון</th><th>אירועים</th><th>פעילות אחרונה</th></tr></thead><tbody>" +
+          eventPeople.map(function (row) {
+            return "<tr class='clickable' data-user='" + esc(row.id) + "'><td>" + esc(row.name) +
+              "</td><td>" + esc(row.phone) + "</td><td>" + row.count + "</td><td>" +
+              (row.lastAt ? fmtDate(row.lastAt) : "—") + "</td></tr>";
           }).join("") + "</tbody></table>"
         : "<div class='empty'>אין אירועים עדיין</div>";
       eventsBox.scrollTop = eventsScroll;
@@ -274,21 +273,32 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       if (lastData) render(lastData);
     });
 
-    eventsBox.addEventListener("click", function (ev) {
-      const row = ev.target.closest("[data-event]");
-      if (!row || !lastData) return;
-      const item = (lastData.events || []).find(function (x) { return x.id === row.getAttribute("data-event"); });
-      if (!item) return;
-      showSheet("אירוע", "<div class='kv'>" +
-        kv("זמן", esc(fmtDate(item.at))) +
-        kv("סוג", esc(kindLabel(item.kind))) +
-        kv("סטטוס", esc(item.status)) +
-        kv("שולח", esc(item.sender)) +
-        kv("טלפון", esc(item.senderPhone)) +
-        kv("יעד", esc(item.channel) + " · " + item.targets + " נמענים") +
-        kv("משך", item.durationMs ? Math.round(item.durationMs / 1000) + " שנ׳" : "—") +
-        kv("תוכן", esc(item.text || "אין טקסט")) +
-        "</div>");
+    eventsBox.addEventListener("click", async function (ev) {
+      const row = ev.target.closest("[data-user]");
+      if (!row) return;
+      const userId = row.getAttribute("data-user");
+      showSheet("אירועים", "<div class='empty'>טוען…</div>");
+      try {
+        const res = await fetch("/admin/api/people/" + encodeURIComponent(userId) + "/events", { credentials: "same-origin" });
+        if (!res.ok) throw new Error("events");
+        const pack = await res.json();
+        const rows = pack.events || [];
+        const list = rows.length
+          ? "<div class='event-list'><table><thead><tr><th>זמן</th><th>סוג</th><th>יעד</th><th>תוכן</th></tr></thead><tbody>" +
+            rows.map(function (item) {
+              return "<tr><td>" + fmtDate(item.at) + "</td><td><span class='badge " + kindClass(item.kind) + "'>" +
+                kindLabel(item.kind) + "</span></td><td>" + esc(item.channel) + " · " + item.targets +
+                "</td><td class='note'>" + esc(item.text || item.status) + "</td></tr>";
+            }).join("") + "</tbody></table></div>"
+          : "<div class='empty'>אין אירועים למשתמש הזה</div>";
+        showSheet(pack.name || "משתמש", "<div class='kv'>" +
+          kv("שם", esc(pack.name)) +
+          kv("טלפון", esc(pack.phone)) +
+          kv("אירועים", String(rows.length)) +
+          "</div>" + list);
+      } catch (err) {
+        showSheet("אירועים", "<div class='empty'>לא ניתן לטעון את האירועים</div>");
+      }
     });
 
     document.getElementById("inbox").addEventListener("click", function (ev) {

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Header, HttpCode, Post, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Header, HttpCode, Param, Post, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import { ADMIN_DASHBOARD_HTML } from "./admin.page";
 import { AdminLoginDto } from "./admin.dto";
@@ -42,5 +42,12 @@ export class AdminController {
   @Header("Cache-Control", "no-store")
   snapshot() {
     return this.admin.snapshot();
+  }
+
+  @Get("api/people/:userId/events")
+  @UseGuards(AdminGuard)
+  @Header("Cache-Control", "no-store")
+  userEvents(@Param("userId") userId: string) {
+    return this.admin.eventsForUser(userId);
   }
 }
