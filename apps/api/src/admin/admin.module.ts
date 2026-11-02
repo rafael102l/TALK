@@ -14,7 +14,10 @@ import { ReportInboxController } from "./report-inbox.controller";
 export class AdminModule implements OnModuleInit {
   private readonly log = new Logger(AdminModule.name);
 
-  onModuleInit() {
+  constructor(private readonly admin: AdminService) {}
+
+  async onModuleInit() {
     this.log.log("loaded — GET /admin  POST /feedback  POST /reports  GET /admin/api/snapshot");
+    await this.admin.ensureSchema();
   }
 }

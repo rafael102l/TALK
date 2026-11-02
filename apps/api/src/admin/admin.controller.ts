@@ -64,4 +64,11 @@ export class AdminController {
   unban(@Param("userId") userId: string) {
     return this.admin.setBanned(userId, false);
   }
+
+  @Post("api/incidents/clear")
+  @UseGuards(AdminGuard)
+  @HttpCode(200)
+  clearIncidents() {
+    return this.admin.clearErrorLog();
+  }
 }

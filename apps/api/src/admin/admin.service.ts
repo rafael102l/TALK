@@ -8,6 +8,13 @@ import { PresenceService } from "../realtime/presence.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
 import { CreateReportDto } from "./admin.dto";
 import { adminTokenConfigured, adminTokensMatch } from "./admin.guard";
+import {
+  clearIncidents,
+  listIncidents,
+  openSecurityIncidentCount,
+  openServerIncidentCount,
+  pushIncident,
+} from "./error-bus";
 
 type AuthedSocket = Socket & { userId?: string; displayName?: string };
 
@@ -31,8 +38,38 @@ export class AdminService {
     }
     const cleaned = given.trim().replace(/^["']|["']$/g, "").trim();
     if (!adminTokensMatch(cleaned, expected)) {
+      pushIncident({
+        kind: "security",
+        status: 401,
+        path: "/admin/session",
+        method: "POST",
+        message: "ניסיון כניסה לדשבורד עם טוקן שגוי",
+      });
       throw new UnauthorizedException("Invalid admin token");
     }
+  }
+
+  async ensureSchema() {
+    try {
+      await this.ensureBanColumn();
+      await this.ensureFeedbackTable();
+      await this.ensureReportTable();
+    } catch (error) {
+      this.log.warn(`admin schema ensure failed: ${(error as Error).message}`);
+      pushIncident({
+        kind: "db",
+        status: 500,
+        path: "/admin/schema",
+        method: "BOOT",
+        message: "סנכרון סכמת אדמין נכשל",
+        detail: (error as Error).message,
+      });
+    }
+  }
+
+  clearErrorLog() {
+    clearIncidents();
+    return { ok: true };
   }
 
   async saveFeedback(user: User, text: string) {
@@ -83,18 +120,25 @@ export class AdminService {
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const channelRooms = this.readChannelRooms(io);
     const channelIds = channelRooms.map((room) => room.id);
+    const dbProbe = await this.probeDatabase();
     const [users, channels, peopleGroups, usersTotal, eventsLastHour, downloads, downloadsToday, downloadsWeek, inbox, reports] =
       await Promise.all([
         connectedIds.length
           ? this.prisma.user.findMany({
               where: { id: { in: connectedIds } },
               select: { id: true, displayName: true, phoneE164: true, speakLang: true, listenLang: true },
+            }).catch((error) => {
+              this.noteSnapshotFailure("connected users", error);
+              return [];
             })
           : Promise.resolve([]),
         channelIds.length
           ? this.prisma.channel.findMany({
               where: { id: { in: channelIds } },
               select: { id: true, name: true, type: true, _count: { select: { members: true } } },
+            }).catch((error) => {
+              this.noteSnapshotFailure("channels", error);
+              return [];
             })
           : Promise.resolve([]),
         this.prisma.transmission.groupBy({
@@ -103,16 +147,34 @@ export class AdminService {
           _max: { createdAt: true },
           orderBy: { _max: { createdAt: "desc" } },
           take: 150,
+        }).catch((error) => {
+          this.noteSnapshotFailure("people groups", error);
+          return [];
         }),
-        this.prisma.user.count(),
-        this.prisma.transmission.count({ where: { createdAt: { gte: hourAgo } } }),
+        this.prisma.user.count().catch((error) => {
+          this.noteSnapshotFailure("usersTotal", error);
+          return 0;
+        }),
+        this.prisma.transmission.count({ where: { createdAt: { gte: hourAgo } } }).catch((error) => {
+          this.noteSnapshotFailure("eventsLastHour", error);
+          return 0;
+        }),
         this.prisma.user.findMany({
           orderBy: { createdAt: "desc" },
           take: 80,
           select: { id: true, displayName: true, phoneE164: true, createdAt: true },
+        }).catch((error) => {
+          this.noteSnapshotFailure("downloads list", error);
+          return [];
         }),
-        this.prisma.user.count({ where: { createdAt: { gte: startToday } } }),
-        this.prisma.user.count({ where: { createdAt: { gte: weekAgo } } }),
+        this.prisma.user.count({ where: { createdAt: { gte: startToday } } }).catch((error) => {
+          this.noteSnapshotFailure("downloadsToday", error);
+          return 0;
+        }),
+        this.prisma.user.count({ where: { createdAt: { gte: weekAgo } } }).catch((error) => {
+          this.noteSnapshotFailure("downloadsWeek", error);
+          return 0;
+        }),
         this.readInbox(),
         this.readReports(),
       ]);
@@ -171,6 +233,16 @@ export class AdminService {
       : [];
     const senderById = new Map(senders.map((row) => [row.id, row]));
 
+    const incidents = listIncidents(60);
+    const serverOpen = openServerIncidentCount();
+    const securityFindings = this.securityFindings(dbProbe.ok);
+    const securityOpen = securityFindings.length + openSecurityIncidentCount();
+    const healthIssues = [
+      ...(dbProbe.ok ? [] : ["אין חיבור תקין למסד הנתונים"]),
+      ...(serverOpen ? [`${serverOpen} שגיאות שרת ב־15 הדקות האחרונות`] : []),
+      ...(!io ? ["סוקט־איו לא מוכן"] : []),
+    ];
+
     return {
       at: Date.now(),
       uptimeSec: Math.floor(process.uptime()),
@@ -205,7 +277,78 @@ export class AdminService {
           lastAt: row._max.createdAt?.toISOString() || "",
         };
       }),
+      health: {
+        ok: healthIssues.length === 0,
+        dbOk: dbProbe.ok,
+        dbMs: dbProbe.ms,
+        openErrors: serverOpen,
+        issues: healthIssues,
+      },
+      security: {
+        ok: securityOpen === 0,
+        openFindings: securityOpen,
+        findings: securityFindings,
+      },
+      incidents,
     };
+  }
+
+  private noteSnapshotFailure(label: string, error: unknown) {
+    const detail = error instanceof Error ? error.message : String(error);
+    this.log.warn(`snapshot ${label} failed: ${detail}`);
+    pushIncident({
+      kind: "db",
+      status: 500,
+      path: "/admin/api/snapshot",
+      method: "GET",
+      message: `כשל בטעינת ${label}`,
+      detail,
+    });
+  }
+
+  private async probeDatabase() {
+    const started = Date.now();
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+      return { ok: true, ms: Date.now() - started };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      pushIncident({
+        kind: "db",
+        status: 500,
+        path: "/admin/api/snapshot",
+        method: "GET",
+        message: "בדיקת מסד הנתונים נכשלה",
+        detail,
+      });
+      return { ok: false, ms: Date.now() - started };
+    }
+  }
+
+  private securityFindings(dbOk: boolean) {
+    const findings: string[] = [];
+    const jwt = (process.env.JWT_SECRET || "").trim();
+    if (!jwt || jwt === "talk-dev-jwt-secret-change-in-production") {
+      findings.push("JWT_SECRET חסר או נשאר על ערך פיתוח ברירת־מחדל");
+    }
+    const salt = (process.env.CONTACT_HASH_SALT || "").trim();
+    if (!salt || salt === "talk-contact-salt-dev") {
+      findings.push("CONTACT_HASH_SALT חסר או נשאר על ערך פיתוח — /meta חושף salt חלש");
+    }
+    if (!adminTokenConfigured()) {
+      findings.push("ADMIN_DASHBOARD_TOKEN לא מוגדר — הדשבורד חשוף לתצורה שגויה");
+    }
+    const dbUrl = process.env.DATABASE_URL || "";
+    if (process.env.NODE_ENV === "production" && dbUrl.startsWith("file:")) {
+      findings.push("בפרודקשן רץ SQLite על דיסק זמני — הנתונים עלולים להימחק בכל דיפלוי");
+    }
+    if (!dbOk) {
+      findings.push("מסד הנתונים לא מגיב — האפליקציה עלולה להחזיר 500");
+    }
+    if (openSecurityIncidentCount() > 0) {
+      findings.push("נרשמו ניסיונות כניסה כושלים לדשבורד לאחרונה");
+    }
+    return findings;
   }
 
   async saveReport(reporter: User, body: CreateReportDto) {

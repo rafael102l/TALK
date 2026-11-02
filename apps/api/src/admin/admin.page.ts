@@ -28,24 +28,42 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--red); box-shadow: 0 0 0 4px rgba(255,93,108,.12); }
     .dot.ok { background: var(--green); box-shadow: 0 0 0 4px rgba(61,214,140,.12); }
     .meta { color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+    .status-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     button, .btn {
       background: transparent; color: var(--text); border: 1px solid var(--line);
       border-radius: 10px; padding: 8px 12px; cursor: pointer; font: inherit;
     }
     button:hover { border-color: var(--accent); }
+    .pulse-btn {
+      min-width: 118px; font-weight: 800; letter-spacing: .04em;
+      border-width: 2px; transition: background .2s, color .2s, border-color .2s, box-shadow .2s;
+    }
+    .pulse-btn.ok {
+      color: #062416; background: var(--green); border-color: #9af0c4;
+      box-shadow: 0 0 0 3px rgba(61,214,140,.18);
+    }
+    .pulse-btn.bad {
+      color: #fff; background: var(--red); border-color: #ff9aa4;
+      animation: blink-red 1s ease-in-out infinite;
+    }
+    @keyframes blink-red {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,93,108,.55); }
+      50% { opacity: .55; box-shadow: 0 0 0 10px rgba(255,93,108,0); }
+    }
     main { padding: 22px; display: grid; gap: 18px; }
     .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
     .kpi .label { color: var(--muted); font-size: 12px; }
     .kpi .value { font-size: 28px; font-weight: 800; margin-top: 4px; }
     .odo-wrap {
-      background: var(--card); border: 1px solid var(--line); border-radius: 16px;
-      padding: 18px 22px; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      width: min(520px, 100%); margin: 0 auto; text-align: center;
+      background: transparent; border: 2px solid #ffffff; border-radius: 18px;
+      padding: 22px 28px; display: grid; gap: 10px; justify-items: center;
     }
     .odo-label { color: var(--muted); font-size: 13px; font-weight: 700; letter-spacing: .08em; }
     .odo {
-      font-size: clamp(28px, 6vw, 52px); font-weight: 800; letter-spacing: .12em;
-      font-variant-numeric: tabular-nums; color: var(--accent); direction: ltr; unicode-bidi: isolate;
+      font-size: clamp(34px, 7vw, 58px); font-weight: 800; letter-spacing: .14em;
+      font-variant-numeric: tabular-nums; color: var(--blue); direction: ltr; unicode-bidi: isolate;
     }
     .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
     .head h2 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 700; letter-spacing: .06em; }
@@ -86,6 +104,8 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     .kv { display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; }
     .kv b { color: var(--muted); font-weight: 700; }
     .event-list { max-height: 52vh; overflow: auto; border: 1px solid var(--line); border-radius: 12px; margin-top: 12px; }
+    .issue { padding: 10px 0; border-bottom: 1px solid var(--line); }
+    .issue:last-child { border-bottom: 0; }
   </style>
 </head>
 <body>
@@ -106,6 +126,10 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
   </div>
   <header>
     <div class="brand"><span id="live-dot" class="dot"></span> TALK · ניטור פנימי</div>
+    <div class="status-row">
+      <button type="button" class="pulse-btn bad" id="btn-health">שרת</button>
+      <button type="button" class="pulse-btn bad" id="btn-security">אבטחה</button>
+    </div>
     <div class="meta">
       <span id="updated">ממתין…</span>
       <span id="uptime"></span>
@@ -164,10 +188,13 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     const liveDot = document.getElementById("live-dot");
     const sheet = document.getElementById("sheet");
     const eventsBox = document.getElementById("events");
+    const btnHealth = document.getElementById("btn-health");
+    const btnSecurity = document.getElementById("btn-security");
     let timer = 0;
     let lastData = null;
     let eventsOpen = false;
     let eventsScroll = 0;
+    let linkOk = false;
 
     function kindClass(kind) {
       if (kind === "walkie") return "walkie";
@@ -179,7 +206,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     function kindLabel(kind) {
       if (kind === "walkie") return "ווקי";
       if (kind === "text") return "הודעה";
-      if (kind === "voice") return "הודעה קולית";
+      if (kind === "voice") return "הודעת קול";
       if (kind === "image") return "תמונה";
       if (kind === "video") return "וידאו";
       return kind || "אירוע";
@@ -222,9 +249,85 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       sheet.classList.remove("hidden");
     }
 
+    function setPulse(btn, ok, okText, badText) {
+      btn.classList.toggle("ok", ok);
+      btn.classList.toggle("bad", !ok);
+      btn.textContent = ok ? okText : badText;
+    }
+
+    function paintStatus() {
+      const healthOk = linkOk && Boolean(lastData && lastData.health && lastData.health.ok);
+      const securityOk = linkOk && Boolean(lastData && lastData.security && lastData.security.ok);
+      setPulse(btnHealth, healthOk, "שרת תקין", "שרת תקלה");
+      setPulse(btnSecurity, securityOk, "אבטחה תקינה", "אבטחה בסיכון");
+      liveDot.classList.toggle("ok", healthOk);
+    }
+
+    function renderHealthSheet() {
+      if (!linkOk) {
+        showSheet("מצב שרת", "<div class='issue'><b>אין חיבור לשרת</b><div class='note'>הדשבורד לא מצליח לקבל snapshot. בדקו Render / דיפלוי / מאגר DB.</div></div>");
+        return;
+      }
+      const health = (lastData && lastData.health) || { ok: false, issues: ["אין נתוני בריאות"], openErrors: 0, dbOk: false, dbMs: 0 };
+      const incidents = ((lastData && lastData.incidents) || []).filter(function (row) { return row.kind !== "security"; });
+      const issues = (health.issues || []).map(function (text) {
+        return "<div class='issue'><b>בעיה</b><div class='note'>" + esc(text) + "</div></div>";
+      }).join("");
+      const rows = incidents.length
+        ? "<div class='event-list'><table><thead><tr><th>זמן</th><th>סוג</th><th>נתיב</th><th>הודעה</th></tr></thead><tbody>" +
+          incidents.map(function (row) {
+            return "<tr><td>" + fmtDate(row.at) + "</td><td>" + esc(row.kind) + " " + row.status +
+              "</td><td>" + esc(row.method + " " + row.path) + "</td><td class='note'>" +
+              esc(row.message) + (row.detail ? "<div class='meta'>" + esc(row.detail) + "</div>" : "") +
+              "</td></tr>";
+          }).join("") + "</tbody></table></div>"
+        : "<div class='empty'>אין שגיאות שרת שמורות</div>";
+      showSheet("מצב שרת", "<div class='kv'>" +
+        kv("מצב", health.ok ? "ירוק · תקין" : "אדום · יש תקלה") +
+        kv("מסד נתונים", health.dbOk ? ("תקין · " + health.dbMs + "ms") : "לא זמין") +
+        kv("שגיאות פתוחות", String(health.openErrors || 0)) +
+        "</div>" +
+        (issues || "") +
+        "<div class='head' style='margin-top:16px'><h2>יומן שגיאות</h2>" +
+        "<button type='button' id='clear-incidents'>נקה יומן</button></div>" +
+        rows);
+      const clearBtn = document.getElementById("clear-incidents");
+      if (clearBtn) {
+        clearBtn.onclick = async function () {
+          await fetch("/admin/api/incidents/clear", { method: "POST", credentials: "same-origin" });
+          await pull();
+          renderHealthSheet();
+        };
+      }
+    }
+
+    function renderSecuritySheet() {
+      if (!linkOk) {
+        showSheet("אבטחה", "<div class='issue'><b>אין חיבור</b><div class='note'>לא ניתן לבדוק אבטחה בלי snapshot חי.</div></div>");
+        return;
+      }
+      const security = (lastData && lastData.security) || { ok: false, findings: ["אין נתוני אבטחה"], openFindings: 0 };
+      const findings = (security.findings || []).map(function (text) {
+        return "<div class='issue'><b>ממצא</b><div class='note'>" + esc(text) + "</div></div>";
+      }).join("") || "<div class='empty'>אין ממצאי אבטחה פתוחים</div>";
+      const incidents = ((lastData && lastData.incidents) || []).filter(function (row) { return row.kind === "security"; });
+      const rows = incidents.length
+        ? "<div class='event-list'><table><thead><tr><th>זמן</th><th>נתיב</th><th>הודעה</th></tr></thead><tbody>" +
+          incidents.map(function (row) {
+            return "<tr><td>" + fmtDate(row.at) + "</td><td>" + esc(row.method + " " + row.path) +
+              "</td><td class='note'>" + esc(row.message) + "</td></tr>";
+          }).join("") + "</tbody></table></div>"
+        : "<div class='empty'>אין אירועי אבטחה אחרונים</div>";
+      showSheet("אבטחה", "<div class='kv'>" +
+        kv("מצב", security.ok ? "ירוק · הכל כשורה" : "אדום · יש סיכון") +
+        kv("ממצאים", String(security.openFindings || 0)) +
+        "</div>" + findings +
+        "<div class='head' style='margin-top:16px'><h2>ניסיונות חשודים</h2></div>" + rows);
+    }
+
     function render(data) {
       lastData = data;
-      liveDot.classList.add("ok");
+      linkOk = true;
       document.getElementById("k-sockets").textContent = data.sockets;
       document.getElementById("k-users").textContent = data.usersOnline;
       document.getElementById("k-rooms").textContent = data.roomsActive;
@@ -240,6 +343,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       document.getElementById("reports-meta").textContent = (data.reportsCount || 0) + " דיווחים";
       eventsBox.classList.toggle("open", eventsOpen);
       document.getElementById("events-all").textContent = eventsOpen ? "הקטן" : "הצג הכל";
+      paintStatus();
 
       const roomRows = (data.calls || []).map(function (call) {
         return "<tr><td><span class='badge call'>" + (call.video ? "וידאו" : "שיחה") + "</span></td><td>" +
@@ -322,6 +426,9 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       eventsOpen = !eventsOpen;
       if (lastData) render(lastData);
     });
+
+    btnHealth.addEventListener("click", renderHealthSheet);
+    btnSecurity.addEventListener("click", renderSecuritySheet);
 
     eventsBox.addEventListener("click", async function (ev) {
       const row = ev.target.closest("[data-user]");
@@ -406,20 +513,24 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
         const res = await fetch("/admin/api/snapshot", { credentials: "same-origin" });
         if (res.status === 401) {
           gate.classList.remove("hidden");
-          liveDot.classList.remove("ok");
+          linkOk = false;
+          paintStatus();
           return;
         }
         if (res.status === 503) {
           loginErr.textContent = "חסר ADMIN_DASHBOARD_TOKEN בשרת.";
           gate.classList.remove("hidden");
+          linkOk = false;
+          paintStatus();
           return;
         }
         if (!res.ok) throw new Error("snapshot " + res.status);
         gate.classList.add("hidden");
         render(await res.json());
       } catch (err) {
-        liveDot.classList.remove("ok");
+        linkOk = false;
         document.getElementById("updated").textContent = "אין חיבור לשרת";
+        paintStatus();
       }
     }
 
@@ -456,6 +567,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       if (!timer) timer = setInterval(pull, 2500);
     });
 
+    paintStatus();
     pull();
     timer = setInterval(pull, 2500);
   </script>
