@@ -22,7 +22,6 @@ import {
   usableSpeech,
 } from "../ai/stt.service";
 import { TranslateService } from "../ai/translate.service";
-import { TranslatorService } from "../ai/translator.service";
 import { TtsService } from "../ai/tts.service";
 import { ChannelsService } from "../channels/channels.service";
 import { ContactsService } from "../contacts/contacts.service";
@@ -44,7 +43,6 @@ export class TransmissionsService {
     private readonly channels: ChannelsService,
     private readonly contacts: ContactsService,
     private readonly stt: SttService,
-    private readonly translator: TranslatorService,
     private readonly translate: TranslateService,
     private readonly tts: TtsService,
     private readonly realtime: RealtimeGateway,
@@ -384,7 +382,7 @@ export class TransmissionsService {
     return { id: transmission.id, status: "READY" as const, channelId: channel.id };
   }
 
-  /** Cross-language walkie: Gemini text becomes TTS. The original recording stays with the speaker. */
+  /** Cross-language walkie: transcribe once in the speaker's language, then translate that exact text. */
   private async dubWalkie(
     file: Express.Multer.File,
     transmissionId: string,
@@ -396,16 +394,8 @@ export class TransmissionsService {
     try {
       const ext = extFrom(file);
       const languages = [...new Set(dubbed.map((row) => row.language))];
-      const hear = languages[0] || (speak === "he" ? "en" : "he");
-      const turn = await this.translator.runTurn({
-        audio: file.buffer,
-        mime: file.mimetype || "audio/wav",
-        ext,
-        langA: speak,
-        langB: hear,
-        gender: voiceGender,
-      });
-      const originalText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
+      const heard = await this.stt.hearClip(file.buffer, file.mimetype || "audio/wav", ext, speak);
+      const originalText = (heard.stt || "").replace(/\s+/g, " ").trim();
       if (!originalText) {
         this.logger.warn(`Walkie dub empty stt ${transmissionId}`);
         return;
@@ -414,27 +404,23 @@ export class TransmissionsService {
         where: { id: transmissionId },
         data: { originalText },
       });
+      this.realtime.emitToUser(payload.senderId, SOCKET_EVENTS.TRANSMISSION_READY, {
+        ...payload,
+        originalText,
+        translatedText: "",
+        audioUrl: null,
+        kind: "walkie" as const,
+      });
       for (const language of languages) {
-        const next =
-          language === hear
-            ? turn
-            : await this.translator.runTurn({
-                audio: file.buffer,
-                mime: file.mimetype || "audio/wav",
-                ext,
-                langA: speak,
-                langB: language,
-                gender: voiceGender,
-              });
-        const src = (next.sourceLang || "").slice(0, 2).toLowerCase();
-        const dst = (next.targetLang || "").slice(0, 2).toLowerCase();
-        const line = (
-          language === src
-            ? next.sourceText || originalText
-            : language === dst
-              ? next.translatedText || ""
-              : next.translatedText || next.sourceText || ""
-        ).replace(/\s+/g, " ").trim();
+        let line = originalText;
+        if (language !== speak) {
+          const live = await this.stt.translateHeard(originalText, language, voiceGender);
+          line = (live.text || "").replace(/\s+/g, " ").trim();
+          if (!line) {
+            const cloud = await this.translate.translate(originalText, speak, language);
+            line = (cloud.text || "").replace(/\s+/g, " ").trim();
+          }
+        }
         if (!line || /^\[unclear\]$/i.test(line)) {
           this.logger.warn(`Walkie dub no translation ${transmissionId} ${speak}->${language}`);
           continue;
@@ -454,6 +440,14 @@ export class TransmissionsService {
           update: { audioUrl: saved, translatedText: line },
         });
         const audioUrl = this.storage.publicUrl(saved);
+        this.realtime.emitToUser(payload.senderId, SOCKET_EVENTS.TRANSMISSION_READY, {
+          ...payload,
+          language,
+          originalText,
+          translatedText: line,
+          audioUrl: null,
+          kind: "walkie" as const,
+        });
         for (const row of dubbed.filter((item) => item.language === language)) {
           const dubbedPayload = {
             ...payload,

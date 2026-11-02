@@ -11,7 +11,9 @@ const GEMINI_LIVE_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"];
 const LIVE_STT_TOKENS = 384;
 const LIVE_TRANSLATION_TOKENS = 192;
 const LIVE_HEAR =
-  "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, repair, or complete any word or sentence that was not spoken. If the audio is cut off, unclear, or only noise, return an empty string. Do not replace the words with different names.";
+  "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, repair, or complete any word or sentence that was not spoken. If the audio is cut off, unclear, or only noise, return an empty string. Do not replace the words with different names. Never invent stock phrases such as I love you, אני אוהב אותך, thank you for watching, or how can I help you.";
+const STOCK_EXTRA =
+  /i love you|love you|אני אוהב אותך|אני אוהבת אותך|thank you for watching|thanks for watching|please subscribe|how can i help|נעים להכיר/i;
 const LIVE_LITERAL =
   "Translate the whole utterance as one sentence in the target language's natural syntax, not word by word. CRITICAL: Do NOT sanitize, soften, rephrase, tone down, or 'improve' the user's speech. If the user is rude, aggressive, or grammatically raw, the translation MUST reflect that exact same tone, rudeness, and intent in the target language. Carry slang, insults, idioms, and profanity as the closest natural equivalent. Do NOT add polite intro words (e.g., 'Tell me', 'Please') if they were not explicitly spoken. Do NOT drop any insult, slang, or emphasis. Do NOT complete a cut-off sentence.";
 const LIVE_ONLY =
@@ -135,17 +137,18 @@ export class SttService {
       ],
       LIVE_STT_TOKENS,
     );
+    const whisper = await this.viaOpenAi(audio, ext, mime, 12000, code);
+    const spoken = pickFaithfulTranscript(liveSpeech(heard.text), liveSpeech(usableSpeech(whisper.text)));
     this.logger.log(`LOG [PERF] STT duration: ${Date.now() - started} ms`);
-    this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(heard.raw)}`);
-    this.logger.log(`LOG [TRACE] STT Output: ${JSON.stringify(heard.raw)}`);
-    const spoken = liveSpeech(heard.text);
+    this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(spoken || heard.raw)}`);
+    this.logger.log(`LOG [TRACE] STT Output: ${JSON.stringify(spoken || heard.raw)}`);
     if (!spoken) {
       this.logger.log(`LOG [TRACE] Gemini Output: ""`);
       this.logger.log(`LOG [TRANSLATION] Translated text: ""`);
       this.logger.log(`LOG [PERF] Gemini Translation duration: 0 ms`);
       return { stt: "", raw: heard.raw, started };
     }
-    return { stt: spoken, raw: heard.raw, started };
+    return { stt: spoken, raw: heard.raw || spoken, started };
   }
 
   /** Translate one transcript. The audio is not sent again. */
@@ -164,9 +167,10 @@ export class SttService {
       const count = (line: string) =>
         line.split(/[.!?…؟。！？]+/u).map((part) => part.trim()).filter(Boolean).length || (line.trim() ? 1 : 0);
       if (count(clean) > count(src)) return true;
+      if (STOCK_EXTRA.test(clean) && !STOCK_EXTRA.test(src)) return true;
       const srcWords = src.split(/\s+/).filter(Boolean).length;
       const outWords = clean.split(/\s+/).filter(Boolean).length;
-      return outWords > srcWords + 5 && outWords > Math.ceil(srcWords * 1.8);
+      return outWords > srcWords + 2 && outWords > Math.ceil(srcWords * 1.5);
     };
     const instruction = [
       `Translate ONLY the spoken words into ${langName(targetLang)}.`,
@@ -632,6 +636,27 @@ export function speechTag(code: string) {
     am: "am-ET",
   };
   return tags[speechBase(code) || code] || tags[code] || code;
+}
+
+function stockHits(text: string) {
+  return [...(text || "").matchAll(new RegExp(STOCK_EXTRA.source, "gi"))].map((row) => row[0].toLowerCase());
+}
+
+function pickFaithfulTranscript(gemini: string, whisper: string) {
+  const g = (gemini || "").replace(/\s+/g, " ").trim();
+  const w = (whisper || "").replace(/\s+/g, " ").trim();
+  if (!g) return w;
+  if (!w) return stripStock(g);
+  const extraGemini = stockHits(g).some((hit) => !stockHits(w).includes(hit));
+  if (extraGemini) return w;
+  const gw = g.split(/\s+/).filter(Boolean).length;
+  const ww = w.split(/\s+/).filter(Boolean).length;
+  if (gw > ww + 3 && gw > Math.ceil(ww * 1.6)) return w;
+  return stripStock(g) || w;
+}
+
+function stripStock(text: string) {
+  return (text || "").replace(new RegExp(STOCK_EXTRA.source, "gi"), " ").replace(/\s+/g, " ").trim();
 }
 
 function hearInstruction(code: string, tag: string) {
