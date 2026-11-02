@@ -454,19 +454,10 @@ export class LiveDubService {
   }
 
   private async resolveStt(press: Press, wav: Buffer, sourceLang: string) {
-    const pcmBytes = Math.max(0, wav.length - 44);
+    // Always hear the final WAV. Mid-hold preview is only a fallback if final STT fails —
+    // reusing a partial transcript caused invented / truncated lines.
     if (press.previewJob) {
-      await Promise.race([
-        press.previewJob,
-        new Promise<string>((resolve) => setTimeout(() => resolve(""), 1800)),
-      ]);
-    }
-    const coverage = press.previewBytes / Math.max(1, pcmBytes);
-    if (press.previewStt && coverage >= 0.82) {
-      this.logger.log(
-        `live dub reuse preview press=${press.pressId || "-"} coverage=${coverage.toFixed(2)}`,
-      );
-      return press.previewStt;
+      void press.previewJob.catch(() => "");
     }
     const heardOnce = await this.stt.hearClip(wav, "audio/wav", "wav", sourceLang);
     return heardOnce.stt || press.previewStt || "";

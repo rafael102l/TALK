@@ -128,28 +128,24 @@ export class SttService {
     this.logger.log(`LOG [TRACE] Raw Audio Length: ${wavSeconds(audio).toFixed(2)} sec`);
     this.logger.log(`LOG [TRACE] Audio format: ${describeWav(audio)}`);
     this.logger.log(`LOG [TRACE] STT language: ${tag}`);
-    // Run Gemini and Whisper together — serial awaits were the main post-release delay.
-    // If Gemini already has usable speech, only wait briefly for Whisper as a quality check.
-    const whisperJob = this.viaOpenAi(audio, ext, mime, 10000, code).catch(() => ({ text: "", lang: "" }));
-    const heard = await this.geminiLive(
-      key,
-      hear,
-      [
-        { text: hear },
-        { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
-      ],
-      LIVE_STT_TOKENS,
+    // Run Gemini and Whisper in parallel for speed, but always wait for both so
+    // pickFaithfulTranscript can reject Gemini inventions against Whisper.
+    const [heard, whisper] = await Promise.all([
+      this.geminiLive(
+        key,
+        hear,
+        [
+          { text: hear },
+          { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
+        ],
+        LIVE_STT_TOKENS,
+      ),
+      this.viaOpenAi(audio, ext, mime, 10000, code).catch(() => ({ text: "", lang: "" })),
+    ]);
+    const spoken = pickFaithfulTranscript(
+      liveSpeech(heard.text),
+      liveSpeech(usableSpeech(whisper.text)),
     );
-    const geminiSpeech = liveSpeech(heard.text);
-    const whisper = geminiSpeech
-      ? await Promise.race([
-          whisperJob,
-          new Promise<{ text: string; lang: string }>((resolve) =>
-            setTimeout(() => resolve({ text: "", lang: "" }), 1200),
-          ),
-        ])
-      : await whisperJob;
-    const spoken = pickFaithfulTranscript(geminiSpeech, liveSpeech(usableSpeech(whisper.text)));
     this.logger.log(`LOG [PERF] STT duration: ${Date.now() - started} ms`);
     this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(spoken || heard.raw)}`);
     this.logger.log(`LOG [TRACE] STT Output: ${JSON.stringify(spoken || heard.raw)}`);
@@ -663,7 +659,28 @@ function pickFaithfulTranscript(gemini: string, whisper: string) {
   const gw = g.split(/\s+/).filter(Boolean).length;
   const ww = w.split(/\s+/).filter(Boolean).length;
   if (gw > ww + 3 && gw > Math.ceil(ww * 1.6)) return w;
+  // Same-ish length but different content: prefer Whisper (less inventive).
+  if (ww >= 2 && textOverlap(g, w) < 0.45) return w;
   return stripStock(g) || w;
+}
+
+function textOverlap(left: string, right: string) {
+  const a = new Set(
+    left
+      .toLowerCase()
+      .split(/\s+/)
+      .map((part) => part.replace(/[^\p{L}\p{N}]+/gu, ""))
+      .filter((part) => part.length > 1),
+  );
+  const b = right
+    .toLowerCase()
+    .split(/\s+/)
+    .map((part) => part.replace(/[^\p{L}\p{N}]+/gu, ""))
+    .filter((part) => part.length > 1);
+  if (!a.size || !b.length) return 0;
+  let hit = 0;
+  for (const word of b) if (a.has(word)) hit += 1;
+  return hit / Math.max(a.size, b.length);
 }
 
 function stripStock(text: string) {
