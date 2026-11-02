@@ -154,4 +154,9 @@ export class CallRegistry {
       void this.redis.set(this.busyKey(userId), call.callId, CALL_TTL_SEC);
     }
   }
+
+  /** Read-only live calls for the internal admin dashboard. */
+  listLive() {
+    return [...this.calls.values()].map(({ timer: _timer, ...rest }) => rest);
+  }
 }

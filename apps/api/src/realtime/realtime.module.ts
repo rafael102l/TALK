@@ -15,6 +15,6 @@ import { RealtimeGateway } from "./realtime.gateway";
     AiModule,
   ],
   providers: [PresenceService, FloorService, LiveDubService, CallRegistry, RealtimeGateway],
-  exports: [PresenceService, FloorService, RealtimeGateway],
+  exports: [PresenceService, FloorService, RealtimeGateway, CallRegistry],
 })
 export class RealtimeModule {}

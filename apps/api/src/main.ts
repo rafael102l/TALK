@@ -3,6 +3,7 @@ import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { NestExpressApplication } from "@nestjs/platform-express";
 import { join } from "path";
+import { AdminController } from "./admin/admin.controller";
 import { AppModule } from "./app.module";
 import { PrismaExceptionFilter } from "./prisma/prisma-exception.filter";
 
@@ -28,6 +29,12 @@ async function bootstrap() {
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port, "0.0.0.0");
   console.log(`TALK API listening on http://0.0.0.0:${port}`);
+  try {
+    app.get(AdminController, { strict: false });
+    console.log(`AdminModule loaded — dashboard http://0.0.0.0:${port}/admin`);
+  } catch {
+    console.log("AdminModule NOT loaded — GET /admin will 404");
+  }
 }
 
 bootstrap();
