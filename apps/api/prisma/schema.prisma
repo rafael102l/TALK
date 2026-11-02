@@ -70,6 +70,7 @@ model User {
   transmissionTargets TransmissionTarget[]
   otpCodes            OtpCode[]
   callDevice          CallDevice?
+  feedbackNotes       FeedbackNote[]
 }
 
 model CallDevice {
@@ -178,4 +179,16 @@ model TransmissionTarget {
   user           User         @relation(fields: [userId], references: [id])
 
   @@unique([transmissionId, userId])
+}
+
+model FeedbackNote {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String   @default("")
+  phone     String   @default("")
+  text      String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
 }

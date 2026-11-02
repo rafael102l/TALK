@@ -3,16 +3,17 @@ import { RealtimeModule } from "../realtime/realtime.module";
 import { AdminController } from "./admin.controller";
 import { AdminGuard } from "./admin.guard";
 import { AdminService } from "./admin.service";
+import { FeedbackInboxController } from "./feedback-inbox.controller";
 
 @Module({
   imports: [RealtimeModule],
-  controllers: [AdminController],
+  controllers: [AdminController, FeedbackInboxController],
   providers: [AdminService, AdminGuard],
 })
 export class AdminModule implements OnModuleInit {
   private readonly log = new Logger(AdminModule.name);
 
   onModuleInit() {
-    this.log.log("loaded — GET /admin  POST /admin/session  POST /admin/logout  GET /admin/api/snapshot");
+    this.log.log("loaded — GET /admin  POST /feedback  GET /admin/api/snapshot");
   }
 }

@@ -1,4 +1,5 @@
-import { Injectable, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
+import type { User } from "@prisma/client";
 import type { Socket } from "socket.io";
 import { PrismaService } from "../prisma/prisma.service";
 import { CallRegistry } from "../realtime/call.registry";
@@ -8,10 +9,12 @@ import { adminTokenConfigured, adminTokensMatch } from "./admin.guard";
 
 type AuthedSocket = Socket & { userId?: string; displayName?: string };
 
-const EVENT_TAKE = 40;
+const EVENT_TAKE = 200;
 
 @Injectable()
 export class AdminService {
+  private readonly log = new Logger(AdminService.name);
+
   constructor(
     private readonly gateway: RealtimeGateway,
     private readonly presence: PresenceService,
@@ -30,45 +33,71 @@ export class AdminService {
     }
   }
 
+  async saveFeedback(user: User, text: string) {
+    const body = text.trim().slice(0, 4000);
+    if (!body) throw new BadRequestException("empty");
+    return this.prisma.feedbackNote.create({
+      data: {
+        userId: user.id,
+        name: (user.displayName || "").trim(),
+        phone: user.phoneE164 || "",
+        text: body,
+      },
+      select: { id: true, createdAt: true },
+    });
+  }
+
   async snapshot() {
     const io = this.gateway.server;
     const sockets = io?.sockets?.sockets ? ([...io.sockets.sockets.values()] as AuthedSocket[]) : [];
     const connectedIds = [...new Set(sockets.map((sock) => sock.userId).filter(Boolean))] as string[];
 
     const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const startToday = new Date();
+    startToday.setHours(0, 0, 0, 0);
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const channelRooms = this.readChannelRooms(io);
     const channelIds = channelRooms.map((room) => room.id);
-    const [users, channels, events, usersTotal, eventsLastHour] = await Promise.all([
-      connectedIds.length
-        ? this.prisma.user.findMany({
-            where: { id: { in: connectedIds } },
-            select: { id: true, displayName: true, phoneE164: true, speakLang: true, listenLang: true },
-          })
-        : Promise.resolve([]),
-      channelIds.length
-        ? this.prisma.channel.findMany({
-            where: { id: { in: channelIds } },
-            select: { id: true, name: true, type: true, _count: { select: { members: true } } },
-          })
-        : Promise.resolve([]),
-      this.prisma.transmission.findMany({
-        orderBy: { createdAt: "desc" },
-        take: EVENT_TAKE,
-        select: {
-          id: true,
-          kind: true,
-          status: true,
-          originalText: true,
-          durationMs: true,
-          createdAt: true,
-          sender: { select: { id: true, displayName: true, phoneE164: true } },
-          channel: { select: { id: true, name: true, type: true } },
-          _count: { select: { targets: true } },
-        },
-      }),
-      this.prisma.user.count(),
-      this.prisma.transmission.count({ where: { createdAt: { gte: hourAgo } } }),
-    ]);
+    const [users, channels, events, usersTotal, eventsLastHour, downloads, downloadsToday, downloadsWeek, inbox] =
+      await Promise.all([
+        connectedIds.length
+          ? this.prisma.user.findMany({
+              where: { id: { in: connectedIds } },
+              select: { id: true, displayName: true, phoneE164: true, speakLang: true, listenLang: true },
+            })
+          : Promise.resolve([]),
+        channelIds.length
+          ? this.prisma.channel.findMany({
+              where: { id: { in: channelIds } },
+              select: { id: true, name: true, type: true, _count: { select: { members: true } } },
+            })
+          : Promise.resolve([]),
+        this.prisma.transmission.findMany({
+          orderBy: { createdAt: "desc" },
+          take: EVENT_TAKE,
+          select: {
+            id: true,
+            kind: true,
+            status: true,
+            originalText: true,
+            durationMs: true,
+            createdAt: true,
+            sender: { select: { id: true, displayName: true, phoneE164: true } },
+            channel: { select: { id: true, name: true, type: true } },
+            _count: { select: { targets: true } },
+          },
+        }),
+        this.prisma.user.count(),
+        this.prisma.transmission.count({ where: { createdAt: { gte: hourAgo } } }),
+        this.prisma.user.findMany({
+          orderBy: { createdAt: "desc" },
+          take: 80,
+          select: { id: true, displayName: true, phoneE164: true, createdAt: true },
+        }),
+        this.prisma.user.count({ where: { createdAt: { gte: startToday } } }),
+        this.prisma.user.count({ where: { createdAt: { gte: weekAgo } } }),
+        this.readInbox(),
+      ]);
 
     const byUser = new Map(users.map((user) => [user.id, user]));
     const socketCounts = new Map<string, number>();
@@ -124,22 +153,53 @@ export class AdminService {
       roomsActive: rooms.filter((room) => room.connected > 0).length,
       callsLive: liveCalls.length,
       eventsLastHour,
+      downloadsToday,
+      downloadsWeek,
+      inboxCount: inbox.length,
       connected,
       rooms,
       calls: liveCalls,
+      downloads: downloads.map((row) => ({
+        id: row.id,
+        name: row.displayName || "—",
+        phone: row.phoneE164,
+        at: row.createdAt.toISOString(),
+      })),
+      inbox,
       events: events.map((row) => ({
         id: row.id,
         kind: row.kind,
         status: row.status,
-        text: (row.originalText || "").slice(0, 120),
+        text: row.originalText || "",
         durationMs: row.durationMs,
         at: row.createdAt.toISOString(),
         sender: row.sender.displayName || row.sender.phoneE164,
+        senderPhone: row.sender.phoneE164,
         channel: row.channel.name || row.channel.type,
         channelType: row.channel.type,
         targets: row._count.targets,
       })),
     };
+  }
+
+  private async readInbox() {
+    try {
+      const rows = await this.prisma.feedbackNote.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 100,
+        select: { id: true, name: true, phone: true, text: true, createdAt: true },
+      });
+      return rows.map((row) => ({
+        id: row.id,
+        name: row.name || "—",
+        phone: row.phone,
+        text: row.text,
+        at: row.createdAt.toISOString(),
+      }));
+    } catch (error) {
+      this.log.warn(`feedback inbox unavailable: ${(error as Error).message}`);
+      return [];
+    }
   }
 
   private readChannelRooms(io: RealtimeGateway["server"] | undefined) {
