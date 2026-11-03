@@ -583,10 +583,15 @@ function pickByScript(text: string, langA: string, langB: string) {
   if (!text) return "";
   const onlyB = hasScript(text, langB) && !hasScript(text, langA);
   const onlyA = hasScript(text, langA) && !hasScript(text, langB);
-  // Latin letters must not count as the Latin language when the other side has a unique script.
-  // Whisper often dumps Hebrew as "LA ILA TOV"; that is not Romanian/French/English.
-  if (onlyB && (uniqueScript(langB) || !uniqueScript(langA))) return langB;
-  if (onlyA && (uniqueScript(langA) || !uniqueScript(langB))) return langA;
+  // Unique-script side wins when its letters are present.
+  if (onlyB && uniqueScript(langB)) return langB;
+  if (onlyA && uniqueScript(langA)) return langA;
+  // Latin-only text in a unique+Latin pair: accept the Latin language unless it looks like
+  // romanized dump of the unique-script side (e.g. Whisper "LA ILA TOV" for Hebrew).
+  if (onlyB && !uniqueScript(langB) && uniqueScript(langA) && !looksLikePhoneticDump(text)) return langB;
+  if (onlyA && !uniqueScript(langA) && uniqueScript(langB) && !looksLikePhoneticDump(text)) return langA;
+  if (onlyB && !uniqueScript(langA) && !uniqueScript(langB)) return langB;
+  if (onlyA && !uniqueScript(langA) && !uniqueScript(langB)) return langA;
   return "";
 }
 
@@ -605,7 +610,13 @@ function keepPairTranscript(text: string, langA: string, langB: string) {
   if (pickByScript(value, langA, langB)) return value;
   const unique = uniquePairSide(langA, langB);
   if (unique && hasScript(value, unique)) return value;
-  if (unique && hasScript(value, otherLang(unique, langA, langB)) && !hasScript(value, unique)) return "";
+  // Unique + Latin pair: keep Latin transcript for the Latin side (do not drop real French/etc.).
+  // Only reject clear romanized dumps of the unique-script language.
+  const latin = unique ? otherLang(unique, langA, langB) : "";
+  if (unique && latin && hasScript(value, latin) && !hasScript(value, unique)) {
+    if (looksLikePhoneticDump(value)) return "";
+    return value;
+  }
   if (hasScript(value, langA) || hasScript(value, langB)) return value;
   if (!uniqueScript(langA) && !uniqueScript(langB)) return value;
   return "";
@@ -636,9 +647,9 @@ function choosePairSource(scriptLang: string, geminiLang: string, autoLang: stri
   if (script && uniqueScript(script)) return script;
   if (gemini) return gemini;
   if (auto && uniqueScript(auto)) return auto;
-  const unique = uniquePairSide(langA, langB);
-  if (unique && auto && auto !== unique) return "";
+  // Accept Whisper/auto for either side of the pair (including Latin when the other is Hebrew/etc.).
   if (auto) return auto;
+  if (script) return script;
   return "";
 }
 
