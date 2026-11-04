@@ -9,26 +9,28 @@ export function QuoteBox({
   text,
   compact = false,
   inset = false,
+  rtl = false,
   onClose,
 }: {
   name: string;
   text: string;
   compact?: boolean;
   inset?: boolean;
+  rtl?: boolean;
   onClose?: () => void;
 }) {
   if (!name && !text) return null;
   return (
-    <View style={[styles.box, compact && styles.compact, onClose && !inset ? styles.banner : null, inset && styles.inset]}>
+    <View style={[styles.box, rtl && styles.boxRtl, compact && styles.compact, onClose && !inset ? styles.banner : null, inset && styles.inset]}>
       <View style={styles.bar} />
       <View style={styles.body}>
         {name ? (
-          <Text style={styles.name} numberOfLines={1}>
+          <Text style={[styles.name, rtl && styles.rtlText]} numberOfLines={1}>
             {name}
           </Text>
         ) : null}
         {text ? (
-          <Text style={styles.text} numberOfLines={compact ? 2 : 3}>
+          <Text style={[styles.text, rtl && styles.rtlText]} numberOfLines={compact ? 2 : 3}>
             {text}
           </Text>
         ) : null}
@@ -51,6 +53,8 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     marginBottom: 6,
   },
+  boxRtl: { flexDirection: "row-reverse" },
+  rtlText: { textAlign: "right", writingDirection: "rtl" },
   compact: { marginBottom: 0 },
   banner: {
     marginBottom: 0,

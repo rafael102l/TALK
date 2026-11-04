@@ -128,22 +128,33 @@ export class SttService {
     this.logger.log(`LOG [TRACE] Raw Audio Length: ${wavSeconds(audio).toFixed(2)} sec`);
     this.logger.log(`LOG [TRACE] Audio format: ${describeWav(audio)}`);
     this.logger.log(`LOG [TRACE] STT language: ${tag}`);
-    // Run Gemini and Whisper in parallel for speed, but always wait for both so
-    // pickFaithfulTranscript can reject Gemini inventions against Whisper.
-    const [heard, whisper] = await Promise.all([
-      this.geminiLive(
-        key,
-        hear,
-        [
-          { text: hear },
-          { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
-        ],
-        LIVE_STT_TOKENS,
-      ),
-      this.viaOpenAi(audio, ext, mime, 10000, code).catch(() => ({ text: "", lang: "" })),
-    ]);
+    // Hear with Gemini first. Whisper is a paid second engine used only as a
+    // cross-check / fallback — run it only when Gemini is empty, garbled, a
+    // hallucination, or carries an invented stock phrase. A clean Gemini
+    // transcript is trusted as-is, so a normal press no longer bills a second STT.
+    const heard = await this.geminiLive(
+      key,
+      hear,
+      [
+        { text: hear },
+        { inline_data: { mime_type: geminiAudioMime(mime, ext), data: audio.toString("base64") } },
+      ],
+      LIVE_STT_TOKENS,
+    );
+    const geminiSpoken = liveSpeech(heard.text);
+    const needsWhisper =
+      !geminiSpoken ||
+      isStutterGarbage(geminiSpoken) ||
+      isHallucination(geminiSpoken) ||
+      STOCK_EXTRA.test(geminiSpoken);
+    const whisper = needsWhisper
+      ? await this.viaOpenAi(audio, ext, mime, 10000, code).catch(() => ({ text: "", lang: "" }))
+      : { text: "", lang: "" };
+    if (needsWhisper) {
+      this.logger.log(`LOG [TRACE] STT Whisper ${geminiSpoken ? "cross-check" : "fallback"}`);
+    }
     const spoken = pickFaithfulTranscript(
-      liveSpeech(heard.text),
+      geminiSpoken,
       liveSpeech(usableSpeech(whisper.text)),
     );
     this.logger.log(`LOG [PERF] STT duration: ${Date.now() - started} ms`);

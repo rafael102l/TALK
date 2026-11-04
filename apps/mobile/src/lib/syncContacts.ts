@@ -21,6 +21,11 @@ export function clearTalkContactsCache() {
   inflight = null;
 }
 
+/** Warm the home list from the in-memory cache (contacts are no longer persisted to disk). */
+export async function loadSavedTalkContacts(): Promise<MatchedContact[]> {
+  return cached;
+}
+
 export async function fetchTalkContacts(token: string): Promise<MatchedContact[]> {
   const list = onlyTalk(
     await api<MatchedContact[]>("/contacts", { token, timeoutMs: 12000, once: true }),

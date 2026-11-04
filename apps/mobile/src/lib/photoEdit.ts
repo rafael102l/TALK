@@ -62,6 +62,22 @@ export async function flattenStage(ref: { current: unknown }, hd: boolean) {
   }
 }
 
+export async function flattenSticker(ref: { current: unknown }) {
+  if (!ref.current) return null;
+  try {
+    const core = require("expo-modules-core") as typeof import("expo-modules-core");
+    if (core.requireOptionalNativeModule && !core.requireOptionalNativeModule("RNViewShot")) return null;
+    const ViewShot = require("react-native-view-shot") as { captureRef: (node: unknown, opts: object) => Promise<string> };
+    return await ViewShot.captureRef(ref.current, {
+      format: "png",
+      quality: 1,
+      result: "tmpfile",
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function saveEditedToGallery(uri: string) {
   const local = await cacheChatMedia(uri, { album: true });
   return local;

@@ -5,6 +5,8 @@ let recording: Audio.Recording | null = null;
 let player: Audio.Sound | null = null;
 let peakDb = -160;
 let micLock: Promise<void> = Promise.resolve();
+// Set while a live call / translator owns the mic — playback must not grab the audio mode then.
+let extraMicBusy = false;
 
 function withMic<T>(task: () => Promise<T>): Promise<T> {
   const run = micLock.then(task, task);
@@ -50,7 +52,7 @@ export function isMicRecording() {
 export async function ensureAudioMode(forRecording = false) {
   // Never steal the mic for playback while this device is still recording.
   // Devices are independent — remote talk must not end local capture.
-  if (!forRecording && recording) return;
+  if (!forRecording && (recording || extraMicBusy)) return;
   // Xiaomi/MIUI often keeps the mic focus after PTT and then playback is silent
   // or stuck on the earpiece — force speaker + release recording focus every time.
   if (!forRecording) {
@@ -278,4 +280,42 @@ export function formatClock(ms: number) {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+/** Warm a remote clip ahead of play. No-op in the shipped build. */
+export async function prefetchAudio(_url?: string) {
+  return;
+}
+
+/** Mark the mic as owned by a call/translator so playback won't grab the audio mode. */
+export function setExtraMicBusy(on: boolean) {
+  extraMicBusy = on;
+}
+
+/** Pre-arm the conversation mic. No-op in the shipped build. */
+export async function primeConversationMic() {
+  return;
+}
+
+/**
+ * Drop a stale/standby recorder handle when we are not actively recording.
+ * LOCKED invariant: must never tear down a live local recording.
+ */
+export async function releaseStandbyMic() {
+  await withMic(async () => {
+    if (!recording) return;
+    try {
+      const status = await recording.getStatusAsync();
+      if (status.isRecording) return; // active PTT — leave it alone
+    } catch {
+      /* stale handle — fall through and drop it */
+    }
+    const rec = recording;
+    recording = null;
+    try {
+      await rec.stopAndUnloadAsync();
+    } catch {
+      /* ignore */
+    }
+  });
 }

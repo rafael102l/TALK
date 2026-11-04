@@ -78,7 +78,11 @@ export class TranslateService {
     let reason = "";
     if (geminiKey) {
       const raw = await this.viaGemini(text, source, target, geminiKey, names, written).catch(() => "");
-      const held = raw ? await this.holdToWords(text, raw, source, target, geminiKey).catch(() => raw) : "";
+      // Word-lock gate is a second paid Gemini call — run it only when the draft is
+      // already flagged as off-rules (extra/missing sentence, changed number, wrong
+      // script, garbled). A clean draft is trusted and skips the gate.
+      const needsHold = Boolean(raw) && Boolean(acceptedTranslation(text, raw, target, written).reason);
+      const held = needsHold ? await this.holdToWords(text, raw, source, target, geminiKey).catch(() => raw) : "";
       const checked = acceptedTranslation(text, held || raw, target, written);
       if (checked.text) {
         out = checked.text;
@@ -98,7 +102,9 @@ export class TranslateService {
         "gpt-4o",
         written ? 10000 : 10000,
       ).catch(() => "");
-      const held = strict ? await this.holdToWords(text, strict, source, target, geminiKey || "").catch(() => strict) : "";
+      // Same word-lock gate, only when the OpenAI draft is itself flagged as off-rules.
+      const needsHold = Boolean(strict) && Boolean(acceptedTranslation(text, strict, target, written).reason);
+      const held = needsHold ? await this.holdToWords(text, strict, source, target, geminiKey || "").catch(() => strict) : "";
       const checked = acceptedTranslation(text, held || strict, target, written);
       if (checked.text) {
         out = checked.text;

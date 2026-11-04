@@ -1,6 +1,128 @@
 import { LanguageCode, isLanguageCode, LANGUAGE_BY_CODE } from "@talk/shared";
 
 export type MsgKey =
+  | "addGroupDescription"
+  | "addMember"
+  | "addStickerToChat"
+  | "addToFavorites"
+  | "addToLists"
+  | "addToNote"
+  | "addedToFavorites"
+  | "advancedPrivacy"
+  | "advancedPrivacyHint"
+  | "attachContact"
+  | "attachLocation"
+  | "callAddPeople"
+  | "callBackToCall"
+  | "callBlock"
+  | "callDateAt"
+  | "callDetails"
+  | "callEncrypted"
+  | "callEncryptedHint"
+  | "callFrequent"
+  | "callGoVideo"
+  | "callInfo"
+  | "callMessage"
+  | "callMinutesAgo"
+  | "callMinutesDur"
+  | "callMore"
+  | "callMoreContacts"
+  | "callNoiseCancel"
+  | "callNotOnTalk"
+  | "callRemoveFromLog"
+  | "callRemoved"
+  | "callSearchEmpty"
+  | "callSeconds"
+  | "callSendMessage"
+  | "callShare"
+  | "callShareContact"
+  | "callShareFailed"
+  | "callShareNeedVideo"
+  | "callTodayAt"
+  | "callVideoIn"
+  | "callVideoOut"
+  | "callVoice"
+  | "callVoiceIn"
+  | "callVoiceOut"
+  | "callYesterdayAt"
+  | "chooseNav"
+  | "clearCalls"
+  | "copyAction"
+  | "createGroupWith"
+  | "deleteCallAsk"
+  | "editAction"
+  | "exitChat"
+  | "feedbackAttach"
+  | "feedbackHint"
+  | "feedbackImagesFallback"
+  | "feedbackTitle"
+  | "groupAdmin"
+  | "groupCreatedBy"
+  | "groupInfo"
+  | "groupKindLine"
+  | "leaveGroup"
+  | "leaveGroupBody"
+  | "liveEnded"
+  | "liveShare15"
+  | "liveShare1h"
+  | "liveShare8h"
+  | "liveShareBgHint"
+  | "liveShareRemaining"
+  | "liveShareTitle"
+  | "liveSharedInOneChat"
+  | "liveUntilClock"
+  | "locationAccuracy"
+  | "lockChat"
+  | "lockChatHint"
+  | "logoutConfirm"
+  | "makeAdmin"
+  | "mediaLinksDocs"
+  | "nearbyPlaces"
+  | "openInMaps"
+  | "openInWaze"
+  | "pinAction"
+  | "quickReply"
+  | "recentChats"
+  | "removeMember"
+  | "removeMemberBody"
+  | "renameGroup"
+  | "reportGroup"
+  | "reportsEmpty"
+  | "reportsTitle"
+  | "search"
+  | "searchCalls"
+  | "searchLocation"
+  | "selectAll"
+  | "selectedItems"
+  | "selectedOne"
+  | "sendFailedNetwork"
+  | "sendLocationTitle"
+  | "sendThisLocation"
+  | "sendToTitle"
+  | "sendYourCurrentLocation"
+  | "shareContact"
+  | "shareLiveLocation"
+  | "sharedGroups"
+  | "similarGroup"
+  | "starMessage"
+  | "statusLastSeenDate"
+  | "statusLastSeenToday"
+  | "statusLastSeenYesterday"
+  | "stopLive"
+  | "stopLiveConfirm"
+  | "stopLiveShort"
+  | "storageManage"
+  | "tabDocs"
+  | "tabLinks"
+  | "tabMedia"
+  | "tabMembers"
+  | "translatorLangFound"
+  | "translatorLangMiss"
+  | "translatorSayLang"
+  | "translatorSayLangHint"
+  | "verifySecurityCode"
+  | "writeUs"
+  | "youAre"
   | "subtitle"
   | "invalidPhone"
   | "chooseCountry"
@@ -266,6 +388,128 @@ export type MsgKey =
 type Dict = Record<MsgKey, string>;
 
 const en: Dict = {
+  addGroupDescription: "Add group description",
+  addMember: "Add member",
+  addStickerToChat: "You can add this sticker to the chat",
+  addToFavorites: "Add to favorites",
+  addToLists: "Add to lists",
+  addToNote: "Add text to note",
+  addedToFavorites: "Added to favorites",
+  advancedPrivacy: "Advanced chat privacy",
+  advancedPrivacyHint: "Control who can add members and who can send messages in this group.",
+  attachContact: "Contact",
+  attachLocation: "Location",
+  callAddPeople: "Add people to the call",
+  callBackToCall: "Back to call",
+  callBlock: "Block",
+  callDateAt: "{date}, {time}",
+  callDetails: "Call details",
+  callEncrypted: "Encrypted",
+  callEncryptedHint: "This call is end-to-end encrypted. Only people in the call can hear it.",
+  callFrequent: "Frequent chats",
+  callGoVideo: "Switch to video",
+  callInfo: "Info",
+  callMessage: "Message",
+  callMinutesAgo: "{n} minutes ago",
+  callMinutesDur: "{n} minutes",
+  callMore: "More",
+  callMoreContacts: "More contacts",
+  callNoiseCancel: "Noise cancellation",
+  callNotOnTalk: "This number is not on TALK",
+  callRemoveFromLog: "Remove from call log",
+  callRemoved: "Removed from call log",
+  callSearchEmpty: "No matching contacts",
+  callSeconds: "{n} seconds",
+  callSendMessage: "Send message",
+  callShare: "Share",
+  callShareContact: "Share",
+  callShareFailed: "Screen share is not available on this device",
+  callShareNeedVideo: "To share your screen you need to switch to a video call.",
+  callTodayAt: "Today, {time}",
+  callVideoIn: "Incoming video call",
+  callVideoOut: "Outgoing video call",
+  callVoice: "Voice",
+  callVoiceIn: "Incoming voice call",
+  callVoiceOut: "Outgoing voice call",
+  callYesterdayAt: "Yesterday, {time}",
+  chooseNav: "Open with",
+  clearCalls: "Clear calls",
+  copyAction: "Copy",
+  createGroupWith: "Create group with {name}",
+  deleteCallAsk: "Delete this call?",
+  editAction: "Edit",
+  exitChat: "Exit chat",
+  feedbackAttach: "Attach image",
+  feedbackHint: "Write feedback or report a problem…",
+  feedbackImagesFallback: "(images)",
+  feedbackTitle: "Send feedback",
+  groupAdmin: "Group admin",
+  groupCreatedBy: "Created by {name} on {date}",
+  groupInfo: "Group info",
+  groupKindLine: "Group · {count} members",
+  leaveGroup: "Leave group",
+  leaveGroupBody: "Leave this group? You will stop receiving its messages.",
+  liveEnded: "Live location ended",
+  liveShare15: "15 minutes",
+  liveShare1h: "1 hour",
+  liveShare8h: "8 hours",
+  liveShareBgHint: "To keep sharing your live location, allow location access in the background from your phone settings.",
+  liveShareRemaining: "{mins} minutes left",
+  liveShareTitle: "Live location",
+  liveSharedInOneChat: "Location is shared in 1 chat",
+  liveUntilClock: "Live location until {time}",
+  locationAccuracy: "Accurate to {meters} meters",
+  lockChat: "Lock chat",
+  lockChatHint: "Lock and hide this chat on the home screen",
+  logoutConfirm: "Log out of TALK?",
+  makeAdmin: "Make group admin",
+  mediaLinksDocs: "Media, links, and docs",
+  nearbyPlaces: "Nearby places",
+  openInMaps: "Google Maps",
+  openInWaze: "Waze",
+  pinAction: "Pin",
+  quickReply: "Add quick reply",
+  recentChats: "Recent chats",
+  removeMember: "Remove from group",
+  removeMemberBody: "Remove {name} from this group?",
+  renameGroup: "Group name",
+  reportGroup: "Report group",
+  reportsEmpty: "No reports yet",
+  reportsTitle: "Reports",
+  search: "Search",
+  searchCalls: "Search name or number",
+  searchLocation: "Search",
+  selectAll: "Select all",
+  selectedItems: "{count} selected",
+  selectedOne: "1 selected",
+  sendFailedNetwork: "Send failed. Check your connection.",
+  sendLocationTitle: "Send location",
+  sendThisLocation: "Send this location",
+  sendToTitle: "Send to…",
+  sendYourCurrentLocation: "Send your current location",
+  shareContact: "Share contact",
+  shareLiveLocation: "Share live location",
+  sharedGroups: "Groups in common",
+  similarGroup: "Create group like this",
+  starMessage: "Star / Unstar",
+  statusLastSeenDate: "Last seen on {date}",
+  statusLastSeenToday: "Last seen today at {time}",
+  statusLastSeenYesterday: "Last seen yesterday at {time}",
+  stopLive: "Stop sharing",
+  stopLiveConfirm: "Stop sharing live location in all chats?",
+  stopLiveShort: "Stop",
+  storageManage: "Storage management",
+  tabDocs: "Docs",
+  tabLinks: "Links",
+  tabMedia: "Media",
+  tabMembers: "Members",
+  translatorLangFound: "Set to {name}",
+  translatorLangMiss: "Didn't catch a language. Try again.",
+  translatorSayLang: "Say a language",
+  translatorSayLangHint: "Say a language, e.g. \"Spanish\"",
+  verifySecurityCode: "Verify security code",
+  writeUs: "Write to us",
+  youAre: "You",
   subtitle: "Walkie-talkie with voice translation",
   invalidPhone: "Invalid phone number",
   chooseCountry: "Choose a country and enter a valid number",
@@ -530,6 +774,128 @@ const en: Dict = {
 };
 
 const he: Dict = {
+  addGroupDescription: "הוספת תיאור לקבוצה",
+  addMember: "הוספת חבר",
+  addStickerToChat: "אפשר להוסיף את המדבקה לשיחה",
+  addToFavorites: "הוספה למועדפים",
+  addToLists: "הוספה לרשימות",
+  addToNote: "הוספת טקסט להערה",
+  addedToFavorites: "נוסף למועדפים",
+  advancedPrivacy: "הגדרה מתקדמת של פרטיות בצ'אט",
+  advancedPrivacyHint: "שליטה במי יכול להוסיף חברים ולשלוח הודעות בקבוצה.",
+  attachContact: "איש קשר",
+  attachLocation: "מיקום",
+  callAddPeople: "צירוף אנשי קשר לשיחה",
+  callBackToCall: "חזרה לשיחה",
+  callBlock: "חסימה",
+  callDateAt: "{date}, {time}",
+  callDetails: "פרטי השיחה",
+  callEncrypted: "מוצפנת",
+  callEncryptedHint: "השיחה הזו מוצפנת מקצה לקצה. רק המשתתפים בשיחה יכולים לשמוע אותה.",
+  callFrequent: "צ'אטים בשימוש נפוץ",
+  callGoVideo: "מעבר לווידאו",
+  callInfo: "פרטים",
+  callMessage: "הודעה",
+  callMinutesAgo: "לפני {n} דקות",
+  callMinutesDur: "{n} דקות",
+  callMore: "עוד",
+  callMoreContacts: "אנשי קשר נוספים",
+  callNoiseCancel: "ביטול רעשים",
+  callNotOnTalk: "המספר לא נמצא ב-TALK",
+  callRemoveFromLog: "הסרה מיומן השיחות",
+  callRemoved: "הוסר מיומן השיחות",
+  callSearchEmpty: "אין אנשי קשר תואמים",
+  callSeconds: "{n} שניות",
+  callSendMessage: "שליחת הודעה",
+  callShare: "שיתוף",
+  callShareContact: "שיתוף",
+  callShareFailed: "שיתוף מסך לא זמין במכשיר זה",
+  callShareNeedVideo: "כדי לשתף את המסך צריך לעבור לשיחת וידאו.",
+  callTodayAt: "היום, {time}",
+  callVideoIn: "שיחת וידאו נכנסת",
+  callVideoOut: "שיחת וידאו יוצאת",
+  callVoice: "קולית",
+  callVoiceIn: "שיחה קולית נכנסת",
+  callVoiceOut: "שיחה קולית יוצאת",
+  callYesterdayAt: "אתמול, {time}",
+  chooseNav: "פתח באמצעות",
+  clearCalls: "ניקוי שיחות",
+  copyAction: "העתקה",
+  createGroupWith: "יצירת קבוצה עם {name}",
+  deleteCallAsk: "האם למחוק שיחה זאת",
+  editAction: "עריכה",
+  exitChat: "יציאה מהצ'אט",
+  feedbackAttach: "צירוף תמונה",
+  feedbackHint: "כתבו משוב או דווחו על בעיה…",
+  feedbackImagesFallback: "(תמונות)",
+  feedbackTitle: "שליחת משוב",
+  groupAdmin: "מנהל/ת הקבוצה",
+  groupCreatedBy: "הקבוצה נוצרה על ידי {name} ב-{date}",
+  groupInfo: "פרטי הקבוצה",
+  groupKindLine: "קבוצה · {count} חברים",
+  leaveGroup: "יציאה מהקבוצה",
+  leaveGroupBody: "לצאת מהקבוצה? לא תמשיכו לקבל את ההודעות שלה.",
+  liveEnded: "מיקום בזמן אמת הסתיים",
+  liveShare15: "15 דקות",
+  liveShare1h: "1 שעה",
+  liveShare8h: "8 שעות",
+  liveShareBgHint: "על מנת לשתף את מיקומך שלכם בזמן אמת, יש להפעיל ברקע שירותי מיקום. ניתן לעשות זאת בהגדרות מכשיר הטלפון שלך.",
+  liveShareRemaining: "נותרו {mins} דקות",
+  liveShareTitle: "מיקום בזמן אמת",
+  liveSharedInOneChat: "המיקום משותף בצ'אט אחד",
+  liveUntilClock: "שידור מיקום עד {time}",
+  locationAccuracy: "רמת הדיוק: {meters} מטרים",
+  lockChat: "נעילת הצ'אט",
+  lockChatHint: "נעילה של הצ'אט והסתרה שלו במסך הראשי הזה",
+  logoutConfirm: "להתנתק מ-TALK?",
+  makeAdmin: "הגדרה כמנהל/ת הקבוצה",
+  mediaLinksDocs: "מדיה, קישורים ומסמכים",
+  nearbyPlaces: "מקומות בסביבה",
+  openInMaps: "Google Maps",
+  openInWaze: "Waze",
+  pinAction: "הצמדה",
+  quickReply: "הוספת תגובה מהירה",
+  recentChats: "צ'אטים אחרונים",
+  removeMember: "הסרה מהקבוצה",
+  removeMemberBody: "להסיר את {name} מהקבוצה?",
+  renameGroup: "שם הקבוצה",
+  reportGroup: "דיווח על הקבוצה",
+  reportsEmpty: "אין דיווחים",
+  reportsTitle: "ניהול דיווחים",
+  search: "חיפוש",
+  searchCalls: "חיפוש שם או מספר",
+  searchLocation: "חיפוש",
+  selectAll: "בחירה בהכל",
+  selectedItems: "{count} נבחרו",
+  selectedOne: "נבחר אחד",
+  sendFailedNetwork: "השליחה נכשלה. בדקו את החיבור.",
+  sendLocationTitle: "שליחת מיקום",
+  sendThisLocation: "שליחת המיקום הזה",
+  sendToTitle: "שליחה אל...",
+  sendYourCurrentLocation: "שליחת המיקום הנוכחי שלך",
+  shareContact: "שיתוף איש קשר",
+  shareLiveLocation: "שיתוף המיקום בזמן אמת",
+  sharedGroups: "קבוצות משותפות",
+  similarGroup: "יצירת קבוצה דומה",
+  starMessage: "סימון / הסרת כוכב",
+  statusLastSeenDate: "נראה לאחרונה ב-{date}",
+  statusLastSeenToday: "נראה לאחרונה היום ב-{time}",
+  statusLastSeenYesterday: "נראה לאחרונה אתמול ב-{time}",
+  stopLive: "הפסקת שיתוף",
+  stopLiveConfirm: "להפסיק לשתף את המיקום בזמן אמת בכל הצ'אטים?",
+  stopLiveShort: "הפסקה",
+  storageManage: "ניהול האחסון",
+  tabDocs: "מסמכים",
+  tabLinks: "קישורים",
+  tabMedia: "מדיה",
+  tabMembers: "חברים",
+  translatorLangFound: "הוגדר ל{name}",
+  translatorLangMiss: "לא זוהתה שפה. נסו שוב.",
+  translatorSayLang: "אמרו שפה",
+  translatorSayLangHint: "אמרו שפה, למשל \"ספרדית\"",
+  verifySecurityCode: "אימות קוד אבטחה",
+  writeUs: "כתבו לנו",
+  youAre: "את/ה",
   subtitle: "אוקי-טוקי עם תרגום קול",
   invalidPhone: "מספר טלפון לא תקין",
   chooseCountry: "בחרו מדינה והזינו מספר תקין",

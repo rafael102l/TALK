@@ -17,8 +17,9 @@ import { colors } from "../../src/lib/theme";
 export default function SettingsScreen() {
   const router = useRouter();
   const { user, token, setUser, logout } = useAuth();
-  const { t, align } = useI18n();
+  const { t, align, lang } = useI18n();
   const [email, setEmail] = useState(user?.email ?? "");
+  const [name, setName] = useState(user?.displayName ?? "");
   const [autoSave, setAutoSave] = useState(true);
 
   useEffect(() => {
@@ -26,6 +27,7 @@ export default function SettingsScreen() {
   }, []);
 
   async function save(partial: {
+    displayName?: string;
     email?: string;
     speakLang?: LanguageCode;
     listenLang?: LanguageCode;
@@ -50,6 +52,18 @@ export default function SettingsScreen() {
     }
     await save({ email: trimmed });
     Alert.alert("TALK", "האימייל נשמר");
+  }
+
+  async function saveName() {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      Alert.alert("TALK", lang.startsWith("he") ? "יש להזין שם" : "Please enter a name");
+      setName(user?.displayName ?? "");
+      return;
+    }
+    if (trimmed === (user?.displayName ?? "")) return;
+    await save({ displayName: trimmed });
+    Alert.alert("TALK", lang.startsWith("he") ? "השם נשמר" : "Name saved");
   }
 
   async function changePhoto() {
@@ -93,8 +107,25 @@ export default function SettingsScreen() {
         <Avatar uri={user?.avatarUrl} name={user?.displayName || "?"} size={72} />
         <Text style={styles.photoText}>{t("changePhoto")}</Text>
       </Pressable>
-      <Text style={[styles.name, { textAlign: align }]}>{user?.displayName}</Text>
-      <Text style={[styles.meta, { textAlign: align }]}>{user?.phoneE164}</Text>
+      <Text style={[styles.label, { textAlign: align as "left" | "right" }]}>
+        {lang.startsWith("he") ? "שם תצוגה" : "Display name"}
+      </Text>
+      <TextInput
+        style={styles.input}
+        value={name}
+        onChangeText={setName}
+        placeholder={t("namePlaceholder")}
+        placeholderTextColor={colors.muted}
+        textAlign={align as "left" | "right"}
+        maxLength={40}
+        onEndEditing={() => void saveName()}
+      />
+      <Pressable onPress={() => void saveName()}>
+        <Text style={[styles.saveEmail, { textAlign: align as "left" | "right" }]}>
+          {lang.startsWith("he") ? "שמירת שם" : "Save name"}
+        </Text>
+      </Pressable>
+      <Text style={[styles.meta, { textAlign: align as "left" | "right" }]}>{user?.phoneE164}</Text>
       <Text style={[styles.label, { textAlign: align }]}>אימייל לשחזור</Text>
       <TextInput
         style={styles.input}

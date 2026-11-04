@@ -1,5 +1,6 @@
-import { PublicUser } from "@talk/shared";
+import { ChannelSummary, PublicUser } from "@talk/shared";
 import { api } from "./api";
+import { prepareMediaUpload } from "./mediaCache";
 
 export async function pickLocalPhoto() {
   try {
@@ -24,4 +25,16 @@ export async function uploadAvatar(token: string, uri: string) {
   const form = new FormData();
   form.append("photo", { uri, name, type } as unknown as Blob);
   return api<PublicUser>("/users/me/avatar", { method: "POST", token, body: form });
+}
+
+export async function uploadGroupAvatar(token: string, channelId: string, uri: string) {
+  const file = await prepareMediaUpload(uri, "image");
+  const form = new FormData();
+  form.append("photo", { uri: file.uri, name: "photo.jpg", type: "image/jpeg" } as unknown as Blob);
+  return api<ChannelSummary>(`/channels/${channelId}/avatar`, {
+    method: "POST",
+    token,
+    body: form,
+    timeoutMs: 60000,
+  });
 }

@@ -46,6 +46,16 @@ export function connectSocket(token: string) {
   stayDown = false;
   socket.on("disconnect", (reason) => {
     console.log(`[call sock] disconnect ${reason}`);
+    // Never stay silently offline on an unintended drop:
+    // - socket.io does NOT auto-reconnect after an explicit server close
+    //   ("io server disconnect", e.g. a Render restart);
+    // - on a network blip (tunnel exit / cellular<->wifi switch) we want the retry now,
+    //   not up to 2s later via the watchdog.
+    // Deferred so we don't re-enter socket.io's state machine inside the event.
+    if (!stayDown)
+      setTimeout(() => {
+        if (socket && !socket.connected && !stayDown) socket.connect();
+      }, 0);
   });
   socket.on("connect", () => {
     stayDown = false;

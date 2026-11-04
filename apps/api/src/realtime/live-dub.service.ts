@@ -62,6 +62,9 @@ const LOUD = 160;
 export class LiveDubService {
   private readonly logger = new Logger(LiveDubService.name);
   private readonly presses = new Map<string, Press>();
+  /** Short in-memory caches so an identical walkie line does not re-bill translate / TTS. */
+  private readonly translationCache = new Map<string, CacheEntry>();
+  private readonly ttsCache = new Map<string, CacheEntry>();
   private emit: (userId: string, payload: PttCaptionPayload) => void = () => undefined;
   private lockOriginal: (userId: string, speakerId: string, translate: boolean) => void = () => undefined;
   private emitPcm: (userId: string, speakerId: string, pcm: string, seq: number) => void = () => undefined;
@@ -383,7 +386,7 @@ export class LiveDubService {
     await Promise.all(
       [...byLang.entries()].map(async ([listenLang, ears]) => {
       const started = Date.now();
-      const translated = stt ? await this.stt.translateHeard(stt, listenLang, press.speakerGender) : { text: "", raw: "" };
+      const translated = stt ? await this.translateHeardCached(stt, listenLang, press.speakerGender) : { text: "", raw: "" };
       const line = captionLine(translated.text);
       if (line === "[unclear]") this.logUnclear(press, "gemini", "model", wav.length, heard, translated.raw || stt);
       else translations.push(line);
@@ -497,11 +500,7 @@ export class LiveDubService {
         const unclear = line === "[unclear]";
         let audioUrl: string | null = null;
         if (!unclear) {
-          const saved = await this.tts.speak(line, listenLang, ear.voiceId, ear.gender, {
-            allowEleven: true,
-            preferEleven: true,
-            timeoutMs: 12000,
-          });
+          const saved = await this.speakCached(line, listenLang, ear.voiceId, ear.gender);
           audioUrl = saved ? this.storage.publicUrl(saved) : null;
         }
         this.emit(ear.userId, {
@@ -522,6 +521,63 @@ export class LiveDubService {
       }),
     );
   }
+
+  /** Translate one transcript, reusing a recent identical result to skip a repeat API call. */
+  private async translateHeardCached(stt: string, listenLang: string, gender: VoiceGender) {
+    const key = `${gender}|${listenLang}|${stt}`;
+    const hit = cacheGet(this.translationCache, key);
+    if (hit !== undefined) {
+      this.logger.log(`live dub cache=hit translate lang=${listenLang}`);
+      return { text: hit, raw: hit };
+    }
+    const translated = await this.stt.translateHeard(stt, listenLang, gender);
+    // Only cache a real, usable line — never empty / "[unclear]".
+    if (translated.text && captionLine(translated.text) !== "[unclear]") {
+      cacheSet(this.translationCache, key, translated.text);
+    }
+    return translated;
+  }
+
+  /** Render TTS for one line, reusing a recent identical render to skip a repeat API call. */
+  private async speakCached(line: string, listenLang: string, voiceId: string | null, gender: VoiceGender) {
+    const key = `${listenLang}|${gender}|${voiceId || ""}|${line}`;
+    const hit = cacheGet(this.ttsCache, key);
+    if (hit !== undefined) {
+      this.logger.log(`live dub cache=hit tts lang=${listenLang}`);
+      return hit;
+    }
+    const saved = await this.tts.speak(line, listenLang, voiceId, gender, {
+      allowEleven: true,
+      preferEleven: true,
+      timeoutMs: 12000,
+    });
+    if (saved) cacheSet(this.ttsCache, key, saved);
+    return saved;
+  }
+}
+
+const CACHE_TTL_MS = 60_000;
+const CACHE_MAX = 200;
+type CacheEntry = { at: number; value: string };
+
+function cacheGet(map: Map<string, CacheEntry>, key: string): string | undefined {
+  const hit = map.get(key);
+  if (!hit) return undefined;
+  if (Date.now() - hit.at > CACHE_TTL_MS) {
+    map.delete(key);
+    return undefined;
+  }
+  return hit.value;
+}
+
+function cacheSet(map: Map<string, CacheEntry>, key: string, value: string) {
+  if (!key || !value) return;
+  // Bound memory: drop the oldest insertion once the cap is reached.
+  if (map.size >= CACHE_MAX) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, { at: Date.now(), value });
 }
 
 function langOf(value?: string | null) {

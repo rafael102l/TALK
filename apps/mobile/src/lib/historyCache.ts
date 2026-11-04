@@ -13,7 +13,7 @@ const pendingReceipts = new Map<string, MessageReceipt>();
 const receiptListeners = new Set<(transmissionId: string, receipt: MessageReceipt) => void>();
 
 function txIdOf(id: string) {
-  return id.split(":")[0];
+  return typeof id === "string" && id ? id.split(":")[0] : "";
 }
 
 function receiptRank(receipt?: string | null) {
@@ -41,7 +41,7 @@ export function applyReceipt(transmissionId: string, receipt: MessageReceipt, pe
   cache = cache.map((item) => {
     if (!item.mine) return item;
     const sameTx = txIdOf(item.id) === transmissionId;
-    const sameLocal = Boolean(peerId && item.id.startsWith("local-") && item.peerId === peerId);
+    const sameLocal = Boolean(peerId && typeof item.id === "string" && item.id.startsWith("local-") && item.peerId === peerId);
     if (!sameTx && !sameLocal) return item;
     const next = mergeReceipt(item.receipt, receipt);
     if (next === item.receipt) return item;
@@ -52,7 +52,13 @@ export function applyReceipt(transmissionId: string, receipt: MessageReceipt, pe
     fetchedAt = Date.now();
     persistHistory();
   }
-  for (const listener of receiptListeners) listener(transmissionId, receipt);
+  for (const listener of receiptListeners) {
+    try {
+      listener(transmissionId, receipt);
+    } catch {
+      /* a broken subscriber must never break receipt delivery */
+    }
+  }
 }
 
 export function takePendingReceipt(transmissionId: string) {
@@ -62,18 +68,26 @@ export function takePendingReceipt(transmissionId: string) {
 }
 
 function withKeptReceipts(incoming: HistoryItem[], current: HistoryItem[]) {
-  const prev = new Map(current.map((item) => [item.id, item]));
+  const safeIncoming = Array.isArray(incoming) ? incoming : [];
+  const safeCurrent = Array.isArray(current) ? current : [];
+  const valid = (item: HistoryItem | null | undefined): item is HistoryItem => Boolean(item && item.id != null);
+  const prev = new Map(safeCurrent.filter(valid).map((item) => [item.id, item]));
   const byTx = new Map(
-    current.filter((item) => item.mine).map((item) => [txIdOf(item.id), item] as const),
+    safeCurrent.filter((item) => valid(item) && item.mine).map((item) => [txIdOf(item.id), item] as const),
   );
-  return incoming.map((item) => {
-    const old = prev.get(item.id) || (item.mine ? byTx.get(txIdOf(item.id)) : undefined);
-    const pending = pendingReceipts.get(txIdOf(item.id));
-    return {
-      ...item,
-      receipt: mergeReceipt(mergeReceipt(old?.receipt, item.receipt), pending),
-    };
-  });
+  const out: HistoryItem[] = [];
+  for (const item of safeIncoming) {
+    if (!valid(item)) continue;
+    try {
+      const old = prev.get(item.id) || (item.mine ? byTx.get(txIdOf(item.id)) : undefined);
+      const pending = pendingReceipts.get(txIdOf(item.id));
+      out.push({ ...item, receipt: mergeReceipt(mergeReceipt(old?.receipt, item.receipt), pending) });
+    } catch {
+      // Keep the raw row rather than dropping the whole list on one bad item.
+      out.push(item);
+    }
+  }
+  return out;
 }
 
 export function clearHistoryCache() {
@@ -97,17 +111,25 @@ export function isHistoryFresh(maxAgeMs = 30_000) {
 }
 
 export function seedHistoryCache(items: HistoryItem[]) {
-  cache = withKeptReceipts(items, cache);
+  try {
+    cache = withKeptReceipts(Array.isArray(items) ? items : [], cache);
+  } catch {
+    if (!Array.isArray(cache)) cache = [];
+  }
   fetchedAt = Date.now();
   persistHistory();
 }
 
 function persistHistory() {
   if (!FileSystem.documentDirectory || typeof FileSystem.writeAsStringAsync !== "function") return;
-  void FileSystem.writeAsStringAsync(
-    HISTORY_FILE,
-    JSON.stringify({ userId: cacheUserId, items: cache.slice(0, 150) }),
-  ).catch(() => undefined);
+  let payload: string;
+  try {
+    const rows = Array.isArray(cache) ? cache.slice(0, 150) : [];
+    payload = JSON.stringify({ userId: cacheUserId, items: rows });
+  } catch {
+    return;
+  }
+  void FileSystem.writeAsStringAsync(HISTORY_FILE, payload).catch(() => undefined);
 }
 
 /** Last chats stay on the phone so Messages does not go empty while Render wakes. */
@@ -142,8 +164,9 @@ export async function hydrateHistoryCache(userId?: string) {
       if (!fetchedAt) fetchedAt = 1;
     }
   } catch {
-    /* first launch */
+    /* first launch, or a corrupt/empty cache file: fall back to empty cache */
   }
+  if (!Array.isArray(cache)) cache = [];
   return cache;
 }
 
@@ -170,7 +193,7 @@ export async function refreshHistory(token: string, opts?: { maxAgeMs?: number }
       const merged: HistoryItem[] = withKeptReceipts(incoming, cache);
       const seen = new Set(merged.map((item) => item.id));
       for (const item of cache) {
-        if (item.id.startsWith("local-") && !seen.has(item.id)) merged.push(item);
+        if (item && typeof item.id === "string" && item.id.startsWith("local-") && !seen.has(item.id)) merged.push(item);
       }
       cache = merged;
       fetchedAt = Date.now();

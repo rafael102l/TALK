@@ -113,6 +113,8 @@ export class TranslatorService {
   }) {
     const langA = keepLang(input.langA, "he");
     const langB = keepLang(input.langB, "en");
+    // Gender from clip runs in parallel with STT/translate — free local pitch, no TTS cost.
+    const genderPromise = this.detectSpeakerGender(input.audio, input.ext).catch(() => undefined);
     const turn = await this.transcribe({
       text: input.text,
       audio: input.audio,
@@ -131,10 +133,12 @@ export class TranslatorService {
         targetLang: "",
         audioBase64: "",
         mime: "audio/mpeg" as const,
+        speakerGender: (await genderPromise) || undefined,
       };
     }
     const sourceText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
     const translatedText = (turn.translatedText || "").replace(/\s+/g, " ").trim();
+    const speakerGender = (await genderPromise) || undefined;
     // Translator page: return text immediately. Speech is played on-device via
     // /ai/translator/speak (or local TTS) after the panes update — do not block on TTS here.
     return {
@@ -144,6 +148,7 @@ export class TranslatorService {
       targetLang,
       audioBase64: "",
       mime: "audio/mpeg" as const,
+      speakerGender,
     };
   }
 
@@ -173,15 +178,24 @@ export class TranslatorService {
     langA: string,
     langB: string,
   ): Promise<Turn | null> {
-    const [detectedAB, detectedBA, auto] = await Promise.all([
-      this.detectSpokenLang(audio, mime, ext, langA, langB),
-      this.detectSpokenLang(audio, mime, ext, langB, langA),
-      this.whisperAuto(audio, mime, ext, langA, langB),
-    ]);
+    // Hear the clip once (the transcript is needed either way), then try the free,
+    // local script detector first. The two paid Gemini audio-detect calls only run
+    // when the script cannot decide — e.g. both languages share one script (en+es, ru+uk).
+    const auto = await this.whisperAuto(audio, mime, ext, langA, langB);
     const autoLang = matchChoice(whisperLangCode(auto.language), langA, langB);
     const textAuto = keepPairTranscript(auto.text, langA, langB);
     const scriptLang = pickByScript(textAuto || auto.text, langA, langB);
-    const geminiLang = detectedAB && detectedBA && detectedAB === detectedBA ? matchChoice(detectedAB, langA, langB) : "";
+    // A unique-script hit (Hebrew, Arabic, Cyrillic, …) already wins in choosePairSource,
+    // so Gemini-detect would not change the result — skip it in that common case.
+    const scriptDecides = Boolean(matchChoice(scriptLang, langA, langB) && uniqueScript(scriptLang));
+    let geminiLang = "";
+    if (!scriptDecides) {
+      const [detectedAB, detectedBA] = await Promise.all([
+        this.detectSpokenLang(audio, mime, ext, langA, langB),
+        this.detectSpokenLang(audio, mime, ext, langB, langA),
+      ]);
+      geminiLang = detectedAB && detectedBA && detectedAB === detectedBA ? matchChoice(detectedAB, langA, langB) : "";
+    }
     const sourceLang = choosePairSource(scriptLang, geminiLang, autoLang, langA, langB);
     if (!sourceLang) return null;
     let text = textAuto;
@@ -448,6 +462,81 @@ export class TranslatorService {
     } catch (error) {
       logTranslateFail(`translator-translate openai ${(error as Error).message}`);
       return "";
+    }
+  }
+
+  /** Free local pitch guess from the uploaded clip. Never bills a TTS/STT API. */
+  private async detectSpeakerGender(audio?: Buffer, ext?: string): Promise<VoiceGender | undefined> {
+    if (!audio?.length) return undefined;
+    const fs = await import("fs/promises");
+    const os = await import("os");
+    const path = await import("path");
+    const { execFile } = await import("child_process");
+    const { promisify } = await import("util");
+    const exec = promisify(execFile);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "talk-gender-"));
+    const inFile = path.join(dir, `in.${(ext || "m4a").replace(/[^a-z0-9]/gi, "") || "m4a"}`);
+    const outFile = path.join(dir, "out.s16le");
+    try {
+      await fs.writeFile(inFile, audio);
+      await exec(
+        "ffmpeg",
+        ["-hide_banner", "-loglevel", "error", "-y", "-i", inFile, "-ac", "1", "-ar", "16000", "-f", "s16le", outFile],
+        { timeout: 2500 },
+      );
+      const pcm = await fs.readFile(outFile);
+      if (pcm.length < 3200) return undefined;
+      const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 2));
+      const rate = 16000;
+      const minF = 70;
+      const maxF = 400;
+      const minPeriod = Math.floor(rate / maxF);
+      const maxPeriod = Math.floor(rate / minF);
+      const win = Math.min(samples.length, Math.floor(rate * 0.65));
+      const start = Math.max(0, Math.floor((samples.length - win) / 2));
+      let mean = 0;
+      for (let i = 0; i < win; i++) mean += samples[start + i];
+      mean /= win;
+      const vals = new Float64Array(win);
+      let energy = 0;
+      for (let i = 0; i < win; i++) {
+        const v = (samples[start + i] - mean) / 32768;
+        vals[i] = v;
+        energy += v * v;
+      }
+      if (energy / win < 1e-5) return undefined;
+      let bestPeriod = -1;
+      let bestCorr = 0;
+      for (let period = minPeriod; period <= maxPeriod; period++) {
+        const n = win - period;
+        if (n < period) continue;
+        let corr = 0;
+        let normA = 0;
+        let normB = 0;
+        for (let i = 0; i < n; i++) {
+          const a = vals[i];
+          const b = vals[i + period];
+          corr += a * b;
+          normA += a * a;
+          normB += b * b;
+        }
+        const denom = Math.sqrt(normA * normB);
+        if (denom < 1e-9) continue;
+        const r = corr / denom;
+        if (r > bestCorr) {
+          bestCorr = r;
+          bestPeriod = period;
+        }
+      }
+      if (bestPeriod < 0 || bestCorr < 0.35) return undefined;
+      const hz = rate / bestPeriod;
+      if (hz >= 255) return "child";
+      if (hz >= 175) return "female";
+      return "male";
+    } catch {
+      return undefined;
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 

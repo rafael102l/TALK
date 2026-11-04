@@ -9,6 +9,8 @@ import { MicIcon } from "../../src/components/MirsIcons";
 import { useI18n } from "../../src/i18n";
 import { deviceLanguage } from "../../src/i18n/catalog";
 import { useAuth } from "../../src/lib/auth";
+import { detectSpeakerGender } from "../../src/lib/detectSpeakerGender";
+import { speakRobot } from "../../src/lib/onDeviceAi";
 import { ensureMicForRecord } from "../../src/lib/permissions";
 import { colors } from "../../src/lib/theme";
 import {
@@ -186,6 +188,8 @@ export default function TranslatorScreen() {
         setNote("");
         setWorking(false);
       };
+      // Gender detect runs in parallel with translation — does not delay text.
+      const genderPromise = detectSpeakerGender(uri);
       const result = await runTranslatorTurn?.(
         uri,
         sourceLang,
@@ -193,6 +197,7 @@ export default function TranslatorScreen() {
         user?.voiceGender || "male",
         token,
         paint,
+        { play: false },
       );
       if (turn !== turnRef.current) return;
       if (!result?.sourceText) {
@@ -200,6 +205,15 @@ export default function TranslatorScreen() {
         return;
       }
       paint(result);
+      const heardGender = await genderPromise;
+      const gender =
+        heardGender === "female" || heardGender === "child" || heardGender === "male"
+          ? heardGender
+          : user?.voiceGender === "female" || user?.voiceGender === "child"
+            ? user.voiceGender
+            : "male";
+      const say = (result.translatedText || "").trim();
+      if (say) void speakRobot(say, result.targetLang || targetLang, gender);
     } catch (error) {
       if (turn === turnRef.current) setNote((error as Error).message || t("error"));
     } finally {

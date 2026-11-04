@@ -33,11 +33,24 @@ type TalkPcm = {
   openTtsInstall?: () => boolean;
   warmTts?: () => Promise<void>;
   speakMedia?: (text: string, locale: string, voiceName: string, gender: string) => Promise<string>;
+  detectSpeakerGender?: (uri: string) => Promise<string>;
   requestBatteryExemption?: () => boolean;
   showIncomingCall?: (callId: string, name: string, phone: string, video: boolean, avatar: string) => boolean;
   hideIncomingCall?: () => boolean;
+  hideCallBanner?: () => boolean;
+  stopCallUi?: () => boolean;
+  hangupCall?: (callId: string, reason: string) => boolean;
+  setCallOverLock?: (on: boolean) => boolean;
+  revealCallOverLock?: () => boolean;
+  isLockIncomingUi?: () => boolean;
+  isNativeCallUi?: () => boolean;
+  consumeIncomingCall?: () => Record<string, unknown> | null | undefined;
+  consumeCallback?: () => Record<string, unknown> | null | undefined;
   bringCallToFront?: () => boolean;
-  addListener?: (event: "onCallAction", listener: (event: { action?: string; callId?: string }) => void) => { remove(): void };
+  addListener?: (
+    event: "onCallAction" | "onIncomingCall",
+    listener: (event: { action?: string; callId?: string; [key: string]: unknown }) => void,
+  ) => { remove(): void };
   consumeCallActions?: () => { action?: string; callId?: string }[];
   needsXiaomiOverlay?: () => boolean;
   requestOverlayPermission?: () => boolean;
@@ -104,6 +117,20 @@ export async function speakOnMedia(text: string, localeTag: string, voiceName = 
     const message = (error as Error).message || "fail";
     console.log(`[live dub] media tts fail ${message}`);
     return `fail ${message}`;
+  }
+}
+
+/** Free on-device speaker gender from a local clip URI. */
+export async function detectSpeakerGender(uri: string): Promise<"male" | "female" | "child" | null> {
+  if (!uri) return null;
+  const pcm = talkPcm();
+  if (typeof pcm?.detectSpeakerGender !== "function") return null;
+  try {
+    const raw = String((await pcm.detectSpeakerGender(uri)) || "").toLowerCase();
+    if (raw === "female" || raw === "child" || raw === "male") return raw;
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -198,7 +225,11 @@ export function stopRingback() {
 let callAudioHeld = false;
 let liveAudioHeld = false;
 
-export function setCallRoute(speaker: boolean, preferBluetooth = false) {
+// Prefer Bluetooth whenever we are not explicitly forcing the loudspeaker, so a connected
+// headset keeps the audio instead of it leaking to the earpiece/external speaker. Callers
+// that want the loudspeaker pass speaker=true (=> preferBluetooth=false); the speaker button
+// stays a deliberate override.
+export function setCallRoute(speaker: boolean, preferBluetooth = !speaker) {
   pcmCall("setCallRoute", speaker, preferBluetooth);
 }
 
@@ -263,4 +294,80 @@ export function subscribePhoneCall(onChange: (inCall: boolean) => void) {
   const sub = emitter.addListener("talkCallState", (value) => onChange(Boolean(value)));
   void isInPhoneCall().then(onChange).catch(() => undefined);
   return () => sub.remove();
+}
+
+/** Stop ringtone and the compact banner; keep the full incoming / overlay screens. */
+export function hideCallBanner() {
+  pcmCall("hideCallBanner");
+}
+
+/** Stop ringtone, ringback and the incoming banner without notifying the server. */
+export function stopCallUi() {
+  pcmCall("stopCallUi");
+}
+
+/** Tell the server and native UI that this call is over, even if JS was in the background. */
+export function hangupCallOnServer(callId: string, reason = "cancelled") {
+  if (!callId) return;
+  pcmCall("hangupCall", callId, reason);
+}
+
+/** Keep the in-app call screen over the lock until hang-up. */
+export function setCallOverLock(on: boolean) {
+  pcmCall("setCallOverLock", on);
+}
+
+/** Swap lock incoming UI for the in-call overlay once it is on screen. */
+export function revealCallOverLock() {
+  pcmCall("revealCallOverLock");
+}
+
+/** Lock-screen incoming or the native in-call screen — not the unlocked banner. */
+export function isLockIncomingUi() {
+  return Boolean(pcmCall("isLockIncomingUi"));
+}
+
+export function isNativeCallUi() {
+  return Boolean(pcmCall("isNativeCallUi"));
+}
+
+function stringifyCallRow(data: unknown): Record<string, string> | null {
+  if (!data || typeof data !== "object") return null;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    out[key] = value == null ? "" : String(value);
+  }
+  return out;
+}
+
+export function consumeIncomingCall(): Record<string, string> | null {
+  const out = stringifyCallRow(pcmCall("consumeIncomingCall"));
+  if (!out || !out.callId) return null;
+  return out;
+}
+
+export function consumeCallback(): Record<string, string> | null {
+  const out = stringifyCallRow(pcmCall("consumeCallback"));
+  if (!out) return null;
+  return out.callerId || out.callerName ? out : null;
+}
+
+export function subscribeIncomingCall(onIncoming: (data: Record<string, string>) => void) {
+  const pcm = talkPcm();
+  if (!pcm?.addListener) return () => undefined;
+  try {
+    const apply = (event: { callId?: string; [key: string]: unknown }) => {
+      const callId = String(event?.callId || "");
+      if (!callId) return;
+      const out = stringifyCallRow(event);
+      if (out) onIncoming(out);
+    };
+    const sub = pcm.addListener("onIncomingCall", apply);
+    const pending = consumeIncomingCall();
+    if (pending) onIncoming(pending);
+    return () => sub.remove();
+  } catch (error) {
+    console.log(`[call] incoming-native ${(error as Error).message}`);
+    return () => undefined;
+  }
 }

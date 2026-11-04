@@ -1,7 +1,7 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { colors } from "../lib/theme";
 
-const EMOJIS = [
+export const EMOJIS = [
   "😀", "😃", "😄", "😁", "😅", "😂", "🤣", "😊", "😇", "🙂",
   "😉", "😍", "🥰", "😘", "😗", "😋", "😜", "🤗", "🤔", "🤨",
   "😐", "😑", "😶", "🙄", "😏", "😣", "😥", "😮", "😯", "😪",

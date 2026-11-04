@@ -1,5 +1,6 @@
 import * as FileSystem from "expo-file-system";
 import * as SecureStore from "expo-secure-store";
+import { Image } from "react-native";
 import { resolveMediaUri } from "./mediaUri";
 
 const AUTO_KEY = "talk.autoSaveMedia";
@@ -85,7 +86,7 @@ async function saveToTalkAlbum(localUri: string, name: string) {
 }
 
 /** Copy a camera file into the app folder so it is not lost if the gallery is cleared. */
-export async function keepLocalCapture(uri: string) {
+export async function keepLocalCapture(uri: string, _kind?: "image" | "video") {
   if (!uri) return uri;
   if (!/^(file:|content:)/i.test(uri) || !FileSystem.documentDirectory || typeof FileSystem.copyAsync !== "function") {
     return uri;
@@ -123,4 +124,89 @@ export async function cacheChatMedia(uri: string | null | undefined, opts?: { al
   } catch {
     return remote;
   }
+}
+
+function asFileUri(uri: string) {
+  const value = (uri || "").trim();
+  if (!value) return value;
+  if (/^(file:|content:|https?:|data:)/i.test(value)) return value;
+  if (value.startsWith("/")) return `file://${value}`;
+  return value;
+}
+
+function loadManipulator(): typeof import("expo-image-manipulator") | null {
+  try {
+    const core = require("expo-modules-core") as typeof import("expo-modules-core");
+    if (core.requireOptionalNativeModule && !core.requireOptionalNativeModule("ExpoImageManipulator")) return null;
+    return require("expo-image-manipulator") as typeof import("expo-image-manipulator");
+  } catch {
+    return null;
+  }
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([work, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
+}
+
+/** Make a gallery/camera URI a real JPEG/MP4 file Android XHR can upload. */
+export async function prepareMediaUpload(
+  uri: string,
+  kind: "image" | "video",
+  mime?: string,
+  name?: string,
+): Promise<{ uri: string; name: string; type: string }> {
+  const local = await keepLocalCapture(uri, kind);
+  const fileUri = asFileUri(local);
+  if (kind === "video") {
+    return {
+      uri: fileUri,
+      name: name && /\.(mp4|mov|m4v)$/i.test(name) ? name : "clip.mp4",
+      type: mime && mime.startsWith("video/") ? mime : "video/mp4",
+    };
+  }
+  const keepRaw = /gif|png|webp/i.test(mime || "") || /\.(gif|png|webp)(\?|$)/i.test(name || uri);
+  if (keepRaw) {
+    const rawName =
+      name && /\.(gif|png|webp)$/i.test(name)
+        ? name
+        : /gif/i.test(mime || uri)
+          ? "clip.gif"
+          : /png/i.test(mime || uri)
+            ? "sticker.png"
+            : "photo.webp";
+    return { uri: fileUri, name: rawName, type: mime || "image/gif" };
+  }
+  const ImageManipulator = loadManipulator();
+  if (ImageManipulator) {
+    try {
+      const dims = await withTimeout(
+        new Promise<{ w: number; h: number } | null>((resolve) => {
+          Image.getSize(
+            fileUri,
+            (w, h) => resolve({ w, h }),
+            () => resolve(null),
+          );
+        }),
+        2500,
+        null,
+      );
+      const long = dims ? Math.max(dims.w, dims.h) : 0;
+      const actions =
+        long > 1600 ? (dims && dims.w >= dims.h ? [{ resize: { width: 1600 } }] : [{ resize: { height: 1600 } }]) : [];
+      const result = await withTimeout(
+        ImageManipulator.manipulateAsync(fileUri, actions, {
+          compress: 0.72,
+          format: ImageManipulator.SaveFormat.JPEG,
+        }),
+        8000,
+        null,
+      );
+      if (result?.uri) {
+        return { uri: asFileUri(result.uri), name: "photo.jpg", type: "image/jpeg" };
+      }
+    } catch {
+      /* keep the copied file */
+    }
+  }
+  return { uri: fileUri, name: "photo.jpg", type: "image/jpeg" };
 }

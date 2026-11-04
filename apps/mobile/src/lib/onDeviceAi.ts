@@ -140,25 +140,61 @@ let warmGen = 0;
 let realSpeak = false;
 
 function speechRate(gender: VoiceGender = "male") {
-  if (Platform.OS === "ios") return gender === "child" ? 0.55 : 0.5;
-  return gender === "child" ? 0.95 : 0.85;
+  if (Platform.OS === "ios") return gender === "child" ? 0.58 : gender === "female" ? 0.5 : 0.48;
+  return gender === "child" ? 0.98 : gender === "female" ? 0.88 : 0.82;
+}
+
+/** Google on-device voice codes (Galaxy dump): real male/female engines, not pitch fakes. */
+const MALE_CODES = /\b(x-iob|x-iom|x-iol|x-iog|x-iab|x-ieg|x-dlg|x-gol|x-rjs|x-heb|x-hed|#male|_male)\b/;
+const FEMALE_CODES =
+  /\b(x-sfg|x-tpf|x-tpc|x-tpd|x-bfd|x-cjc|x-cmb|x-afa|x-hec|x-hee|carmit|tamar|#female|_female)\b/;
+
+function voiceBlob(voice: Speech.Voice) {
+  return `${voice.language ?? ""} ${voice.name ?? ""} ${voice.identifier ?? ""}`.toLowerCase();
+}
+
+function isLocalVoice(voice: Speech.Voice) {
+  return /-local\b/.test(voiceBlob(voice)) || !/-network\b/.test(voiceBlob(voice));
 }
 
 function genderScore(voice: Speech.Voice, gender: VoiceGender) {
-  const name = `${voice.name ?? ""} ${voice.identifier ?? ""}`.toLowerCase();
+  const name = voiceBlob(voice);
+  const femaleHint = FEMALE_CODES.test(name) || /female|woman|girl|samantha|karen|zira|heera/.test(name);
+  const maleHint = MALE_CODES.test(name) || /(?:^|[^a-z])male(?:[^a-z]|$)|(?:^|[^a-z])man(?:[^a-z]|$)|david|daniel|mark|asaf|moshe|avri/.test(name);
+  const childHint = /child|kid|junior/.test(name);
+  let score = 0;
   if (gender === "child") {
-    if (/child|kid|boy|girl|junior/.test(name)) return 6;
-    if (/female|woman/.test(name)) return 2;
-    return 0;
+    if (childHint) score = 8;
+    else if (femaleHint) score = 3;
+    else if (maleHint) score = -2;
+  } else if (gender === "female") {
+    if (femaleHint) score = 6;
+    else if (maleHint) score = -6;
+  } else {
+    if (maleHint) score = 6;
+    else if (femaleHint) score = -8;
   }
-  if (gender === "female") {
-    if (/female|woman|girl|samantha|karen|zira|tamar|carmit|heera/.test(name)) return 5;
-    if (/male|man|david|daniel|mark|asaf/.test(name)) return -3;
-    return 0;
+  // Prefer on-device packs (no network TTS).
+  if (score > 0 && isLocalVoice(voice)) score += 2;
+  if (score > 0 && /-network\b/.test(name)) score -= 1;
+  return score;
+}
+
+function langAliases(listenLang: string) {
+  const lang = listenLang.toLowerCase();
+  const loc = locale(listenLang).toLowerCase();
+  const aliases = new Set([lang, loc, loc.replace("-", "_")]);
+  if (lang === "he" || loc.startsWith("he")) {
+    aliases.add("iw");
+    aliases.add("iw-il");
+    aliases.add("iw_il");
+    aliases.add("he-il");
   }
-  if (/male|man|david|daniel|mark|asaf|moshe|avri|onyx|echo|#male|x-m|hebm/.test(name)) return 5;
-  if (/female|woman|girl|carmit|tamar|#female/.test(name)) return -8;
-  return 0;
+  if (lang === "iw") {
+    aliases.add("he");
+    aliases.add("he-il");
+  }
+  return aliases;
 }
 
 function cacheVoices(list: Speech.Voice[]) {
@@ -166,24 +202,36 @@ function cacheVoices(list: Speech.Voice[]) {
 }
 
 function voiceFor(listenLang: string, gender: VoiceGender = "male") {
-  const loc = locale(listenLang).toLowerCase();
-  const lang = listenLang.toLowerCase();
+  const aliases = langAliases(listenLang);
   const inLang = allVoices.filter((voice) => {
+    const blob = voiceBlob(voice);
     const code = (voice.language || "").toLowerCase();
-    return code === loc || code.startsWith(`${lang}-`) || code === lang;
+    if (aliases.has(code) || [...aliases].some((a) => code.startsWith(`${a}-`) || code.startsWith(`${a}_`))) {
+      return true;
+    }
+    return [...aliases].some((a) => blob.includes(a));
   });
   const pool = inLang.length ? inLang : allVoices;
   if (!pool.length) return undefined;
-  const ranked = [...pool].sort((a, b) => genderScore(b, gender) - genderScore(a, gender));
+  const ranked = [...pool].sort((a, b) => {
+    const diff = genderScore(b, gender) - genderScore(a, gender);
+    if (diff) return diff;
+    const localDiff = Number(isLocalVoice(b)) - Number(isLocalVoice(a));
+    if (localDiff) return localDiff;
+    return String(a.identifier).localeCompare(String(b.identifier));
+  });
   const best = ranked[0];
   if (!best) return undefined;
-  if (genderScore(best, gender) >= 1) return best.identifier;
   if (gender === "male") {
-    const notFemale = ranked.find((voice) => genderScore(voice, "female") < 1);
-    if (notFemale) return notFemale.identifier;
+    const male = ranked.find((voice) => genderScore(voice, "male") >= 1);
+    return male?.identifier;
   }
-  if (genderScore(best, gender) >= 0) return best.identifier;
-  return undefined;
+  if (gender === "female") {
+    const female = ranked.find((voice) => genderScore(voice, "female") >= 1);
+    return (female || best).identifier;
+  }
+  const child = ranked.find((voice) => genderScore(voice, "child") >= 1);
+  return (child || best).identifier;
 }
 
 async function ensureVoices() {
@@ -195,7 +243,7 @@ async function ensureVoices() {
       })
       .catch(() => [] as Speech.Voice[]);
   }
-  await Promise.race([voicesLoaded, new Promise((resolve) => setTimeout(resolve, 400))]);
+  await voicesLoaded;
 }
 
 export function warmRobot(listenLang?: string, gender: VoiceGender = "male") {
@@ -226,40 +274,38 @@ export async function speakRobot(
     /* ignore */
   }
   const rate = speechRate(gender);
-  const pitch = gender === "child" ? 1.35 : gender === "female" ? 1.08 : 0.68;
   const language = locale(listenLang);
   const voice = voiceFor(listenLang, gender);
+  // Real engine voices stay at pitch 1. Child gets a light lift only.
+  const pitch = gender === "child" ? 1.35 : 1;
 
-  const utter = (useVoice: boolean) =>
-    new Promise<boolean>((resolve) => {
-      if (gen !== warmGen) {
-        resolve(false);
-        return;
-      }
-      let finished = false;
-      let started = false;
-      const finish = (ok: boolean) => {
-        if (finished) return;
-        finished = true;
-        if (gen === warmGen) realSpeak = false;
-        resolve(ok);
-      };
-      Speech.speak(once, {
-        language,
-        ...(useVoice && voice ? { voice } : {}),
-        rate,
-        pitch,
-        onStart: () => {
-          started = true;
-        },
-        onDone: () => finish(true),
-        onStopped: () => finish(started),
-        onError: () => finish(false),
-      });
-      setTimeout(() => finish(started), 25000);
+  return new Promise<boolean>((resolve) => {
+    if (gen !== warmGen) {
+      resolve(false);
+      return;
+    }
+    let finished = false;
+    let started = false;
+    const finish = (ok: boolean) => {
+      if (finished) return;
+      finished = true;
+      if (gen === warmGen) realSpeak = false;
+      resolve(ok);
+    };
+    Speech.speak(once, {
+      language,
+      ...(voice ? { voice } : {}),
+      rate,
+      pitch,
+      onStart: () => {
+        started = true;
+      },
+      onDone: () => finish(true),
+      onStopped: () => finish(started),
+      onError: () => finish(false),
     });
-
-  return utter(true);
+    setTimeout(() => finish(started), 25000);
+  });
 }
 
 export async function stopRobot() {
@@ -268,4 +314,36 @@ export async function stopRobot() {
   } catch {
     /* ignore */
   }
+}
+
+const voiceMissingListeners = new Set<(missing: boolean) => void>();
+
+export function onTtsVoiceMissing(fn: (missing: boolean) => void) {
+  voiceMissingListeners.add(fn);
+  return () => {
+    voiceMissingListeners.delete(fn);
+  };
+}
+
+function notifyVoiceMissing(missing: boolean) {
+  for (const fn of voiceMissingListeners) fn(missing);
+}
+
+export function refreshTtsVoices() {
+  voicesLoaded = null;
+  void Speech.getAvailableVoicesAsync()
+    .then((list) => {
+      cacheVoices(list);
+      notifyVoiceMissing(list.length === 0);
+    })
+    .catch(() => notifyVoiceMissing(true));
+  void import("./phoneCall")
+    .then((mod) => mod.refreshOnDeviceTts())
+    .catch(() => undefined);
+}
+
+export function openVoiceInstaller() {
+  void import("./phoneCall")
+    .then((mod) => mod.openTtsInstall())
+    .catch(() => undefined);
 }

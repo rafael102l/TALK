@@ -76,7 +76,7 @@ import { MUTE_ALWAYS, getDisappearAfterSec, isPeerMuted, setPeerMuteUntil } from
 import { loadGroups, type TalkGroup } from "../../src/lib/groups";
 
 function txIdOf(id: string) {
-  return id.split(":")[0];
+  return typeof id === "string" && id ? id.split(":")[0] : "";
 }
 
 function receiptRank(receipt?: string | null) {
@@ -93,6 +93,7 @@ function mergeReceipt(a?: MessageReceipt | null, b?: MessageReceipt | null): Mes
 }
 
 function itemKind(item: HistoryItem): "walkie" | "voice" | "text" | "image" | "video" {
+  if (!item) return "text";
   if (item.kind === "text" || item.kind === "voice" || item.kind === "walkie" || item.kind === "image" || item.kind === "video") {
     return item.kind;
   }
@@ -124,21 +125,37 @@ function startOfDay(value: Date) {
 type ChatRow = { key: string; type: "day"; label: string } | { key: string; type: "msg"; item: HistoryItem };
 
 function hydrateItem(item: HistoryItem): HistoryItem {
-  const packed = decodeReply(item.originalText || "");
-  const translated = decodeReply(item.translatedText || "");
-  return {
-    ...item,
-    originalText: packed.text || item.originalText,
-    translatedText: translated.text || item.translatedText,
-    replyToId: item.replyToId || packed.reply?.id || null,
-    replyToName: item.replyToName || packed.reply?.name || null,
-    replyToText: item.replyToText || packed.reply?.text || null,
-  };
+  if (!item) return item;
+  try {
+    const packed = decodeReply(item.originalText || "");
+    const translated = decodeReply(item.translatedText || "");
+    return {
+      ...item,
+      originalText: packed.text || item.originalText,
+      translatedText: translated.text || item.translatedText,
+      replyToId: item.replyToId || packed.reply?.id || null,
+      replyToName: item.replyToName || packed.reply?.name || null,
+      replyToText: item.replyToText || packed.reply?.text || null,
+    };
+  } catch {
+    return item;
+  }
 }
 
 function sortMessages(rows: HistoryItem[]) {
   const uniq = new Map<string, HistoryItem>();
-  for (const row of rows) uniq.set(row.id, hydrateItem(row));
+  if (Array.isArray(rows)) {
+    for (const row of rows) {
+      if (!row || row.id == null) continue;
+      const key = String(row.id);
+      try {
+        uniq.set(key, hydrateItem(row));
+      } catch {
+        // A single malformed row must not break the whole thread.
+        uniq.set(key, row);
+      }
+    }
+  }
   return [...uniq.values()].sort((a, b) => {
     const at = Date.parse(a.createdAt) || 0;
     const bt = Date.parse(b.createdAt) || 0;
@@ -154,7 +171,7 @@ export default function ConversationScreen() {
   const isGroup = group === "1";
   const { token, user } = useAuth();
   const { t, align, lang, rtl } = useI18n();
-  const { contacts, snapshots } = useTargets();
+  const { contacts, snapshots, select } = useTargets();
   const [peerOnline, setPeerOnline] = useState(() => isCachedOnline(userId));
   const [peerTyping, setPeerTyping] = useState(false);
   const [peerLastSeen, setPeerLastSeen] = useState(0);
@@ -174,6 +191,7 @@ export default function ConversationScreen() {
   const [error, setError] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [failedIds, setFailedIds] = useState<Record<string, { text: string; quoted: ReturnType<typeof quotePreview> | null }>>({});
   const [emojiOpen, setEmojiOpen] = useState(false);
   const hasDraft = draft.length > 0;
   const [recording, setRecording] = useState(false);
@@ -258,6 +276,11 @@ export default function ConversationScreen() {
       });
       return () => {
         cancelled = true;
+        if (timer.current) {
+          clearTimeout(timer.current);
+          timer.current = null;
+        }
+        void stopPlayback();
         if (onceRef.current && onceRef.current.viewOnce && !onceRef.current.mine && token) {
           const id = txIdOf(onceRef.current.id);
           void api(`/transmissions/${id}/once-close`, { method: "POST", token }).catch(() => undefined);
@@ -281,82 +304,90 @@ export default function ConversationScreen() {
         : payload.senderId === userId || payload.senderId === user?.id;
       if (!forThis) return;
       if (!payload.transmissionId) return;
-      const mine = payload.senderId === user?.id;
-      if (!mine) ackDelivered(token, payload, user?.id);
-      const kind = payload.kind || (payload.audioUrl ? "walkie" : "text");
-      // Each device keeps the transcript in its own language:
-      // sender → source text; recipient → translated listen-language text.
-      const myText = mine
-        ? payload.originalText || payload.translatedText || null
-        : payload.translatedText || payload.originalText || null;
-      const packed = decodeReply(myText || "");
-      const row: HistoryItem = hydrateItem({
-        id: mine ? `${payload.transmissionId}:${userId}` : payload.transmissionId,
-        senderName: payload.senderName || "",
-        senderId: payload.senderId,
-        originalText: mine ? packed.text || myText : payload.originalText ?? null,
-        translatedText: packed.text || myText,
-        audioUrl: kind === "text" ? null : payload.audioUrl ?? null,
-        language: payload.language,
-        speakLang: payload.speakLang,
-        createdAt: new Date().toISOString(),
-        durationMs: payload.durationMs ?? null,
-        mine,
-        peerId: userId,
-        peerAvatar: mine ? user?.avatarUrl : payload.senderAvatarUrl,
-        peerGender: payload.voiceGender,
-        kind,
-        viewOnce: payload.viewOnce,
-        replyToId: payload.replyToId || packed.reply?.id || null,
-        replyToName: payload.replyToName || packed.reply?.name || null,
-        replyToText: payload.replyToText || packed.reply?.text || null,
-        receipt: mine
-          ? mergeReceipt(payload.receipt || "sent", takePendingReceipt(payload.transmissionId)) || "sent"
-          : undefined,
-        channelId: payload.channelId || (isGroup ? userId : null),
-        expiresAt: payload.expiresAt || null,
-      });
-      keepChatMedia(row);
-      if (row.audioUrl && kind !== "image" && kind !== "video") void prefetchAudio(row.audioUrl);
-      setItems((current) => {
-        const existing = current.find(
-          (item) => txIdOf(item.id) === payload.transmissionId || (item.id.startsWith("local-") && item.mine === mine && itemKind(item) === kind),
-        );
-        if (mine) row.receipt = mergeReceipt(existing?.receipt, row.receipt || "sent");
-        const without = current.filter(
-          (item) =>
-            txIdOf(item.id) !== payload.transmissionId &&
-            !(item.id.startsWith("local-") && item.mine === mine && itemKind(item) === kind),
-        );
-        const next = sortMessages([row, ...without]);
-        seedHistoryCache(next);
-        return next;
-      });
-      if (token && (kind === "text" || kind === "voice") && payload.senderId === userId) {
-        void markPeerTextRead(token, userId).catch(() => undefined);
+      try {
+        const mine = payload.senderId === user?.id;
+        if (!mine) ackDelivered(token, payload, user?.id);
+        const kind = payload.kind || (payload.audioUrl ? "walkie" : "text");
+        // Each device keeps the transcript in its own language:
+        // sender → source text; recipient → translated listen-language text.
+        const myText = mine
+          ? payload.originalText || payload.translatedText || null
+          : payload.translatedText || payload.originalText || null;
+        const packed = decodeReply(myText || "");
+        const row: HistoryItem = hydrateItem({
+          id: mine ? `${payload.transmissionId}:${userId}` : payload.transmissionId,
+          senderName: payload.senderName || "",
+          senderId: payload.senderId,
+          originalText: mine ? packed.text || myText : payload.originalText ?? null,
+          translatedText: packed.text || myText,
+          audioUrl: kind === "text" ? null : payload.audioUrl ?? null,
+          language: payload.language,
+          speakLang: payload.speakLang,
+          createdAt: new Date().toISOString(),
+          durationMs: payload.durationMs ?? null,
+          mine,
+          peerId: userId,
+          peerAvatar: mine ? user?.avatarUrl : payload.senderAvatarUrl,
+          peerGender: payload.voiceGender,
+          kind,
+          viewOnce: payload.viewOnce,
+          replyToId: payload.replyToId || packed.reply?.id || null,
+          replyToName: payload.replyToName || packed.reply?.name || null,
+          replyToText: payload.replyToText || packed.reply?.text || null,
+          receipt: mine
+            ? mergeReceipt(payload.receipt || "sent", takePendingReceipt(payload.transmissionId)) || "sent"
+            : undefined,
+          channelId: payload.channelId || (isGroup ? userId : null),
+          expiresAt: payload.expiresAt || null,
+        });
+        keepChatMedia(row);
+        if (row.audioUrl && kind !== "image" && kind !== "video") void prefetchAudio(row.audioUrl);
+        setItems((current) => {
+          const existing = current.find(
+            (item) => txIdOf(item.id) === payload.transmissionId || (typeof item.id === "string" && item.id.startsWith("local-") && item.mine === mine && itemKind(item) === kind),
+          );
+          if (mine) row.receipt = mergeReceipt(existing?.receipt, row.receipt || "sent");
+          const without = current.filter(
+            (item) =>
+              txIdOf(item.id) !== payload.transmissionId &&
+              !(typeof item.id === "string" && item.id.startsWith("local-") && item.mine === mine && itemKind(item) === kind),
+          );
+          const next = sortMessages([row, ...without]);
+          seedHistoryCache(next);
+          return next;
+        });
+        if (token && (kind === "text" || kind === "voice") && payload.senderId === userId) {
+          void markPeerTextRead(token, userId).catch(() => undefined);
+        }
+      } catch {
+        /* ignore a malformed realtime payload instead of crashing the screen */
       }
     };
     const onRemoved = (payload: { transmissionId?: string; opened?: boolean }) => {
       const id = payload.transmissionId;
       if (!id) return;
-      if (payload.opened) {
-        setItems((current) => {
-          const next = current.map((item) =>
-            txIdOf(item.id) === id ? { ...item, openedOnce: true, audioUrl: null, receipt: item.mine ? "read" : item.receipt } : item,
-          );
-          seedHistoryCache(next);
-          return next;
-        });
+      try {
+        if (payload.opened) {
+          setItems((current) => {
+            const next = current.map((item) =>
+              txIdOf(item.id) === id ? { ...item, openedOnce: true, audioUrl: null, receipt: item.mine ? "read" : item.receipt } : item,
+            );
+            seedHistoryCache(next);
+            return next;
+          });
+          if (onceRef.current && txIdOf(onceRef.current.id) === id) {
+            onceRef.current = null;
+            setOnceItem(null);
+          }
+          return;
+        }
+        setItems((current) => current.filter((item) => txIdOf(item.id) !== id));
         if (onceRef.current && txIdOf(onceRef.current.id) === id) {
           onceRef.current = null;
           setOnceItem(null);
         }
-        return;
-      }
-      setItems((current) => current.filter((item) => txIdOf(item.id) !== id));
-      if (onceRef.current && txIdOf(onceRef.current.id) === id) {
-        onceRef.current = null;
-        setOnceItem(null);
+      } catch {
+        /* ignore a malformed removal payload */
       }
     };
     socket.on(SOCKET_EVENTS.TRANSMISSION_READY, onReady);
@@ -374,7 +405,7 @@ export default function ConversationScreen() {
         const next = current.map((item) => {
           if (!item.mine) return item;
           const sameTx = txIdOf(item.id) === transmissionId;
-          const sameLocal = item.id.startsWith("local-") && item.peerId === userId;
+          const sameLocal = typeof item.id === "string" && item.id.startsWith("local-") && item.peerId === userId;
           if (!sameTx && !sameLocal) return item;
           const nextReceipt = mergeReceipt(item.receipt, receipt);
           if (nextReceipt === item.receipt) return item;
@@ -450,6 +481,7 @@ export default function ConversationScreen() {
     socket.on("connect", refresh);
     const subApp = AppState.addEventListener("change", (state) => {
       if (state === "active") refresh();
+      else void stopPlayback();
     });
     return () => {
       cancelled = true;
@@ -693,6 +725,60 @@ export default function ConversationScreen() {
     };
   }
 
+  async function deliverText(
+    optimisticId: string,
+    text: string,
+    quoted: ReturnType<typeof quotePreview> | null,
+  ) {
+    if (!token || !userId) return;
+    setError("");
+    // clear any prior failed mark for this bubble (retry case) and show it as sending again
+    setFailedIds((cur) => {
+      if (!cur[optimisticId]) return cur;
+      const next = { ...cur };
+      delete next[optimisticId];
+      return next;
+    });
+    try {
+      const saved = await api<{ id?: string }>("/transmissions/text", {
+        method: "POST",
+        token,
+        timeoutMs: 45000,
+        body: JSON.stringify({
+          originalText: text,
+          targetUserIds: isGroup ? groupMembers.filter((id) => id !== user?.id) : [userId],
+          channelId: isGroup ? userId : undefined,
+          replyToId: quoted?.id,
+          replyToName: quoted?.name,
+          replyToText: quoted?.text,
+        }),
+      });
+      if (saved?.id) {
+        const pending = takePendingReceipt(saved.id);
+        setItems((current) => {
+          const next = current.map((item) =>
+            item.id === optimisticId
+              ? { ...item, id: `${saved.id}:${userId}`, receipt: mergeReceipt(item.receipt || "sent", pending) || "sent" }
+              : item,
+          );
+          seedHistoryCache(next);
+          return next;
+        });
+      }
+    } catch (e) {
+      // Network/send failure: keep the bubble in place and mark it failed (red + retry),
+      // instead of deleting it and freezing the flow.
+      setError((e as Error).message);
+      setFailedIds((cur) => ({ ...cur, [optimisticId]: { text, quoted } }));
+    }
+  }
+
+  function retrySend(optimisticId: string) {
+    const payload = failedIds[optimisticId];
+    if (!payload) return;
+    void deliverText(optimisticId, payload.text, payload.quoted);
+  }
+
   async function sendText() {
     const text = draft.trim();
     if (!text || !token || !userId || sending || recordingRef.current) return;
@@ -729,39 +815,7 @@ export default function ConversationScreen() {
       return next;
     });
     try {
-      const saved = await api<{ id?: string }>("/transmissions/text", {
-        method: "POST",
-        token,
-        timeoutMs: 45000,
-        body: JSON.stringify({
-          originalText: text,
-          targetUserIds: isGroup ? groupMembers.filter((id) => id !== user?.id) : [userId],
-          channelId: isGroup ? userId : undefined,
-          replyToId: quoted?.id,
-          replyToName: quoted?.name,
-          replyToText: quoted?.text,
-        }),
-      });
-      if (saved?.id) {
-        const pending = takePendingReceipt(saved.id);
-        setItems((current) => {
-          const next = current.map((item) =>
-            item.id === optimistic.id
-              ? { ...item, id: `${saved.id}:${userId}`, receipt: mergeReceipt(item.receipt || "sent", pending) || "sent" }
-              : item,
-          );
-          seedHistoryCache(next);
-          return next;
-        });
-      }
-    } catch (e) {
-      setError((e as Error).message);
-      setDraft(text);
-      setItems((current) => {
-        const next = current.filter((item) => item.id !== optimistic.id);
-        seedHistoryCache(next);
-        return next;
-      });
+      await deliverText(optimistic.id, text, quoted);
     } finally {
       setSending(false);
     }
@@ -1119,19 +1173,36 @@ export default function ConversationScreen() {
           onLongPress={() => beginSelect(item.id)}
           delayLongPress={280}
         >
-          <View style={[styles.bubble, mine ? styles.mine : styles.theirs, reaction ? styles.bubbleReact : null]}>
-            {quotedName || quotedText ? <QuoteBox name={quotedName} text={quotedText} compact /> : null}
+          <View
+            style={[
+              styles.bubble,
+              mine ? styles.mine : styles.theirs,
+              rtl ? (mine ? styles.mineRtl : styles.theirsRtl) : null,
+              reaction ? styles.bubbleReact : null,
+            ]}
+          >
+            {quotedName || quotedText ? <QuoteBox name={quotedName} text={quotedText} compact rtl={rtl} /> : null}
             {messageText(item, mine) ? (
               <HighlightText
                 text={messageText(item, mine)}
                 query={searchQuery}
-                style={[styles.text, mine ? styles.mineText : styles.theirText]}
+                style={[
+                  styles.text,
+                  mine ? styles.mineText : styles.theirText,
+                  { textAlign: rtl ? "right" : "left", writingDirection: rtl ? "rtl" : "ltr" },
+                ]}
               />
             ) : null}
             {time || mine ? (
               <View style={styles.metaRow}>
                 {time ? <Text style={[styles.meta, mine ? styles.mineMeta : styles.theirMeta]}>{time}</Text> : null}
-                {mine ? <ReceiptTicks receipt={item.receipt || "sent"} /> : null}
+                {mine && failedIds[item.id] ? (
+                  <Pressable hitSlop={8} onPress={() => retrySend(item.id)} style={styles.failRetry}>
+                    <Text style={styles.failText}>{t("txFail")} ↻</Text>
+                  </Pressable>
+                ) : mine ? (
+                  <ReceiptTicks receipt={item.receipt || "sent"} />
+                ) : null}
               </View>
             ) : null}
             {reaction ? (
@@ -1149,7 +1220,10 @@ export default function ConversationScreen() {
           {
             width: "100%",
             flexDirection: "row",
-            justifyContent: mine ? "flex-end" : "flex-start",
+            direction: "ltr",
+            // Deterministic side regardless of the device locale: in RTL (Hebrew)
+            // my bubbles sit on the left and the peer on the right, like WhatsApp.
+            justifyContent: mine !== rtl ? "flex-end" : "flex-start",
             alignItems: mine ? "flex-end" : "flex-start",
             marginTop: 4,
             marginBottom: reaction ? 10 : 4,
@@ -1253,6 +1327,19 @@ export default function ConversationScreen() {
             });
           }}
           onMenu={() => setMenuOpen(true)}
+          onWalkie={() => {
+            if (!userId) return;
+            // Switch to walkie mode: select the peer (or every group member =
+            // the group's main channel) and open the walkie screen. We only
+            // select targets here; the existing PTT audio/translation pipeline
+            // on the walkie screen does the actual transmitting.
+            if (isGroup) {
+              for (const id of groupMembers.filter((m) => m && m !== user?.id)) select(id);
+            } else {
+              select(userId, { id: userId, name: peer.name, photo: peer.avatarUrl, gender: peer.gender });
+            }
+            router.push("/home");
+          }}
           onVideo={
             isGroup
               ? undefined
@@ -1297,6 +1384,8 @@ export default function ConversationScreen() {
               keyboardShouldPersistTaps="handled"
               windowSize={12}
               initialNumToRender={24}
+              maxToRenderPerBatch={8}
+              updateCellsBatchingPeriod={40}
               onContentSizeChange={() => stickBottom()}
               ListEmptyComponent={<Text style={styles.empty}>{t("noMessagesYet")}</Text>}
             />
@@ -1320,7 +1409,7 @@ export default function ConversationScreen() {
               />
             </View>
           ) : (
-            <View style={styles.composer}>
+            <View style={[styles.composer, rtl && styles.composerRtl]}>
               <View style={styles.pill}>
                 {replyTo ? (
                   <QuoteBox
@@ -1380,19 +1469,23 @@ export default function ConversationScreen() {
           )}
         </View>
       </KeyboardAvoidingView>
-      <ViewOncePlayer
-        visible={Boolean(onceItem && itemKind(onceItem) === "voice")}
-        uri={onceItem?.audioUrl || null}
-        durationMs={onceItem?.durationMs || null}
-        onClose={() => void closeOnce()}
-      />
-      <MediaViewer
-        visible={Boolean(onceItem && (itemKind(onceItem) === "image" || itemKind(onceItem) === "video"))}
-        uri={onceItem?.audioUrl || null}
-        kind={onceItem && itemKind(onceItem) === "video" ? "video" : "image"}
-        viewOnce={Boolean(onceItem?.viewOnce && !onceItem?.mine && onceItem?.senderId !== user?.id)}
-        onClose={() => void closeOnce()}
-      />
+      {onceItem && itemKind(onceItem) === "voice" ? (
+        <ViewOncePlayer
+          visible
+          uri={onceItem?.audioUrl || null}
+          durationMs={onceItem?.durationMs || null}
+          onClose={() => void closeOnce()}
+        />
+      ) : null}
+      {onceItem && (itemKind(onceItem) === "image" || itemKind(onceItem) === "video") ? (
+        <MediaViewer
+          visible
+          uri={onceItem?.audioUrl || null}
+          kind={itemKind(onceItem) === "video" ? "video" : "image"}
+          viewOnce={Boolean(onceItem?.viewOnce && !onceItem?.mine && onceItem?.senderId !== user?.id)}
+          onClose={() => void closeOnce()}
+        />
+      ) : null}
       <CapturePreview
         capture={capture}
         peerName={peer.name}
@@ -1523,6 +1616,8 @@ const styles = StyleSheet.create({
   },
   bubbleReact: { paddingBottom: 6 },
   mine: { backgroundColor: MINE_BG, borderTopRightRadius: 4 },
+  mineRtl: { borderTopRightRadius: 12, borderTopLeftRadius: 4 },
+  theirsRtl: { borderTopLeftRadius: 12, borderTopRightRadius: 4 },
   pickedRow: {
     backgroundColor: "rgba(17,27,33,0.08)",
     borderRadius: 8,
@@ -1621,6 +1716,8 @@ const styles = StyleSheet.create({
   theirMeta: { color: "rgba(17,27,33,0.38)" },
   empty: { color: "rgba(17,27,33,0.45)", textAlign: "center", marginTop: 40 },
   error: { color: colors.red, marginBottom: 6 },
+  failRetry: { flexDirection: "row", alignItems: "center", marginLeft: 6 },
+  failText: { color: colors.red, fontSize: 11, fontWeight: "700" },
   dockBleed: { marginTop: 4 },
   composer: {
     flexDirection: "row",
@@ -1632,6 +1729,7 @@ const styles = StyleSheet.create({
     borderTopColor: "rgba(92,78,114,0.12)",
     backgroundColor: "#EFEAF6",
   },
+  composerRtl: { flexDirection: "row-reverse" },
   actionBtn: {
     width: 48,
     height: 48,

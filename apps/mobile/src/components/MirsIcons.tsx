@@ -193,6 +193,26 @@ export function ChatIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
   );
 }
 
+export function TranslateIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <Text
+        allowFontScaling={false}
+        style={{
+          color,
+          fontSize: size * 0.4,
+          fontWeight: "800",
+          lineHeight: size * 0.48,
+          includeFontPadding: false,
+          letterSpacing: -0.5,
+        }}
+      >
+        {"A\u6587"}
+      </Text>
+    </View>
+  );
+}
+
 /** Ionicons "call" handset (U+EAD9). `down` is the hang-up pose. */
 const PHONE_GLYPH = "\uEAD9";
 
@@ -238,6 +258,50 @@ export function MicOffIcon({ size = 28, color = "#FFFFFF" }: IconProps) {
           transform: [{ rotate: "-42deg" }],
         }}
       />
+    </View>
+  );
+}
+
+export function FlashModeIcon({
+  mode = "off",
+  size = 26,
+  color = "#FFFFFF",
+}: {
+  mode?: "off" | "on" | "night" | string;
+  size?: number;
+  color?: string;
+}) {
+  const glyph = mode === "off" ? "\uEC18" : "\uEC17";
+  const box = size + 14;
+  return (
+    <View
+      style={{
+        width: box,
+        height: box,
+        borderRadius: box / 2,
+        backgroundColor: "rgba(0,0,0,0.42)",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <IonGlyph glyph={glyph} size={size} color={color} />
+      {mode === "night" ? (
+        <Text
+          allowFontScaling={false}
+          style={{
+            position: "absolute",
+            right: 5,
+            bottom: 4,
+            color,
+            fontSize: Math.max(9, size * 0.34),
+            fontWeight: "900",
+            includeFontPadding: false,
+            lineHeight: Math.max(11, size * 0.38),
+          }}
+        >
+          A
+        </Text>
+      ) : null}
     </View>
   );
 }

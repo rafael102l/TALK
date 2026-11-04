@@ -1,11 +1,11 @@
 import { HistoryItem, TransmissionReadyPayload, VoiceGender } from "@talk/shared";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { I18nManager, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { FlatList, I18nManager, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "../../src/components/Avatar";
 import { BottomNav } from "../../src/components/BottomNav";
-import { SearchIcon } from "../../src/components/MirsIcons";
+import { SearchIcon, WalkieIcon } from "../../src/components/MirsIcons";
 import { useI18n } from "../../src/i18n";
 import { useAuth } from "../../src/lib/auth";
 import { api } from "../../src/lib/api";
@@ -79,7 +79,7 @@ export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
   const { token, user } = useAuth();
   const { t, align, lang } = useI18n();
-  const { contacts, snapshots } = useTargets();
+  const { contacts, snapshots, select } = useTargets();
   const [items, setItems] = useState<HistoryItem[]>(() => peekHistoryCache());
   const [unread, setUnread] = useState<UnreadInfo>(EMPTY_UNREAD);
   const [error, setError] = useState("");
@@ -210,7 +210,11 @@ export default function HistoryScreen() {
     return [...map.values()].sort((a, b) => {
       const aTime = Date.parse(a.lastAt) || 0;
       const bTime = Date.parse(b.lastAt) || 0;
-      return bTime - aTime;
+      if (bTime !== aTime) return bTime - aTime;
+      // Deterministic tie-break so equal timestamps (e.g. groups / contacts with
+      // no last message) keep a fixed position and the list never jumps between
+      // the instant cache render and the later server refresh.
+      return a.peerId < b.peerId ? -1 : a.peerId > b.peerId ? 1 : 0;
     });
   }, [items, t, groups]);
 
@@ -264,6 +268,39 @@ export default function HistoryScreen() {
     });
   }
 
+  // Best-effort identity for the walkie board (name/photo/gender) from contacts.
+  function walkiePerson(userId: string) {
+    const contact = contacts.find((row) => row.matchedUser?.id === userId);
+    const matched = contact?.matchedUser;
+    const snap = snapshots[userId];
+    return {
+      id: userId,
+      name: matched?.displayName || contact?.displayName || snap?.name || "",
+      photo: matched?.avatarUrl || snap?.photo || null,
+      gender: (matched?.voiceGender || snap?.gender || "male") as VoiceGender,
+    };
+  }
+
+  // Open the walkie channel for this row: for a direct chat select the peer,
+  // for a group select all of its members (the group's main channel), then
+  // jump to the walkie screen. This only *selects* targets — it never starts a
+  // transmission, keeping the existing PTT / audio / translation logic intact.
+  function openWalkie(thread: Thread) {
+    if (thread.isGroup) {
+      const group = groups.find((row) => row.id === thread.peerId);
+      const memberIds = (group?.memberIds || []).filter((id) => id && id !== user?.id);
+      for (const id of memberIds) select(id, walkiePerson(id));
+    } else {
+      select(thread.peerId, {
+        id: thread.peerId,
+        name: thread.peerName,
+        photo: photoFor(thread),
+        gender: thread.peerGender,
+      });
+    }
+    router.push("/home");
+  }
+
   function openCard(thread: Thread) {
     router.push({
       pathname: "/contact/[userId]",
@@ -297,9 +334,22 @@ export default function HistoryScreen() {
         />
       </View>
       {error && shown.length ? <Text style={[styles.note, { textAlign: align }]}>{error}</Text> : null}
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.list}>
-        {shown.map((thread) => (
-          <View key={thread.peerId} style={[styles.row, { flexDirection: I18nManager.isRTL ? "row-reverse" : "row" }]}>
+      <FlatList
+        style={styles.scroll}
+        contentContainerStyle={styles.list}
+        data={shown}
+        keyExtractor={(thread) => thread.peerId}
+        extraData={unread}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        windowSize={11}
+        removeClippedSubviews
+        keyboardShouldPersistTaps="handled"
+        ListEmptyComponent={
+          <Text style={styles.empty}>{loading ? t("chatsLoading") : error || t("noHistory")}</Text>
+        }
+        renderItem={({ item: thread }) => (
+          <View style={[styles.row, { flexDirection: I18nManager.isRTL ? "row-reverse" : "row" }]}>
             <Pressable style={styles.whenWrap} onPress={() => openChat(thread)}>
               <Text style={styles.when}>{lastWhen(thread.lastAt, lang)}</Text>
             </Pressable>
@@ -317,6 +367,15 @@ export default function HistoryScreen() {
                 {statusLine(thread)}
               </Text>
             </Pressable>
+            <Pressable
+              onPress={() => openWalkie(thread)}
+              hitSlop={8}
+              style={styles.walkieBtn}
+              accessibilityRole="button"
+              accessibilityLabel={t("navWalkie")}
+            >
+              <WalkieIcon size={20} color={CHATS.mute} />
+            </Pressable>
             <Pressable onPress={() => (thread.isGroup ? openChat(thread) : openCard(thread))} hitSlop={6}>
               <View style={styles.avatarWrap}>
                 <Avatar uri={photoFor(thread)} name={thread.peerName} size={48} gender={thread.peerGender} />
@@ -330,9 +389,8 @@ export default function HistoryScreen() {
               </View>
             </Pressable>
           </View>
-        ))}
-        {!shown.length ? <Text style={styles.empty}>{loading ? t("chatsLoading") : error || t("noHistory")}</Text> : null}
-      </ScrollView>
+        )}
+      />
       <View style={[styles.navBar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
         <BottomNav />
       </View>
@@ -381,6 +439,16 @@ const styles = StyleSheet.create({
   status: { color: CHATS.mute, marginTop: 2, fontSize: 13 },
   empty: { color: CHATS.mute, textAlign: "center", marginTop: 36 },
   avatarWrap: { width: 48, height: 48 },
+  walkieBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: CHATS.search,
+    borderWidth: 1,
+    borderColor: CHATS.line,
+  },
   navBar: { backgroundColor: colors.bg, marginHorizontal: -16 },
   badge: {
     position: "absolute",
