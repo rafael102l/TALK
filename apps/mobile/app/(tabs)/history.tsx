@@ -1,7 +1,7 @@
 import { HistoryItem, TransmissionReadyPayload, VoiceGender } from "@talk/shared";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { FlatList, I18nManager, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, FlatList, I18nManager, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { Avatar } from "../../src/components/Avatar";
 import { BottomNav } from "../../src/components/BottomNav";
@@ -15,6 +15,7 @@ import { SOCKET_EVENTS, getSocket } from "../../src/lib/socket";
 import { colors } from "../../src/lib/theme";
 import { useTargets } from "../../src/lib/targets";
 import { ackDelivered, EMPTY_UNREAD, fetchUnread, type UnreadInfo } from "../../src/lib/unread";
+import { getPinnedPeers, togglePinnedPeer } from "../../src/lib/contactPrefs";
 
 const CHATS = {
   bg: "#F8F9FA",
@@ -86,11 +87,25 @@ export default function HistoryScreen() {
   const [loading, setLoading] = useState(!peekHistoryCache().length);
   const [query, setQuery] = useState("");
   const [groups, setGroups] = useState<TalkGroup[]>([]);
+  const [pinned, setPinned] = useState<string[]>([]);
 
   const refreshUnread = useCallback(() => {
     if (!token) return;
     void fetchUnread(token, 20_000).then(setUnread).catch(() => undefined);
   }, [token]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void getPinnedPeers().then(setPinned);
+    }, []),
+  );
+
+  function togglePin(peerId: string) {
+    void togglePinnedPeer(peerId).then(({ pinned: next, limited }) => {
+      setPinned(next);
+      if (limited) Alert.alert(t("pinLimitTitle"), t("pinLimitBody"));
+    });
+  }
 
   useFocusEffect(
     useCallback(() => {
@@ -207,7 +222,12 @@ export default function HistoryScreen() {
         existing.peerAvatar = group.avatarUrl || existing.peerAvatar;
       }
     }
+    const pinnedSet = new Set(pinned);
     return [...map.values()].sort((a, b) => {
+      // Pinned chats always sit at the very top of the list.
+      const ap = pinnedSet.has(a.peerId);
+      const bp = pinnedSet.has(b.peerId);
+      if (ap !== bp) return ap ? -1 : 1;
       const aTime = Date.parse(a.lastAt) || 0;
       const bTime = Date.parse(b.lastAt) || 0;
       if (bTime !== aTime) return bTime - aTime;
@@ -216,7 +236,7 @@ export default function HistoryScreen() {
       // the instant cache render and the later server refresh.
       return a.peerId < b.peerId ? -1 : a.peerId > b.peerId ? 1 : 0;
     });
-  }, [items, t, groups]);
+  }, [items, t, groups, pinned]);
 
   const people = useMemo(
     () => contacts.filter((contact) => contact.matchedUser && (contact.status === "ACCEPTED" || !contact.status)),
@@ -350,10 +370,19 @@ export default function HistoryScreen() {
         }
         renderItem={({ item: thread }) => (
           <View style={[styles.row, { flexDirection: I18nManager.isRTL ? "row-reverse" : "row" }]}>
-            <Pressable style={styles.whenWrap} onPress={() => openChat(thread)}>
+            <Pressable
+              style={styles.whenWrap}
+              onPress={() => openChat(thread)}
+              onLongPress={() => togglePin(thread.peerId)}
+            >
               <Text style={styles.when}>{lastWhen(thread.lastAt, lang)}</Text>
+              {pinned.includes(thread.peerId) ? <Text style={styles.pin}>📌</Text> : null}
             </Pressable>
-            <Pressable style={styles.mid} onPress={() => openChat(thread)}>
+            <Pressable
+              style={styles.mid}
+              onPress={() => openChat(thread)}
+              onLongPress={() => togglePin(thread.peerId)}
+            >
               <Text
                 style={[styles.name, { textAlign: I18nManager.isRTL ? "left" : "right" }]}
                 numberOfLines={1}
@@ -434,6 +463,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   when: { color: CHATS.mute, fontSize: 12, fontWeight: "600" },
+  pin: { fontSize: 11, marginTop: 2, textAlign: "center" },
   mid: { flex: 1 },
   name: { color: CHATS.ink, fontSize: 17, fontWeight: "700" },
   status: { color: CHATS.mute, marginTop: 2, fontSize: 13 },

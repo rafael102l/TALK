@@ -180,6 +180,7 @@ export default function ConversationScreen() {
   const [reactions, setReactions] = useState<Record<string, string>>({});
   const [reactSheet, setReactSheet] = useState(false);
   const [replyTo, setReplyTo] = useState<HistoryItem | null>(null);
+  const [editing, setEditing] = useState<{ id: string; tx: string } | null>(null);
   const [capture, setCapture] = useState<ChatCapture | null>(null);
   const inputRef = useRef<TextInput>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -476,8 +477,26 @@ export default function ConversationScreen() {
       });
       void setReaction(tx, emoji || null);
     };
+    const onEdit = (payload: { userId?: string; transmissionId?: string; text?: string }) => {
+      if (String(payload.userId || "") !== userId || !payload.transmissionId) return;
+      const tx = txIdOf(payload.transmissionId);
+      const text = String(payload.text || "");
+      setItems((current) => {
+        let changed = false;
+        const next = current.map((item) => {
+          if (item.id === payload.transmissionId || txIdOf(item.id) === tx) {
+            changed = true;
+            return { ...item, originalText: text, translatedText: text, edited: true };
+          }
+          return item;
+        });
+        if (changed) seedHistoryCache(next);
+        return changed ? next : current;
+      });
+    };
     socket.on(SOCKET_EVENTS.CHAT_TYPING, onTyping);
     socket.on(SOCKET_EVENTS.CHAT_REACTION, onReaction);
+    socket.on(SOCKET_EVENTS.CHAT_EDIT, onEdit);
     socket.on("connect", refresh);
     const subApp = AppState.addEventListener("change", (state) => {
       if (state === "active") refresh();
@@ -495,6 +514,7 @@ export default function ConversationScreen() {
       }
       socket.off(SOCKET_EVENTS.CHAT_TYPING, onTyping);
       socket.off(SOCKET_EVENTS.CHAT_REACTION, onReaction);
+      socket.off(SOCKET_EVENTS.CHAT_EDIT, onEdit);
       socket.off("connect", refresh);
     };
   }, [token, userId]);
@@ -650,6 +670,57 @@ export default function ConversationScreen() {
     const item = rows[rows.length - 1] || messageThread.find((row) => row.id === reactFor);
     if (item) replyToItem(item);
     else clearSelect();
+  }
+
+  // Edit is only offered for a single own text message in a direct chat.
+  function canEditSelected() {
+    if (isGroup || selectedCount !== 1) return false;
+    const item = selectedItems()[0] || messageThread.find((row) => row.id === reactFor);
+    if (!item) return false;
+    return Boolean(item.mine || item.senderId === user?.id) && itemKind(item) === "text";
+  }
+
+  function editSelected() {
+    const item = selectedItems()[0] || messageThread.find((row) => row.id === reactFor);
+    if (!item || isGroup || !(item.mine || item.senderId === user?.id) || itemKind(item) !== "text") {
+      clearSelect();
+      return;
+    }
+    setReplyTo(null);
+    setEditing({ id: item.id, tx: txIdOf(item.id) });
+    setDraft((item.originalText || item.translatedText || "").toString());
+    clearSelect();
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }
+
+  function cancelEdit() {
+    setEditing(null);
+    setDraft("");
+  }
+
+  // Send the CHAT_EDIT event, update my copy immediately, and mark it edited.
+  async function commitEdit() {
+    const text = draft.trim();
+    const target = editing;
+    if (!target || !text || !token || !userId) return;
+    setEditing(null);
+    setDraft("");
+    stopTyping();
+    setItems((current) => {
+      const next = current.map((item) =>
+        item.id === target.id || txIdOf(item.id) === target.tx
+          ? { ...item, originalText: text, translatedText: text, edited: true }
+          : item,
+      );
+      seedHistoryCache(next);
+      return next;
+    });
+    const socket = token ? ensureSocket(token) : getSocket();
+    socket?.emit(SOCKET_EVENTS.CHAT_EDIT, {
+      targetUserId: userId,
+      transmissionId: target.tx,
+      text,
+    });
   }
 
   function dropLocal(ids: Set<string>) {
@@ -1193,8 +1264,11 @@ export default function ConversationScreen() {
                 ]}
               />
             ) : null}
-            {time || mine ? (
+            {time || mine || item.edited ? (
               <View style={styles.metaRow}>
+                {item.edited ? (
+                  <Text style={[styles.meta, mine ? styles.mineMeta : styles.theirMeta]}>{t("editedTag")}</Text>
+                ) : null}
                 {time ? <Text style={[styles.meta, mine ? styles.mineMeta : styles.theirMeta]}>{time}</Text> : null}
                 {mine && failedIds[item.id] ? (
                   <Pressable hitSlop={8} onPress={() => retrySend(item.id)} style={styles.failRetry}>
@@ -1299,6 +1373,7 @@ export default function ConversationScreen() {
             count={selectedCount}
             onClose={clearSelect}
             onReply={replySelected}
+            onEdit={canEditSelected() ? editSelected : undefined}
             onDelete={deleteSelected}
             onCopy={() => void copySelected()}
             onForward={() => void forwardSelected()}
@@ -1411,6 +1486,18 @@ export default function ConversationScreen() {
           ) : (
             <View style={[styles.composer, rtl && styles.composerRtl]}>
               <View style={styles.pill}>
+                {editing ? (
+                  <Pressable
+                    onPress={cancelEdit}
+                    hitSlop={6}
+                    style={[styles.editBanner, rtl && styles.editBannerRtl]}
+                  >
+                    <Text style={styles.editBannerText} numberOfLines={1}>
+                      {t("editingMessage")}
+                    </Text>
+                    <Text style={styles.editBannerClose}>✕</Text>
+                  </Pressable>
+                ) : null}
                 {replyTo ? (
                   <QuoteBox
                     name={quotePreview(replyTo).name}
@@ -1452,7 +1539,8 @@ export default function ConversationScreen() {
               )}
               <Pressable
                 onPress={() => {
-                  if (hasDraft) void sendText();
+                  if (editing) void commitEdit();
+                  else if (hasDraft) void sendText();
                   else void beginVoice();
                 }}
                 disabled={hasDraft && (!draft.trim() || sending)}
@@ -1741,6 +1829,18 @@ const styles = StyleSheet.create({
     borderColor: colors.amber,
   },
   actionOff: { opacity: 0.45 },
+  editBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 2,
+    gap: 8,
+  },
+  editBannerRtl: { flexDirection: "row-reverse" },
+  editBannerText: { flex: 1, color: "#5C4E72", fontSize: 13, fontWeight: "700" },
+  editBannerClose: { color: "#8696A0", fontSize: 13, fontWeight: "800" },
   pill: {
     flex: 1,
     flexDirection: "column",

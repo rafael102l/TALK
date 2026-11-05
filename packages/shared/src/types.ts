@@ -87,6 +87,7 @@ export type HistoryItem = {
   replyToName?: string | null;
   replyToText?: string | null;
   receipt?: MessageReceipt;
+  edited?: boolean;
   channelId?: string | null;
   expiresAt?: string | null;
 };

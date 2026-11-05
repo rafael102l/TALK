@@ -353,6 +353,21 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     return { ok: true };
   }
 
+  @SubscribeMessage(SOCKET_EVENTS.CHAT_EDIT)
+  chatEdit(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { targetUserId?: string; transmissionId?: string; text?: string },
+  ) {
+    if (!client.userId || !body?.targetUserId || !body.transmissionId) return { ok: false };
+    this.emitToUser(
+      body.targetUserId,
+      SOCKET_EVENTS.CHAT_EDIT,
+      { userId: client.userId, transmissionId: body.transmissionId, text: String(body.text || "") },
+      true,
+    );
+    return { ok: true };
+  }
+
   @SubscribeMessage(SOCKET_EVENTS.PTT_START)
   async pttStart(
     @ConnectedSocket() client: AuthedSocket,

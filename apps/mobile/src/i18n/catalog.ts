@@ -51,6 +51,10 @@ export type MsgKey =
   | "createGroupWith"
   | "deleteCallAsk"
   | "editAction"
+  | "editedTag"
+  | "editingMessage"
+  | "pinLimitTitle"
+  | "pinLimitBody"
   | "exitChat"
   | "feedbackAttach"
   | "feedbackHint"
@@ -438,6 +442,10 @@ const en: Dict = {
   createGroupWith: "Create group with {name}",
   deleteCallAsk: "Delete this call?",
   editAction: "Edit",
+  editedTag: "edited",
+  editingMessage: "Editing message",
+  pinLimitTitle: "Pin limit reached",
+  pinLimitBody: "You can pin up to 3 chats.",
   exitChat: "Exit chat",
   feedbackAttach: "Attach image",
   feedbackHint: "Write feedback or report a problem…",
@@ -824,6 +832,10 @@ const he: Dict = {
   createGroupWith: "יצירת קבוצה עם {name}",
   deleteCallAsk: "האם למחוק שיחה זאת",
   editAction: "עריכה",
+  editedTag: "נערך",
+  editingMessage: "עריכת הודעה",
+  pinLimitTitle: "הגעת למגבלת ההצמדות",
+  pinLimitBody: "אפשר להצמיד עד 3 צ'אטים.",
   exitChat: "יציאה מהצ'אט",
   feedbackAttach: "צירוף תמונה",
   feedbackHint: "כתבו משוב או דווחו על בעיה…",
