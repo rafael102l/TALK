@@ -17,10 +17,10 @@ export class MetaController {
   ) {}
 
   @Get("health")
-  async health() {
+  health() {
     const snap = this.ttlPurge.snapshot();
-    if (snap.enabled && snap.dryRun && !snap.lastRun && !snap.running) {
-      await this.ttlPurge.run({ dryRun: true });
+    if (snap.enabled && snap.dryRun && !snap.running && (!snap.lastRun || snap.lastRun.skipped)) {
+      void this.ttlPurge.run({ dryRun: true });
     }
     return {
       ok: true,
