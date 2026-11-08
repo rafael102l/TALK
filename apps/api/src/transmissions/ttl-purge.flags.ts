@@ -19,7 +19,9 @@ function loadTtlEnvFile() {
       const key = trimmed.slice(0, eq).trim();
       const value = trimmed.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
       if (!key) continue;
-      if (process.env[key] === undefined || process.env[key] === "") process.env[key] = value;
+      // Host env wins except DRY_RUN, which follows this file after the live-purge go-ahead.
+      if (key === "MEDIA_TTL_PURGE_DRY_RUN") process.env[key] = value;
+      else if (process.env[key] === undefined || process.env[key] === "") process.env[key] = value;
     }
   }
 }
@@ -45,11 +47,10 @@ export function ttlPurgeEnabled(): boolean {
 }
 
 /**
- * When the job is on, default to log-only so we can collect candidate counts
- * before any file is removed. Actual delete requires DRY_RUN=false.
+ * Live purge when false. Host env wins; file fallback is false after Phase 6 go-ahead.
  */
 export function ttlPurgeDryRun(): boolean {
-  return envFlag("MEDIA_TTL_PURGE_DRY_RUN", true);
+  return envFlag("MEDIA_TTL_PURGE_DRY_RUN", false);
 }
 
 /** Long TTL while Phase 3 is still proving itself. */

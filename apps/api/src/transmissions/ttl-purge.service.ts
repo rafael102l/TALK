@@ -139,7 +139,7 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
    * Never touches live-dub RAM, Redis, WebRTC, or walkies inside the 2-minute replay window.
    */
   async run(opts: { dryRun?: boolean; limit?: number } = {}): Promise<TtlPurgeRunResult> {
-    const dryRun = opts.dryRun !== false;
+    const dryRun = opts.dryRun ?? ttlPurgeDryRun();
     const at = new Date().toISOString();
     if (!dryRun && !ttlPurgeEnabled()) {
       return this.remember({

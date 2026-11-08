@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Header, HttpCode, Param, Post, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
+import { ttlPurgeDryRun } from "../transmissions/ttl-purge.flags";
 import { TtlPurgeService } from "../transmissions/ttl-purge.service";
 import { ADMIN_DASHBOARD_HTML } from "./admin.page";
 import { AdminLoginDto, BanPhoneDto, TtlPurgeRunDto } from "./admin.dto";
@@ -101,6 +102,6 @@ export class AdminController {
   @UseGuards(TtlPurgeGuard)
   @HttpCode(200)
   ttlPurgeRun(@Body() body?: TtlPurgeRunDto) {
-    return this.ttlPurge.run({ dryRun: body?.dryRun !== false });
+    return this.ttlPurge.run({ dryRun: body?.dryRun ?? ttlPurgeDryRun() });
   }
 }

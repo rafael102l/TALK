@@ -42,7 +42,7 @@ export class BanPhoneDto {
 }
 
 export class TtlPurgeRunDto {
-  /** Default true. Actual delete requires MEDIA_TTL_PURGE_ENABLED and dryRun=false. */
+  /** Omit to follow MEDIA_TTL_PURGE_DRY_RUN. false = live delete when ENABLED. */
   @IsOptional()
   @IsBoolean()
   dryRun?: boolean;

@@ -22,10 +22,10 @@ services:
         fromDatabase:
           name: talk-db
           property: connectionString
-      # Phase 5 media TTL — controlled dry-run (no deletes).
+      # Phase 6 live TTL — delete media older than 14d with full ACK.
       - key: MEDIA_TTL_PURGE_ENABLED
         value: "true"
       - key: MEDIA_TTL_PURGE_DRY_RUN
-        value: "true"
+        value: "false"
       - key: MEDIA_TTL_DAYS
         value: "14"
