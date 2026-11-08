@@ -1,13 +1,17 @@
 import { Body, Controller, Get, Header, HttpCode, Param, Post, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
+import { TtlPurgeService } from "../transmissions/ttl-purge.service";
 import { ADMIN_DASHBOARD_HTML } from "./admin.page";
-import { AdminLoginDto, BanPhoneDto } from "./admin.dto";
+import { AdminLoginDto, BanPhoneDto, TtlPurgeRunDto } from "./admin.dto";
 import { ADMIN_COOKIE, AdminGuard } from "./admin.guard";
 import { AdminService } from "./admin.service";
 
 @Controller("admin")
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly ttlPurge: TtlPurgeService,
+  ) {}
 
   @Get()
   @Header("X-Robots-Tag", "noindex, nofollow")
@@ -84,5 +88,19 @@ export class AdminController {
   @HttpCode(200)
   clearIncidents() {
     return this.admin.clearErrorLog();
+  }
+
+  @Get("api/ttl-purge")
+  @UseGuards(AdminGuard)
+  @Header("Cache-Control", "no-store")
+  ttlPurgeStatus() {
+    return this.ttlPurge.snapshot();
+  }
+
+  @Post("api/ttl-purge/run")
+  @UseGuards(AdminGuard)
+  @HttpCode(200)
+  ttlPurgeRun(@Body() body?: TtlPurgeRunDto) {
+    return this.ttlPurge.run({ dryRun: body?.dryRun !== false });
   }
 }

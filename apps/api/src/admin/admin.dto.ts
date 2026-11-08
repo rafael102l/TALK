@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
+import { IsBoolean, IsIn, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
 
 export class AdminLoginDto {
   @IsString()
@@ -39,4 +39,11 @@ export class BanPhoneDto {
   @MinLength(8)
   @MaxLength(32)
   phone!: string;
+}
+
+export class TtlPurgeRunDto {
+  /** Default true. Actual delete requires MEDIA_TTL_PURGE_ENABLED and dryRun=false. */
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
 }

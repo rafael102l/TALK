@@ -8,6 +8,7 @@ import { CallRegistry } from "../realtime/call.registry";
 import { PresenceService } from "../realtime/presence.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
 import { StorageService } from "../storage/storage.service";
+import { ttlPurgeStatus } from "../transmissions/ttl-purge.flags";
 import { CreateReportDto } from "./admin.dto";
 import { adminTokenConfigured, adminTokensMatch } from "./admin.guard";
 import {
@@ -341,6 +342,7 @@ export class AdminService {
         openErrors: serverOpen,
         issues: healthIssues,
       },
+      ttlPurge: ttlPurgeStatus(),
       security: {
         ok: securityOpen === 0,
         openFindings: securityOpen,

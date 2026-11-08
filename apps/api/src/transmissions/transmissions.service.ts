@@ -1433,10 +1433,30 @@ export class TransmissionsService {
   }
 
   async markPlayed(user: User, transmissionId: string) {
-    await this.prisma.transmissionTarget.updateMany({
+    if (!transmissionId) return { ok: true };
+    const row = await this.prisma.transmissionTarget.findFirst({
       where: { transmissionId, userId: user.id },
-      data: { playedAt: new Date() },
+      include: { transmission: { select: { senderId: true, kind: true } } },
     });
+    if (!row) return { ok: true };
+    const now = new Date();
+    const data: { playedAt?: Date; deliveredAt?: Date } = {};
+    if (!row.playedAt) data.playedAt = now;
+    if (!row.deliveredAt) data.deliveredAt = now;
+    if (Object.keys(data).length) {
+      await this.prisma.transmissionTarget.update({
+        where: { id: row.id },
+        data,
+      });
+    }
+    // Walkie ACK is playedAt only (PTT UI stays visual). Chat emits read ticks.
+    if (!row.playedAt && row.transmission.kind !== "walkie") {
+      this.realtime.emitToUser(row.transmission.senderId, "chat:receipt", {
+        transmissionId,
+        peerId: user.id,
+        receipt: "read",
+      });
+    }
     return { ok: true };
   }
 

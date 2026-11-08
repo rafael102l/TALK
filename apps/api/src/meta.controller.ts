@@ -7,14 +7,23 @@ import { join } from "path";
 import { CurrentUser } from "./auth/current-user.decorator";
 import { JwtAuthGuard } from "./auth/jwt-auth.guard";
 import { PresenceService } from "./realtime/presence.service";
+import { TtlPurgeService } from "./transmissions/ttl-purge.service";
 
 @Controller()
 export class MetaController {
-  constructor(private readonly presence: PresenceService) {}
+  constructor(
+    private readonly presence: PresenceService,
+    private readonly ttlPurge: TtlPurgeService,
+  ) {}
 
   @Get("health")
   health() {
-    return { ok: true, name: "talk-api", chatPush: "incoming-call-data-fcm" };
+    return {
+      ok: true,
+      name: "talk-api",
+      chatPush: "incoming-call-data-fcm",
+      ttlPurge: this.ttlPurge.snapshot(),
+    };
   }
 
   @Get("install")
