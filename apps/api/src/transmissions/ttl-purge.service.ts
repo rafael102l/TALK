@@ -41,6 +41,9 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
   private lastRun: TtlPurgeRunResult | null = null;
+  private lastKick = 0;
+  private dbOk: boolean | null = null;
+  private dbMs = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -82,8 +85,38 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
     return {
       ...ttlPurgeStatus(),
       running: this.running,
+      dbOk: this.dbOk,
+      dbMs: this.dbMs,
       lastRun: this.lastRun,
     };
+  }
+
+  /** One dry-run retry after a skipped DB error. Cooldown avoids health-check stampedes. */
+  kickIfNeeded() {
+    if (!ttlPurgeEnabled() || !ttlPurgeDryRun()) return;
+    if (this.running) return;
+    if (this.lastRun && !this.lastRun.skipped) return;
+    if (Date.now() - this.lastKick < 45_000) return;
+    this.lastKick = Date.now();
+    void this.probeAndRun();
+  }
+
+  async probeDb(): Promise<boolean> {
+    const started = Date.now();
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+      this.dbOk = true;
+      this.dbMs = Date.now() - started;
+    } catch {
+      this.dbOk = false;
+      this.dbMs = Date.now() - started;
+    }
+    return Boolean(this.dbOk);
+  }
+
+  private async probeAndRun() {
+    if (!(await this.probeDb())) return;
+    await this.run({ dryRun: true });
   }
 
   /** Hourly job. No-ops unless MEDIA_TTL_PURGE_ENABLED is on. */

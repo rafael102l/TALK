@@ -65,3 +65,19 @@ export class AdminGuard implements CanActivate {
     return true;
   }
 }
+
+/** Production admin token, or the dry-run operator token while MEDIA_TTL_PURGE_DRY_RUN is on. */
+@Injectable()
+export class TtlPurgeGuard implements CanActivate {
+  canActivate(context: ExecutionContext) {
+    const req = context.switchToHttp().getRequest<Request>();
+    const given = readAdminToken(req);
+    const admin = adminTokenConfigured();
+    if (admin && adminTokensMatch(given, admin)) return true;
+    const dry = (process.env.TTL_PURGE_DRY_RUN_TOKEN || "").trim();
+    const dryOn = ["1", "true", "yes", "on"].includes((process.env.MEDIA_TTL_PURGE_DRY_RUN ?? "true").trim().toLowerCase());
+    if (dryOn && dry && adminTokensMatch(given, dry)) return true;
+    if (!admin && !dry) throw new ServiceUnavailableException("ADMIN_DASHBOARD_TOKEN is not set");
+    throw new UnauthorizedException("Admin token required");
+  }
+}

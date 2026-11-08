@@ -18,6 +18,7 @@ export class MetaController {
 
   @Get("health")
   health() {
+    this.ttlPurge.kickIfNeeded();
     return {
       ok: true,
       name: "talk-api",

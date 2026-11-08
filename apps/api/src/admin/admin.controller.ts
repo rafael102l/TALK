@@ -3,7 +3,7 @@ import type { Response } from "express";
 import { TtlPurgeService } from "../transmissions/ttl-purge.service";
 import { ADMIN_DASHBOARD_HTML } from "./admin.page";
 import { AdminLoginDto, BanPhoneDto, TtlPurgeRunDto } from "./admin.dto";
-import { ADMIN_COOKIE, AdminGuard } from "./admin.guard";
+import { ADMIN_COOKIE, AdminGuard, TtlPurgeGuard } from "./admin.guard";
 import { AdminService } from "./admin.service";
 
 @Controller("admin")
@@ -91,14 +91,14 @@ export class AdminController {
   }
 
   @Get("api/ttl-purge")
-  @UseGuards(AdminGuard)
+  @UseGuards(TtlPurgeGuard)
   @Header("Cache-Control", "no-store")
   ttlPurgeStatus() {
     return this.ttlPurge.snapshot();
   }
 
   @Post("api/ttl-purge/run")
-  @UseGuards(AdminGuard)
+  @UseGuards(TtlPurgeGuard)
   @HttpCode(200)
   ttlPurgeRun(@Body() body?: TtlPurgeRunDto) {
     return this.ttlPurge.run({ dryRun: body?.dryRun !== false });
