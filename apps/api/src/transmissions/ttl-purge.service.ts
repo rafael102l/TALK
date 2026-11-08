@@ -55,14 +55,21 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
     this.timer = setInterval(() => {
       void this.tick();
     }, status.intervalMs);
-    this.timer.unref?.();
     if (status.enabled && status.dryRun) {
-      const boot = setTimeout(() => {
+      setTimeout(() => {
         void this.run({ dryRun: true }).catch((error: Error) => {
           this.log.warn(`ttl-purge boot dry-run failed: ${error.message}`);
+          if (!this.lastRun) {
+            this.lastRun = {
+              ...EMPTY,
+              dryRun: true,
+              skipped: true,
+              reason: error.message,
+              at: new Date().toISOString(),
+            };
+          }
         });
-      }, 20_000);
-      boot.unref?.();
+      }, 8_000);
     }
   }
 
@@ -74,6 +81,7 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
   snapshot() {
     return {
       ...ttlPurgeStatus(),
+      running: this.running,
       lastRun: this.lastRun,
     };
   }
@@ -120,7 +128,24 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
     }
     this.running = true;
     try {
-      return this.remember(await this.execute(dryRun, opts.limit ?? ttlPurgeBatchSize(), at));
+      const limit = opts.limit ?? ttlPurgeBatchSize();
+      const timed = await Promise.race([
+        this.execute(dryRun, limit, at),
+        new Promise<TtlPurgeRunResult>((_, reject) => {
+          setTimeout(() => reject(new Error("ttl-purge query timed out after 25s")), 25_000);
+        }),
+      ]);
+      return this.remember(timed);
+    } catch (error) {
+      const failed: TtlPurgeRunResult = {
+        ...EMPTY,
+        dryRun,
+        skipped: true,
+        reason: error instanceof Error ? error.message : String(error),
+        at,
+      };
+      this.log.warn(`ttl-purge failed: ${failed.reason}`);
+      return this.remember(failed);
     } finally {
       this.running = false;
     }
@@ -137,7 +162,6 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
         status: "READY",
         createdAt: { lt: ackCutoff },
         OR: [{ originalAudioUrl: { not: "" } }, { renders: { some: { audioUrl: { not: "" } } } }],
-        AND: [{ targets: { some: {} } }, { targets: { none: { playedAt: null } } }],
       },
       select: {
         id: true,

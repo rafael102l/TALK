@@ -17,7 +17,11 @@ export class MetaController {
   ) {}
 
   @Get("health")
-  health() {
+  async health() {
+    const snap = this.ttlPurge.snapshot();
+    if (snap.enabled && snap.dryRun && !snap.lastRun && !snap.running) {
+      await this.ttlPurge.run({ dryRun: true });
+    }
     return {
       ok: true,
       name: "talk-api",
