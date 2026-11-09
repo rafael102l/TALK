@@ -1011,8 +1011,7 @@ export class TransmissionsService {
         await markReady();
         await persistRenders();
       }
-      void this.firebase.saveItems(
-        transmission.targets.flatMap((target) => {
+      const cloudItems = transmission.targets.flatMap((target) => {
           if (incomingByOwner.get(target.userId)?.status === "BLOCKED") return [];
           const sameLang = target.language === sourceLang;
           const fellBack = fallbackLangs.has(target.language);
@@ -1078,8 +1077,41 @@ export class TransmissionsService {
               receipt: "sent",
             },
           ];
-        }),
-      );
+        });
+      if (!cloudItems.some((row) => row.ownerId === sender.id && row.mine)) {
+        const member = await this.prisma.channelMember.findFirst({
+          where: { channelId: transmission.channelId, userId: { not: sender.id } },
+          include: { user: true },
+        });
+        const peer = member?.user;
+        if (peer) {
+          cloudItems.push({
+            ownerId: sender.id,
+            id: `${transmission.id}:${peer.id}`,
+            senderName: sender.displayName || sender.phoneE164,
+            senderId: sender.id,
+            mine: true,
+            peerId: peer.id,
+            peerName: peer.displayName || peer.phoneE164 || "",
+            peerPhone: peer.phoneE164 || null,
+            peerAvatar: peer.avatarUrl ? publicMedia(this.storage, peer.avatarUrl) : null,
+            peerGender:
+              peer.voiceGender === "female" || peer.voiceGender === "child" ? peer.voiceGender : "male",
+            originalText,
+            translatedText: originalText,
+            audioUrl: originalAudio,
+            language: sourceLang,
+            speakLang: sourceLang,
+            mode: senderMode,
+            createdAt,
+            durationMs: textOnly ? null : transmission.durationMs,
+            kind: delivery,
+            viewOnce: Boolean(transmission.viewOnce),
+            receipt: "sent",
+          });
+        }
+      }
+      void this.firebase.saveItems(cloudItems);
     } catch {
       this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_FAILED, {
         transmissionId: transmission.id,
@@ -1234,7 +1266,7 @@ export class TransmissionsService {
         });
         const other = member?.user;
         items.push({
-          id: tx.id,
+          id: other?.id ? `${tx.id}:${other.id}` : tx.id,
           senderName: user.displayName || user.phoneE164,
           senderId: user.id,
           mine: true,
