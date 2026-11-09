@@ -361,12 +361,20 @@ export class TransmissionsService {
       group: Boolean(input.channelId?.trim()) && isGroupType("type" in channel ? channel.type : undefined),
     };
     const speak = (lang || "").slice(0, 2).toLowerCase();
+    const groupId = (input.channelId || "").trim();
+    const groupMemberIds = new Set<string>();
+    if (groupId && "members" in channel) {
+      for (const row of (channel as { members?: { userId?: string }[] }).members || []) {
+        if (row.userId && row.userId !== sender.id) groupMemberIds.add(row.userId);
+      }
+    }
     let textOnly = 0;
     const dubbed: { targetId: string; language: string }[] = [];
     for (const target of transmission.targets) {
       const listener = users.find((user) => user.id === target.userId);
       const hear = (listener?.listenLang || listener?.speakLang || "").slice(0, 2).toLowerCase();
       const sameLanguage = !speak || !hear || hear === speak;
+      const rowPayload = walkieReadyFor(payload, target.userId, groupId, groupMemberIds);
       if (!sameLanguage) {
         textOnly += 1;
         if (hear) dubbed.push({ targetId: target.userId, language: hear });
@@ -375,16 +383,16 @@ export class TransmissionsService {
         // dubWalkie notifies once with the translated audio.
         continue;
       }
-      const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
-      this.logger.log(`Deliver walkie ${transmission.id} -> ${target.userId} reached=${reached}`);
-      void this.push.notifyOfflineMessage(target.userId, { ...payload, kind: "walkie" });
+      const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, rowPayload);
+      this.logger.log(`Deliver walkie ${transmission.id} -> ${target.userId} reached=${reached} group=${String(rowPayload.group)}`);
+      void this.push.notifyOfflineMessage(target.userId, { ...rowPayload, kind: "walkie" });
       void this.prisma.transmissionTarget.update({
         where: { id: target.id },
         data: { deliveredAt: new Date() },
       });
     }
     if (dubbed.length) {
-      void this.dubWalkie(file, transmission.id, payload, speak, voiceGender, dubbed);
+      void this.dubWalkie(file, transmission.id, payload, speak, voiceGender, dubbed, groupId, groupMemberIds);
     }
     this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
     this.logger.log(
@@ -407,6 +415,8 @@ export class TransmissionsService {
     speak: string,
     voiceGender: "male" | "female" | "child",
     dubbed: { targetId: string; language: string }[],
+    groupId = "",
+    groupMemberIds = new Set<string>(),
   ) {
     try {
       const ext = extFrom(file);
@@ -476,16 +486,21 @@ export class TransmissionsService {
           kind: "walkie" as const,
         });
         for (const row of dubbed.filter((item) => item.language === language)) {
-          const dubbedPayload = {
-            ...payload,
-            language,
-            audioUrl,
-            originalText,
-            translatedText: line,
-            usedOriginalVoice: false,
-            suppressOriginal: true,
-            kind: "walkie" as const,
-          };
+          const dubbedPayload = walkieReadyFor(
+            {
+              ...payload,
+              language,
+              audioUrl,
+              originalText,
+              translatedText: line,
+              usedOriginalVoice: false,
+              suppressOriginal: true,
+              kind: "walkie" as const,
+            },
+            row.targetId,
+            groupId,
+            groupMemberIds,
+          );
           const reached = this.realtime.emitToUser(row.targetId, SOCKET_EVENTS.TRANSMISSION_READY, dubbedPayload);
           this.logger.log(`Deliver walkie ${transmissionId} -> ${row.targetId} reached=${reached}`);
           // Closed app: first (and only) FCM — already translated TTS.
@@ -1816,6 +1831,16 @@ export class TransmissionsService {
 
 function isGroupType(type?: string | null) {
   return type === "GROUP" || type === "BROADCAST";
+}
+
+function walkieReadyFor(
+  payload: TransmissionReadyPayload,
+  userId: string,
+  groupId: string,
+  groupMemberIds: Set<string>,
+): TransmissionReadyPayload {
+  const inGroup = Boolean(groupId) && groupMemberIds.has(userId);
+  return { ...payload, group: inGroup, channelId: inGroup ? groupId : payload.channelId };
 }
 
 function extFrom(file: Express.Multer.File) {
