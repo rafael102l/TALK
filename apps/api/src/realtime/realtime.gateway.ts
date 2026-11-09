@@ -1,4 +1,5 @@
 import { Logger } from "@nestjs/common";
+import { ModuleRef } from "@nestjs/core";
 import { JwtService } from "@nestjs/jwt";
 import {
   ConnectedSocket,
@@ -43,6 +44,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly liveDub: LiveDubService,
     private readonly calls: CallRegistry,
     private readonly push: PushService,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   async handleConnection(client: AuthedSocket) {
@@ -492,6 +494,66 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const stored = this.liveDub.setClip(client.id, wav, pressId);
     this.logger.log(`ptt clip from=${client.userId} press=${pressId || "-"} bytes=${wav.length} stored=${stored} gender=${gender || "-"}`);
     return { ok: stored, bytes: wav.length };
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.WALKIE_SEND)
+  async walkieSend(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody()
+    body: {
+      audio?: string;
+      targetUserIds?: string[];
+      channelId?: string;
+      durationMs?: number;
+      releasedAt?: number;
+      speakLang?: string;
+      sourceLanguage?: string;
+    },
+  ) {
+    if (!client.userId || typeof body?.audio !== "string") return { ok: false };
+    if (body.audio.length < 64 || body.audio.length > 6_000_000) {
+      this.logger.warn(`walkie send drop size=${body.audio.length} user=${client.userId}`);
+      return { ok: false };
+    }
+    const buf = Buffer.from(body.audio, "base64");
+    if (buf.length < 32) return { ok: false };
+    const user = await loadUser(this.prisma, client.userId);
+    if (!user) return { ok: false };
+    const targetUserIds = [...new Set((body.targetUserIds ?? []).filter((id) => id && id !== client.userId))];
+    const channelId = typeof body.channelId === "string" ? body.channelId.trim() : "";
+    if (!targetUserIds.length && !channelId) return { ok: false };
+    const durationMs = Number(body.durationMs);
+    const releasedAt = Number(body.releasedAt);
+    const speakLang = typeof body.speakLang === "string" ? body.speakLang : undefined;
+    const sourceLanguage =
+      typeof body.sourceLanguage === "string" ? body.sourceLanguage : speakLang;
+    const file = {
+      fieldname: "audio",
+      originalname: "ptt.m4a",
+      encoding: "7bit",
+      mimetype: "audio/mp4",
+      size: buf.length,
+      destination: "",
+      filename: "ptt.m4a",
+      path: "",
+      buffer: buf,
+      stream: undefined as never,
+    } as Express.Multer.File;
+    const { TransmissionsService } = require("../transmissions/transmissions.service") as typeof import("../transmissions/transmissions.service");
+    const transmissions = this.moduleRef.get(TransmissionsService, { strict: false });
+    const result = await transmissions.create(user, file, {
+      targetUserIds,
+      channelId: channelId || undefined,
+      durationMs: Number.isFinite(durationMs) ? durationMs : undefined,
+      kind: "walkie",
+      releasedAt: Number.isFinite(releasedAt) ? releasedAt : undefined,
+      speakLang,
+      sourceLanguage,
+    });
+    this.logger.log(
+      `walkie send from=${client.userId} bytes=${buf.length} id=${(result as { id?: string })?.id ?? "-"}`,
+    );
+    return { ok: true, id: (result as { id?: string })?.id };
   }
 
   @SubscribeMessage(SOCKET_EVENTS.PTT_AUDIO)

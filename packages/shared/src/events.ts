@@ -3,6 +3,8 @@ export const SOCKET_EVENTS = {
   PTT_AUDIO: "ptt:audio",
   /** One finished WAV for this press. The server does not stitch PCM frames. */
   PTT_CLIP: "ptt:clip",
+  /** Finished walkie clip over the existing socket — skips the HTTP multipart round trip. */
+  WALKIE_SEND: "walkie:send",
   /** Translated phrase for one listener. free = text for the phone's TTS. plus = cloned voice file. */
   PTT_CAPTION: "ptt:caption",
   PTT_SPEAKING: "ptt:speaking",
@@ -102,6 +104,8 @@ export type TransmissionReadyPayload = {
   speakLang: string;
   mode: "free" | "plus";
   audioUrl: string | null;
+  /** Original clip bytes when the socket already has them — play without a second download. */
+  audioB64?: string;
   originalText?: string | null;
   translatedText?: string | null;
   durationMs?: number | null;

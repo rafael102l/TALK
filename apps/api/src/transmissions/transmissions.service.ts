@@ -2,13 +2,16 @@ import {
   BadRequestException,
   ForbiddenException,
   HttpException,
+  Inject,
   Injectable,
   InternalServerErrorException,
   Logger,
   NotFoundException,
+  forwardRef,
 } from "@nestjs/common";
 import { Prisma, User } from "@prisma/client";
 import { decodeReply, HistoryItem, packReply, SOCKET_EVENTS, TransmissionReadyPayload } from "@talk/shared";
+import { randomUUID } from "crypto";
 import { readFile } from "fs/promises";
 import {
   SttService,
@@ -52,6 +55,7 @@ export class TransmissionsService {
     private readonly stt: SttService,
     private readonly translate: TranslateService,
     private readonly tts: TtsService,
+    @Inject(forwardRef(() => RealtimeGateway))
     private readonly realtime: RealtimeGateway,
     private readonly presence: PresenceService,
     private readonly push: PushService,
@@ -90,12 +94,26 @@ export class TransmissionsService {
     const kind = input.kind === "voice" ? "voice" : "walkie";
 
     const speakerLang = sender.speakLang || sender.listenLang;
+    const saveWalkie = kind === "walkie" ? this.storage.save(file.buffer, ext, "audio") : null;
     const planned = await this.planTargets(sender, input, kind);
     const targetIds = planned.deliverIds;
-    const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
     if (kind === "walkie") {
-      return this.relayWalkie(sender, file, input, users, targetIds, clientRelease, input.sourceLanguage || input.speakLang || "");
+      const [audioUrl, users] = await Promise.all([
+        saveWalkie as Promise<string>,
+        this.prisma.user.findMany({ where: { id: { in: targetIds } } }),
+      ]);
+      return this.relayWalkie(
+        sender,
+        file,
+        input,
+        users,
+        targetIds,
+        clientRelease,
+        input.sourceLanguage || input.speakLang || "",
+        audioUrl,
+      );
     }
+    const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
     const sameLanguage =
       users.length > 0 &&
       users.every((user) => (user.listenLang || user.speakLang) === speakerLang);
@@ -279,14 +297,33 @@ export class TransmissionsService {
     targetIds: string[],
     clientRelease: number,
     sourceLanguage = "",
+    savedAudioUrl?: string,
   ) {
     try {
-      return await this.relayWalkieNow(sender, file, input, users, targetIds, clientRelease, sourceLanguage);
+      return await this.relayWalkieNow(
+        sender,
+        file,
+        input,
+        users,
+        targetIds,
+        clientRelease,
+        sourceLanguage,
+        savedAudioUrl,
+      );
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2024") {
         await new Promise((resolve) => setTimeout(resolve, 1500));
         try {
-          return await this.relayWalkieNow(sender, file, input, users, targetIds, clientRelease, sourceLanguage);
+          return await this.relayWalkieNow(
+            sender,
+            file,
+            input,
+            users,
+            targetIds,
+            clientRelease,
+            sourceLanguage,
+            savedAudioUrl,
+          );
         } catch (retryError) {
           error = retryError;
         }
@@ -306,6 +343,7 @@ export class TransmissionsService {
     targetIds: string[],
     clientRelease: number,
     sourceLanguage = "",
+    savedAudioUrl?: string,
   ) {
     const started = Date.now();
     const groupIds = [
@@ -316,7 +354,9 @@ export class TransmissionsService {
       ),
     ];
     const [audioUrl, groupRows] = await Promise.all([
-      this.storage.save(file.buffer, extFrom(file), "audio"),
+      savedAudioUrl
+        ? Promise.resolve(savedAudioUrl)
+        : this.storage.save(file.buffer, extFrom(file), "audio"),
       groupIds.length
         ? this.prisma.channel.findMany({
             where: { id: { in: groupIds } },
@@ -332,36 +372,17 @@ export class TransmissionsService {
           ),
     ]);
     const saveMs = Date.now() - started;
-    const channel = groupIds.length
-      ? { id: groupIds[0], type: groupRows.find((row) => row.id === groupIds[0])?.type }
-      : await this.ensureChannel(sender, input.channelId, targetIds, { reuseDirect: true });
-    const channelMs = Date.now() - started - saveMs;
     const lang = (sourceLanguage || sender.speakLang || sender.listenLang || "").slice(0, 2).toLowerCase();
-    const transmission = await this.prisma.transmission.create({
-      data: {
-        senderId: sender.id,
-        channelId: channel.id,
-        originalAudioUrl: audioUrl,
-        originalText: null,
-        durationMs: input.durationMs ?? null,
-        kind: "walkie",
-        viewOnce: false,
-        status: "READY",
-        targets: {
-          create: users.map((user) => ({
-            userId: user.id,
-            language: (user.listenLang || user.speakLang || lang).slice(0, 2).toLowerCase(),
-          })),
-        },
-      },
-      include: { targets: true },
-    });
+    const transmissionId = randomUUID();
+    const channelHint = groupIds[0] || "";
+    const groupType = groupRows.find((row) => row.id === channelHint)?.type;
     const senderPublic = toPublicUser(sender);
     const voiceGender =
       sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male";
+    const audioB64 = file.buffer.length <= 1_500_000 ? file.buffer.toString("base64") : undefined;
     const payload: TransmissionReadyPayload = {
-      transmissionId: transmission.id,
-      channelId: transmission.channelId,
+      transmissionId,
+      channelId: channelHint,
       senderId: sender.id,
       senderName: sender.displayName || sender.phoneE164,
       language: lang,
@@ -370,7 +391,7 @@ export class TransmissionsService {
       audioUrl: this.storage.publicUrl(audioUrl),
       originalText: "",
       translatedText: "",
-      durationMs: transmission.durationMs,
+      durationMs: input.durationMs ?? null,
       usedOriginalVoice: true,
       needsAccept: false,
       live: false,
@@ -381,7 +402,7 @@ export class TransmissionsService {
       viewOnce: false,
       releasedAt: clientRelease,
       readyAt: Date.now(),
-      group: Boolean(input.channelId?.trim()) && isGroupType("type" in channel ? channel.type : undefined),
+      group: Boolean(input.channelId?.trim()) && isGroupType(groupType),
     };
     const speak = (lang || "").slice(0, 2).toLowerCase();
     const homesOf = new Map<string, { id: string; name: string }[]>();
@@ -395,38 +416,54 @@ export class TransmissionsService {
     }
     let textOnly = 0;
     const dubbed: { targetId: string; language: string; channelId: string; group: boolean; groupName: string }[] = [];
-    for (const target of transmission.targets) {
-      const listener = users.find((user) => user.id === target.userId);
-      const hear = (listener?.listenLang || listener?.speakLang || "").slice(0, 2).toLowerCase();
+    for (const listener of users) {
+      const hear = (listener.listenLang || listener.speakLang || "").slice(0, 2).toLowerCase();
       const sameLanguage = !speak || !hear || hear === speak;
-      const homes = homesOf.get(target.userId);
+      const homes = homesOf.get(listener.id);
       const stamps = homes?.length
         ? homes.map((home) => ({ channelId: home.id, group: true, groupName: home.name }))
         : [{ channelId: payload.channelId, group: false, groupName: "" }];
       if (!sameLanguage) {
         textOnly += 1;
         if (hear) {
-          for (const stamp of stamps) dubbed.push({ targetId: target.userId, language: hear, ...stamp });
+          for (const stamp of stamps) dubbed.push({ targetId: listener.id, language: hear, ...stamp });
         }
         continue;
       }
       for (const stamp of stamps) {
-        const rowPayload = { ...payload, channelId: stamp.channelId, group: stamp.group, groupName: stamp.groupName || null };
-        const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, rowPayload);
-        this.logger.log(`Deliver walkie ${transmission.id} -> ${target.userId} reached=${reached} group=${String(rowPayload.group)} channel=${stamp.channelId}`);
-        void this.push.notifyOfflineMessage(target.userId, { ...rowPayload, kind: "walkie" });
+        const rowPayload = {
+          ...payload,
+          channelId: stamp.channelId,
+          group: stamp.group,
+          groupName: stamp.groupName || null,
+          audioB64,
+        };
+        const reached = this.realtime.emitToUser(listener.id, SOCKET_EVENTS.TRANSMISSION_READY, rowPayload);
+        this.logger.log(
+          `Deliver walkie ${transmissionId} -> ${listener.id} reached=${reached} group=${String(rowPayload.group)} channel=${stamp.channelId}`,
+        );
+        const { audioB64: _inline, ...pushPayload } = rowPayload;
+        void this.push.notifyOfflineMessage(listener.id, { ...pushPayload, kind: "walkie" });
       }
-      void this.prisma.transmissionTarget.update({
-        where: { id: target.id },
-        data: { deliveredAt: new Date() },
-      });
     }
-    if (dubbed.length) {
-      void this.dubWalkie(file, transmission.id, payload, speak, voiceGender, dubbed);
-    }
+    this.persistWalkie(
+      transmissionId,
+      sender,
+      file,
+      input,
+      users,
+      targetIds,
+      audioUrl,
+      lang,
+      payload,
+      speak,
+      voiceGender,
+      dubbed,
+      groupIds,
+    );
     this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
     this.logger.log(
-      `Walkie relay ${transmission.id} bytes=${file.buffer.length} targets=${transmission.targets.length} textOnly=${textOnly} saveMs=${saveMs} channelMs=${channelMs} totalMs=${Date.now() - started}`,
+      `Walkie relay ${transmissionId} bytes=${file.buffer.length} targets=${users.length} textOnly=${textOnly} saveMs=${saveMs} emitMs=${Date.now() - started}`,
     );
     void Promise.all(
       users.map(async (target) => {
@@ -434,7 +471,56 @@ export class TransmissionsService {
         await this.contacts.ensureMutualTalk(sender, target);
       }),
     );
-    return { id: transmission.id, status: "READY" as const, channelId: channel.id };
+    return { id: transmissionId, status: "READY" as const, channelId: channelHint };
+  }
+
+  private persistWalkie(
+    transmissionId: string,
+    sender: User,
+    file: Express.Multer.File,
+    input: { channelId?: string; channelIds?: string[]; durationMs?: number },
+    users: User[],
+    targetIds: string[],
+    audioUrl: string,
+    lang: string,
+    payload: TransmissionReadyPayload,
+    speak: string,
+    voiceGender: "male" | "female" | "child",
+    dubbed: { targetId: string; language: string; channelId: string; group: boolean; groupName: string }[],
+    groupIds: string[],
+  ) {
+    void (async () => {
+      try {
+        const channel = groupIds[0]
+          ? { id: groupIds[0] }
+          : await this.ensureChannel(sender, input.channelId, targetIds, { reuseDirect: true });
+        await this.prisma.transmission.create({
+          data: {
+            id: transmissionId,
+            senderId: sender.id,
+            channelId: channel.id,
+            originalAudioUrl: audioUrl,
+            originalText: null,
+            durationMs: input.durationMs ?? null,
+            kind: "walkie",
+            viewOnce: false,
+            status: "READY",
+            targets: {
+              create: users.map((user) => ({
+                userId: user.id,
+                language: (user.listenLang || user.speakLang || lang).slice(0, 2).toLowerCase(),
+                deliveredAt: new Date(),
+              })),
+            },
+          },
+        });
+        if (dubbed.length) {
+          void this.dubWalkie(file, transmissionId, payload, speak, voiceGender, dubbed);
+        }
+      } catch (error) {
+        this.logger.warn(`walkie persist ${transmissionId} ${(error as Error).message}`);
+      }
+    })();
   }
 
   /** Cross-language walkie: transcribe once in the speaker's language, then translate that exact text. */

@@ -1,4 +1,4 @@
-import { Module } from "@nestjs/common";
+import { Module, forwardRef } from "@nestjs/common";
 import { AiModule } from "../ai/ai.module";
 import { ChannelsModule } from "../channels/channels.module";
 import { ContactsModule } from "../contacts/contacts.module";
@@ -8,9 +8,9 @@ import { TransmissionsService } from "./transmissions.service";
 import { TtlPurgeService } from "./ttl-purge.service";
 
 @Module({
-  imports: [AiModule, ChannelsModule, RealtimeModule, ContactsModule],
+  imports: [AiModule, ChannelsModule, forwardRef(() => RealtimeModule), ContactsModule],
   controllers: [TransmissionsController],
   providers: [TransmissionsService, TtlPurgeService],
-  exports: [TtlPurgeService],
+  exports: [TtlPurgeService, TransmissionsService],
 })
 export class TransmissionsModule {}
