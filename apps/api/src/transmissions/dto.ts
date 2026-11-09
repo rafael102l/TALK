@@ -118,6 +118,11 @@ export class CreateTextDto {
   @IsString()
   @MaxLength(240)
   replyToText?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  clientLocalId?: string;
 }
 
 export class ReadPeerDto {

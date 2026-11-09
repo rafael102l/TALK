@@ -153,10 +153,14 @@ model Transmission {
   status           TransmissionStatus   @default(PROCESSING)
   expiresAt        DateTime?
   createdAt        DateTime             @default(now())
+  /** Client outbox id. Same sender+id returns the existing row instead of a duplicate. */
+  clientLocalId    String?
   sender           User                 @relation(fields: [senderId], references: [id])
   channel          Channel              @relation(fields: [channelId], references: [id])
   renders          TransmissionRender[]
   targets          TransmissionTarget[]
+
+  @@unique([senderId, clientLocalId])
 }
 
 model TransmissionRender {

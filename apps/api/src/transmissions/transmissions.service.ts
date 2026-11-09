@@ -34,6 +34,12 @@ import { StorageService } from "../storage/storage.service";
 import { toPublicUser } from "../users/user.mapper";
 import { notifyChrome } from "../i18n/notifyChrome";
 
+function normalizeClientLocalId(value?: string | null) {
+  const id = typeof value === "string" ? value.trim() : "";
+  if (!id || id.length > 80 || !/^local-[\w-]+$/.test(id)) return "";
+  return id;
+}
+
 @Injectable()
 export class TransmissionsService {
   private readonly logger = new Logger(TransmissionsService.name);
@@ -502,6 +508,7 @@ export class TransmissionsService {
       replyToId?: string;
       replyToName?: string;
       replyToText?: string;
+      clientLocalId?: string;
     },
   ) {
     const packed = packReply(input.originalText.trim(), {
@@ -511,30 +518,51 @@ export class TransmissionsService {
     });
     const visible = decodeReply(packed).text.trim();
     if (!visible) throw new BadRequestException("חסרה הודעה");
+    const clientLocalId = normalizeClientLocalId(input.clientLocalId);
+    if (clientLocalId) {
+      const existing = await this.existingByClientLocalId(sender.id, clientLocalId);
+      if (existing) {
+        this.logger.log(`TEXT idempotent ${existing.id} clientLocalId=${clientLocalId}`);
+        return existing;
+      }
+    }
     const planned = await this.planTargets(sender, input, "text");
     const targetIds = planned.deliverIds;
     const channel = await this.ensureChannel(sender, input.channelId, planned.channelIds);
     const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
     const deliverUsers = planned.silent ? [] : users;
-    const transmission = await this.prisma.transmission.create({
-      data: {
-        senderId: sender.id,
-        channelId: channel.id,
-        originalAudioUrl: "",
-        originalText: packed,
-        durationMs: null,
-        kind: "text",
-        status: "PROCESSING",
-        ...(await this.expiryData(channel.id)),
-        targets: {
-          create: deliverUsers.map((user) => ({
-            userId: user.id,
-            language: user.listenLang || user.speakLang,
-          })),
+    let transmission;
+    try {
+      transmission = await this.prisma.transmission.create({
+        data: {
+          senderId: sender.id,
+          channelId: channel.id,
+          originalAudioUrl: "",
+          originalText: packed,
+          durationMs: null,
+          kind: "text",
+          status: "PROCESSING",
+          ...(clientLocalId ? { clientLocalId } : {}),
+          ...(await this.expiryData(channel.id)),
+          targets: {
+            create: deliverUsers.map((user) => ({
+              userId: user.id,
+              language: user.listenLang || user.speakLang,
+            })),
+          },
         },
-      },
-      include: { targets: true },
-    });
+        include: { targets: true },
+      });
+    } catch (error) {
+      if (clientLocalId && error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const existing = await this.existingByClientLocalId(sender.id, clientLocalId);
+        if (existing) {
+          this.logger.log(`TEXT idempotent ${existing.id} clientLocalId=${clientLocalId}`);
+          return existing;
+        }
+      }
+      throw error;
+    }
     void this.finish(
       transmission,
       sender,
@@ -1636,6 +1664,19 @@ export class TransmissionsService {
       this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_REMOVED, { transmissionId: tx.id }, true);
     }
     return { ok: true };
+  }
+
+  private async existingByClientLocalId(senderId: string, clientLocalId: string) {
+    const row = await this.prisma.transmission.findFirst({
+      where: { senderId, clientLocalId },
+      select: { id: true, channelId: true, status: true },
+    });
+    if (!row) return null;
+    return {
+      id: row.id,
+      status: (row.status === "READY" ? "READY" : "PROCESSING") as "READY" | "PROCESSING",
+      channelId: row.channelId,
+    };
   }
 
   private async expiryData(channelId: string) {
