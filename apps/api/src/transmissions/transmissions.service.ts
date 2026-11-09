@@ -306,8 +306,13 @@ export class TransmissionsService {
     clientRelease: number,
     sourceLanguage = "",
   ) {
-    const channel = await this.ensureChannel(sender, input.channelId, targetIds);
+    const started = Date.now();
     const audioUrl = await this.storage.save(file.buffer, extFrom(file), "audio");
+    const saveMs = Date.now() - started;
+    const channel = await this.ensureChannel(sender, input.channelId, targetIds, {
+      reuseDirect: !input.channelId?.trim(),
+    });
+    const channelMs = Date.now() - started - saveMs;
     const lang = (sourceLanguage || sender.speakLang || sender.listenLang || "").slice(0, 2).toLowerCase();
     const transmission = await this.prisma.transmission.create({
       data: {
@@ -353,7 +358,7 @@ export class TransmissionsService {
       viewOnce: false,
       releasedAt: clientRelease,
       readyAt: Date.now(),
-      group: isGroupType("type" in channel ? channel.type : undefined),
+      group: Boolean(input.channelId?.trim()) && isGroupType("type" in channel ? channel.type : undefined),
     };
     const speak = (lang || "").slice(0, 2).toLowerCase();
     let textOnly = 0;
@@ -361,7 +366,7 @@ export class TransmissionsService {
     for (const target of transmission.targets) {
       const listener = users.find((user) => user.id === target.userId);
       const hear = (listener?.listenLang || listener?.speakLang || "").slice(0, 2).toLowerCase();
-      const sameLanguage = Boolean(speak && hear && hear === speak);
+      const sameLanguage = !speak || !hear || hear === speak;
       if (!sameLanguage) {
         textOnly += 1;
         if (hear) dubbed.push({ targetId: target.userId, language: hear });
@@ -383,7 +388,7 @@ export class TransmissionsService {
     }
     this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
     this.logger.log(
-      `Walkie relay ${transmission.id} bytes=${file.buffer.length} targets=${transmission.targets.length} textOnly=${textOnly}`,
+      `Walkie relay ${transmission.id} bytes=${file.buffer.length} targets=${transmission.targets.length} textOnly=${textOnly} saveMs=${saveMs} channelMs=${channelMs} totalMs=${Date.now() - started}`,
     );
     void Promise.all(
       users.map(async (target) => {
@@ -1743,10 +1748,8 @@ export class TransmissionsService {
         const members = await this.prisma.channelMember.findMany({
           where: { channelId, userId: { not: sender.id } },
         });
-        return this.withoutBlocked(
-          sender.id,
-          members.map((m) => m.userId),
-        );
+        const extra = (input.targetUserIds || []).filter((id) => id && id !== sender.id);
+        return this.withoutBlocked(sender.id, [...new Set([...members.map((m) => m.userId), ...extra])]);
       }
     }
     if (input.targetUserIds?.length) {
@@ -1774,7 +1777,12 @@ export class TransmissionsService {
     return targetIds.filter((id) => !blockedIds.has(id));
   }
 
-  private async ensureChannel(sender: User, channelId: string | undefined, targetIds: string[]) {
+  private async ensureChannel(
+    sender: User,
+    channelId: string | undefined,
+    targetIds: string[],
+    opts?: { reuseDirect?: boolean },
+  ) {
     const id = channelId?.trim();
     if (id) {
       await this.channels.assertMember(id, sender.id);
@@ -1786,10 +1794,12 @@ export class TransmissionsService {
       this.logger.log(`ensureChannel keep id=${id} type=${channel.type} targets=${targetIds.length}`);
       return channel;
     }
-    if (targetIds.length === 1) {
-      const directId = await this.channels.directChannelId(sender, targetIds[0]);
+    const peer = targetIds.find((userId) => userId && userId !== sender.id);
+    if (targetIds.length === 1 || (opts?.reuseDirect && peer)) {
+      if (!peer) throw new BadRequestException("לא נבחרו נמענים");
+      const directId = await this.channels.directChannelId(sender, peer);
       this.realtime.joinChannel(sender.id, directId);
-      this.realtime.joinChannel(targetIds[0], directId);
+      this.realtime.joinChannel(peer, directId);
       return { id: directId };
     }
     const summary = await this.channels.createGroup(sender, "שידור", targetIds);

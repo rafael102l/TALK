@@ -31,7 +31,8 @@ export class StorageService {
     const name = `${randomUUID()}.${ext.replace(/^\./, "")}`;
     await writeFile(join(dir, name), buffer);
     if (folder === "audio" || folder === "chat") {
-      await this.rememberAudio(name, buffer, mimeFor(name)).catch((error: Error) => {
+      // Walkie must emit as soon as the file is on disk. Postgres backup can lag.
+      void this.rememberAudio(name, buffer, mimeFor(name)).catch((error: Error) => {
         console.error(`[media] store failed: ${error.message}`);
       });
     }

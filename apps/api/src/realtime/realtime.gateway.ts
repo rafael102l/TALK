@@ -411,23 +411,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       : await this.floorRoom(client.userId, body);
     if (!room) return { ok: false, rooms: "" };
     client.join(`user:${client.userId}`);
-    this.ensureDub();
     const sentGender =
       body.voiceGender === "female" || body.voiceGender === "child" || body.voiceGender === "male"
         ? body.voiceGender
         : "";
-    this.liveDub.open(
-      client.id,
-      client.userId,
-      room.listenerIds.filter((id) => id !== client.userId),
-      typeof body.pressId === "string" ? body.pressId : "",
-      true,
-      sentGender,
-    );
-    const pressId = typeof body.pressId === "string" ? body.pressId : "";
-    if (typeof body.speakLang === "string" && body.speakLang.trim()) {
-      this.liveDub.setSpeakerLang(client.id, pressId, body.speakLang);
-    }
     const gender = sentGender === "female" || sentGender === "child" ? sentGender : "male";
     const payload: PttSpeakingPayload = {
       channelId: room.key,
