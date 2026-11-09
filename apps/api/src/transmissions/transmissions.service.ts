@@ -295,7 +295,7 @@ export class TransmissionsService {
       speakLang?: string;
       sourceLanguage?: string;
     },
-    opts?: { skipEmit?: boolean; transmissionId?: string },
+    opts?: { skipEmit?: boolean; skipEmitFor?: string[]; missed?: string[]; transmissionId?: string },
   ) {
     const started = Date.now();
     const targetIds = [...new Set((input.targetUserIds || []).filter((id) => id && id !== sender.id))];
@@ -345,14 +345,17 @@ export class TransmissionsService {
       group: Boolean(channelId),
       audioB64,
     };
-    const missed: string[] = [];
+    const already = new Set(opts?.skipEmitFor || []);
+    const missed = [...new Set(opts?.missed || [])];
     if (!opts?.skipEmit) {
       for (const id of targetIds) {
+        if (already.has(id)) continue;
         const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
         this.logger.log(
           `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=${String(Boolean(channelId))} channel=${channelId}`,
         );
         if (!reached) missed.push(id);
+        else already.add(id);
       }
       const { audioB64: _omit, ...senderPayload } = payload;
       this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, senderPayload);
@@ -361,6 +364,20 @@ export class TransmissionsService {
     const saveP = this.storage.save(file.buffer, extFrom(file), "audio");
     void (async () => {
       try {
+        if (channelId) {
+          const members = await this.prisma.channelMember.findMany({
+            where: { channelId, userId: { not: sender.id } },
+            select: { userId: true },
+          });
+          for (const row of members) {
+            if (!row.userId || targetIds.includes(row.userId)) continue;
+            targetIds.push(row.userId);
+            if (already.has(row.userId) || missed.includes(row.userId)) continue;
+            const reached = this.realtime.emitToUser(row.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+            if (!reached) missed.push(row.userId);
+            else already.add(row.userId);
+          }
+        }
         const users = targetIds.length
           ? await this.prisma.user.findMany({ where: { id: { in: targetIds } } })
           : [];
@@ -381,7 +398,7 @@ export class TransmissionsService {
         );
         if (!missed.length) return;
         const url = await saveP;
-        for (const id of missed) {
+        for (const id of [...new Set(missed)]) {
           void this.push.notifyOfflineMessage(id, {
             ...senderPayload,
             audioUrl: this.storage.publicUrl(url),

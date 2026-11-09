@@ -519,9 +519,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.warn(`walkie send drop size=${body.audio.length} user=${client.userId}`);
       return { ok: false };
     }
-    const targetUserIds = [...new Set((body.targetUserIds ?? []).filter((id) => id && id !== client.userId))];
+    const targetUserIds = [...new Set(asIdList(body.targetUserIds).filter((id) => id !== client.userId))];
     const channelId = typeof body.channelId === "string" ? body.channelId.trim() : "";
-    if (!targetUserIds.length && !channelId) return { ok: false };
+    if (!targetUserIds.length && !channelId) {
+      this.logger.warn(`walkie send no-targets user=${client.userId} channel=${channelId || "-"}`);
+      return { ok: false };
+    }
     const lang = (body.sourceLanguage || body.speakLang || "").slice(0, 2).toLowerCase();
     const durationMs = Number(body.durationMs);
     const releasedAt = Number(body.releasedAt);
@@ -554,14 +557,20 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       group: Boolean(channelId),
     };
     client.join(`user:${client.userId}`);
+    const reached: string[] = [];
+    const missed: string[] = [];
     for (const id of targetUserIds) {
-      this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+      if (this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload)) reached.push(id);
+      else missed.push(id);
     }
+    if (channelId) this.emitToChannel(channelId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+    const { audioB64: _omit, ...senderAck } = payload;
+    this.emitToUser(client.userId, SOCKET_EVENTS.TRANSMISSION_READY, senderAck);
     this.logger.log(
-      `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} targets=${targetUserIds.length}`,
+      `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} targets=${targetUserIds.join(",") || "-"} reached=${reached.length} missed=${missed.length} group=${String(Boolean(channelId))}`,
     );
-    void this.persistWalkieSend(client.userId, body, targetUserIds, channelId, transmissionId);
-    return { ok: true, id: transmissionId };
+    void this.persistWalkieSend(client.userId, body, targetUserIds, channelId, transmissionId, reached, missed);
+    return { ok: true, id: transmissionId, reached: reached.length };
   }
 
   private persistWalkieSend(
@@ -576,6 +585,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     targetUserIds: string[],
     channelId: string,
     transmissionId: string,
+    reached: string[],
+    missed: string[],
   ) {
     void (async () => {
       try {
@@ -609,7 +620,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
             speakLang: body.speakLang,
             sourceLanguage: body.sourceLanguage || body.speakLang,
           },
-          { skipEmit: true, transmissionId },
+          { skipEmit: true, skipEmitFor: reached, missed, transmissionId },
         );
       } catch (error) {
         this.logger.warn(`walkie persist ${transmissionId} ${(error as Error).message}`);
@@ -814,7 +825,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       return;
     }
     if (event === SOCKET_EVENTS.TRANSMISSION_READY && isWalkiePayload(payload)) {
-      void this.push.notifyWalkie(userId, row as Parameters<PushService["notifyWalkie"]>[1]);
+      const { audioB64: _drop, ...pushRow } = row;
+      void this.push.notifyWalkie(userId, pushRow as Parameters<PushService["notifyWalkie"]>[1]);
     }
   }
 
@@ -1341,4 +1353,21 @@ function isWalkiePayload(payload: unknown) {
   if (!payload || typeof payload !== "object") return false;
   const row = payload as { kind?: unknown; type?: unknown };
   return row.kind === "walkie" || row.type === "walkie";
+}
+
+function asIdList(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw.filter((id): id is string => typeof id === "string" && id.trim().length > 8);
+  }
+  if (typeof raw === "string" && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed) || typeof parsed === "string") return asIdList(parsed);
+    } catch {
+      /* plain id or csv */
+    }
+    if (raw.includes(",")) return asIdList(raw.split(",").map((id) => id.trim()));
+    return raw.trim().length > 8 ? [raw.trim()] : [];
+  }
+  return [];
 }
