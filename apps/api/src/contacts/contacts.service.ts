@@ -63,12 +63,44 @@ export class ContactsService {
         "המשתמש לא רשום בשרת הנוכחי. בקשו ממנו להתחבר מחדש ואז חפשו את המספר שלו.",
       );
     }
+    await this.discardBlockedChat(owner.id, other.id);
     await this.upsertLink(owner, other, "ACCEPTED");
     await this.upsertLink(other, owner, "ACCEPTED");
     this.realtime.emitToUser(other.id, SOCKET_EVENTS.CONTACT_ACCEPTED, {
       user: toPublicUser(owner),
     });
     return this.list(owner);
+  }
+
+  /** Drop undelivered 1:1 chat from the blocked window so unblock does not replay it. */
+  private async discardBlockedChat(a: string, b: string) {
+    const blocked = await this.prisma.contact.findMany({
+      where: {
+        status: "BLOCKED",
+        OR: [
+          { ownerId: a, matchedUserId: b },
+          { ownerId: b, matchedUserId: a },
+        ],
+      },
+      select: { updatedAt: true },
+    });
+    if (!blocked.length) return;
+    const since = blocked.reduce(
+      (earliest, row) => (row.updatedAt < earliest ? row.updatedAt : earliest),
+      blocked[0].updatedAt,
+    );
+    await this.prisma.transmissionTarget.deleteMany({
+      where: {
+        deliveredAt: null,
+        playedAt: null,
+        userId: { in: [a, b] },
+        transmission: {
+          senderId: { in: [a, b] },
+          kind: { in: ["text", "voice", "image", "video"] },
+          createdAt: { gte: since },
+        },
+      },
+    });
   }
 
   /** True when `blockerId` has BLOCKED `viewerId`. */

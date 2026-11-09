@@ -251,7 +251,7 @@ export class TransmissionsService {
       );
     }
     void Promise.all(
-      users.map(async (target) => {
+      (planned.silent ? [] : users).map(async (target) => {
         await this.contacts.ensureIncoming(target, sender);
         await this.contacts.ensureMutualTalk(sender, target);
       }),
@@ -797,14 +797,20 @@ export class TransmissionsService {
         }
       };
 
-      // Same language keeps the original voice. Every other language, including Hebrew, is translated.
-      const sameTargets = transmission.targets.filter((t) => {
-        if (incomingByOwner.get(t.userId)?.status === "BLOCKED") return false;
-        return t.language === sourceLang;
-      });
-      const crossTargets = transmission.targets.filter(
-        (t) => incomingByOwner.get(t.userId)?.status !== "BLOCKED" && !sameTargets.includes(t),
+      const blockedTargets = transmission.targets.filter(
+        (t) => incomingByOwner.get(t.userId)?.status === "BLOCKED",
       );
+      if (blockedTargets.length) {
+        await this.prisma.transmissionTarget.deleteMany({
+          where: { id: { in: blockedTargets.map((row) => row.id) } },
+        });
+        transmission.targets = transmission.targets.filter(
+          (t) => incomingByOwner.get(t.userId)?.status !== "BLOCKED",
+        );
+      }
+      // Same language keeps the original voice. Every other language, including Hebrew, is translated.
+      const sameTargets = transmission.targets.filter((t) => t.language === sourceLang);
+      const crossTargets = transmission.targets.filter((t) => !sameTargets.includes(t));
       for (const target of sameTargets) {
         if (textOnly) {
           emitTarget(target, null, true);
@@ -1602,8 +1608,7 @@ export class TransmissionsService {
     const deliverIds = await this.resolveTargets(sender, input);
     if (deliverIds.length) return { deliverIds, channelIds: deliverIds, silent: false };
     const direct = [...new Set((input.targetUserIds || []).filter((id) => id && id !== sender.id))];
-    const silent =
-      kind !== "walkie" && !input.everyone && !String(input.channelId || "").trim() && direct.length === 1;
+    const silent = kind !== "walkie" && !input.everyone && direct.length === 1;
     if (silent) return { deliverIds: [] as string[], channelIds: direct, silent: true };
     throw new BadRequestException("לא נבחרו נמענים");
   }
