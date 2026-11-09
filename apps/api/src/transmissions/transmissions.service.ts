@@ -295,6 +295,7 @@ export class TransmissionsService {
       speakLang?: string;
       sourceLanguage?: string;
     },
+    opts?: { skipEmit?: boolean; transmissionId?: string },
   ) {
     const started = Date.now();
     const targetIds = [...new Set((input.targetUserIds || []).filter((id) => id && id !== sender.id))];
@@ -313,7 +314,7 @@ export class TransmissionsService {
     if (!audioB64) {
       return this.create(sender, file, { ...input, kind: "walkie" });
     }
-    const transmissionId = randomUUID();
+    const transmissionId = opts?.transmissionId || randomUUID();
     const clientRelease = Number(input.releasedAt);
     const releasedAt = Number.isFinite(clientRelease) && clientRelease > 0 ? clientRelease : started;
     const senderPublic = toPublicUser(sender);
@@ -345,15 +346,18 @@ export class TransmissionsService {
       audioB64,
     };
     const missed: string[] = [];
-    for (const id of targetIds) {
-      const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
-      this.logger.log(
-        `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=${String(Boolean(channelId))} channel=${channelId}`,
-      );
-      if (!reached) missed.push(id);
+    if (!opts?.skipEmit) {
+      for (const id of targetIds) {
+        const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+        this.logger.log(
+          `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=${String(Boolean(channelId))} channel=${channelId}`,
+        );
+        if (!reached) missed.push(id);
+      }
+      const { audioB64: _omit, ...senderPayload } = payload;
+      this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, senderPayload);
     }
     const { audioB64: _omit, ...senderPayload } = payload;
-    this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, senderPayload);
     const saveP = this.storage.save(file.buffer, extFrom(file), "audio");
     void (async () => {
       try {

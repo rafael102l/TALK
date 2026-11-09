@@ -10,7 +10,8 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from "@nestjs/websockets";
-import { PttSpeakingPayload, SOCKET_EVENTS } from "@talk/shared";
+import { randomUUID } from "crypto";
+import { PttSpeakingPayload, SOCKET_EVENTS, TransmissionReadyPayload } from "@talk/shared";
 import { StorageService } from "../storage/storage.service";
 import { LiveDubService } from "./live-dub.service";
 import { toPublicUser } from "../users/user.mapper";
@@ -508,6 +509,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       releasedAt?: number;
       speakLang?: string;
       sourceLanguage?: string;
+      speakerName?: string;
+      speakerAvatarUrl?: string | null;
+      voiceGender?: "male" | "female" | "child";
     },
   ) {
     if (!client.userId || typeof body?.audio !== "string") return { ok: false };
@@ -515,44 +519,102 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.warn(`walkie send drop size=${body.audio.length} user=${client.userId}`);
       return { ok: false };
     }
-    const buf = Buffer.from(body.audio, "base64");
-    if (buf.length < 32) return { ok: false };
-    const user = await loadUser(this.prisma, client.userId);
-    if (!user) return { ok: false };
     const targetUserIds = [...new Set((body.targetUserIds ?? []).filter((id) => id && id !== client.userId))];
     const channelId = typeof body.channelId === "string" ? body.channelId.trim() : "";
     if (!targetUserIds.length && !channelId) return { ok: false };
+    const lang = (body.sourceLanguage || body.speakLang || "").slice(0, 2).toLowerCase();
     const durationMs = Number(body.durationMs);
     const releasedAt = Number(body.releasedAt);
-    const speakLang = typeof body.speakLang === "string" ? body.speakLang : undefined;
-    const sourceLanguage =
-      typeof body.sourceLanguage === "string" ? body.sourceLanguage : speakLang;
-    const file = {
-      fieldname: "audio",
-      originalname: "ptt.m4a",
-      encoding: "7bit",
-      mimetype: "audio/mp4",
-      size: buf.length,
-      destination: "",
-      filename: "ptt.m4a",
-      path: "",
-      buffer: buf,
-      stream: undefined as never,
-    } as Express.Multer.File;
-    const { TransmissionsService } = require("../transmissions/transmissions.service") as typeof import("../transmissions/transmissions.service");
-    const transmissions = this.moduleRef.get(TransmissionsService, { strict: false });
-    const result = await transmissions.forwardWalkieClip(user, file, {
-      targetUserIds,
-      channelId: channelId || undefined,
-      durationMs: Number.isFinite(durationMs) ? durationMs : undefined,
-      releasedAt: Number.isFinite(releasedAt) ? releasedAt : undefined,
-      speakLang,
-      sourceLanguage,
-    });
+    const gender =
+      body.voiceGender === "female" || body.voiceGender === "child" ? body.voiceGender : "male";
+    const transmissionId = randomUUID();
+    const payload: TransmissionReadyPayload = {
+      transmissionId,
+      channelId,
+      senderId: client.userId,
+      senderName: (body.speakerName || client.displayName || "").trim() || client.userId,
+      language: lang,
+      speakLang: lang,
+      mode: "free",
+      audioUrl: "",
+      audioB64: body.audio,
+      originalText: "",
+      translatedText: "",
+      durationMs: Number.isFinite(durationMs) ? durationMs : null,
+      usedOriginalVoice: true,
+      needsAccept: false,
+      live: false,
+      senderPhone: "",
+      senderAvatarUrl: body.speakerAvatarUrl || null,
+      voiceGender: gender,
+      kind: "walkie",
+      viewOnce: false,
+      releasedAt: Number.isFinite(releasedAt) && releasedAt > 0 ? releasedAt : Date.now(),
+      readyAt: Date.now(),
+      group: Boolean(channelId),
+    };
+    client.join(`user:${client.userId}`);
+    for (const id of targetUserIds) {
+      this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+    }
     this.logger.log(
-      `walkie send from=${client.userId} bytes=${buf.length} id=${(result as { id?: string })?.id ?? "-"}`,
+      `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} targets=${targetUserIds.length}`,
     );
-    return { ok: true, id: (result as { id?: string })?.id };
+    void this.persistWalkieSend(client.userId, body, targetUserIds, channelId, transmissionId);
+    return { ok: true, id: transmissionId };
+  }
+
+  private persistWalkieSend(
+    senderId: string,
+    body: {
+      audio?: string;
+      durationMs?: number;
+      releasedAt?: number;
+      speakLang?: string;
+      sourceLanguage?: string;
+    },
+    targetUserIds: string[],
+    channelId: string,
+    transmissionId: string,
+  ) {
+    void (async () => {
+      try {
+        if (!body.audio) return;
+        const buf = Buffer.from(body.audio, "base64");
+        if (buf.length < 32) return;
+        const user = await loadUser(this.prisma, senderId);
+        if (!user) return;
+        const file = {
+          fieldname: "audio",
+          originalname: "ptt.m4a",
+          encoding: "7bit",
+          mimetype: "audio/mp4",
+          size: buf.length,
+          destination: "",
+          filename: "ptt.m4a",
+          path: "",
+          buffer: buf,
+          stream: undefined as never,
+        } as Express.Multer.File;
+        const { TransmissionsService } = require("../transmissions/transmissions.service") as typeof import("../transmissions/transmissions.service");
+        const transmissions = this.moduleRef.get(TransmissionsService, { strict: false });
+        await transmissions.forwardWalkieClip(
+          user,
+          file,
+          {
+            targetUserIds,
+            channelId: channelId || undefined,
+            durationMs: Number.isFinite(Number(body.durationMs)) ? Number(body.durationMs) : undefined,
+            releasedAt: Number.isFinite(Number(body.releasedAt)) ? Number(body.releasedAt) : undefined,
+            speakLang: body.speakLang,
+            sourceLanguage: body.sourceLanguage || body.speakLang,
+          },
+          { skipEmit: true, transmissionId },
+        );
+      } catch (error) {
+        this.logger.warn(`walkie persist ${transmissionId} ${(error as Error).message}`);
+      }
+    })();
   }
 
   @SubscribeMessage(SOCKET_EVENTS.PTT_AUDIO)
@@ -710,6 +772,13 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         event === SOCKET_EVENTS.REJECT_CALL ||
         event === SOCKET_EVENTS.INCOMING_CALL;
       const walkieReady = event === SOCKET_EVENTS.TRANSMISSION_READY && isWalkiePayload(payload);
+      if (walkieReady && retry) {
+        setTimeout(() => {
+          if (this.emitLive(userId, event, payload)) return;
+          this.wakeOffline(userId, event, payload);
+        }, 250);
+        return false;
+      }
       if (callEvent || walkieReady) {
         this.logger.warn(`No live socket for ${event} user=${userId} — sending FCM`);
         this.wakeOffline(userId, event, payload);
@@ -725,8 +794,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           event === "chat:receipt" ||
           event === SOCKET_EVENTS.TRANSMISSION_REMOVED)
       ) {
-        setTimeout(() => this.emitToUser(userId, event, payload, false), 2000);
-        setTimeout(() => this.emitToUser(userId, event, payload, false), 8000);
+        setTimeout(() => this.emitToUser(userId, event, payload, false), 400);
       }
       return false;
     }
