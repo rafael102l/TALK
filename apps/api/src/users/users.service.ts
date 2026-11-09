@@ -1,7 +1,10 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { User } from "@prisma/client";
+import { SOCKET_EVENTS } from "@talk/shared";
 import { VoiceCloneService } from "../ai/voice-clone.service";
+import { ContactsService } from "../contacts/contacts.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { RealtimeGateway } from "../realtime/realtime.gateway";
 import { StorageService } from "../storage/storage.service";
 import { toPublicUser } from "./user.mapper";
 
@@ -11,10 +14,51 @@ export class UsersService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly voiceClone: VoiceCloneService,
+    private readonly realtime: RealtimeGateway,
+    private readonly contacts: ContactsService,
   ) {}
 
   me(user: User) {
     return toPublicUser(user);
+  }
+
+  async publicCard(viewer: User, userId: string) {
+    if (viewer.id === userId) return toPublicUser(viewer);
+    const other = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!other) throw new NotFoundException();
+    const related = await this.isRelated(viewer.id, userId);
+    if (!related) throw new NotFoundException();
+    const hidden = await this.contacts.isBlockedBy(other.id, viewer.id);
+    if (!hidden) return toPublicUser(other);
+    return { ...toPublicUser(other), avatarUrl: null, avatarHidden: true };
+  }
+
+  private async isRelated(viewerId: string, otherId: string) {
+    const [tx, contact, channel] = await Promise.all([
+      this.prisma.transmissionTarget.findFirst({
+        where: {
+          OR: [
+            { userId: viewerId, transmission: { senderId: otherId } },
+            { userId: otherId, transmission: { senderId: viewerId } },
+          ],
+        },
+        select: { id: true },
+      }),
+      this.prisma.contact.findFirst({
+        where: {
+          OR: [
+            { ownerId: viewerId, matchedUserId: otherId },
+            { ownerId: otherId, matchedUserId: viewerId },
+          ],
+        },
+        select: { id: true },
+      }),
+      this.prisma.channelMember.findFirst({
+        where: { userId: viewerId, channel: { members: { some: { userId: otherId } } } },
+        select: { id: true },
+      }),
+    ]);
+    return Boolean(tx || contact || channel);
   }
 
   async update(
@@ -87,7 +131,32 @@ export class UsersService {
       where: { id: user.id },
       data: { avatarUrl: saved },
     });
+    await this.broadcastProfile(updated);
     return toPublicUser(updated);
+  }
+
+  private async broadcastProfile(user: User) {
+    const card = toPublicUser(user);
+    const hiddenCard = { ...card, avatarUrl: null as string | null, avatarHidden: true };
+    const [contacts, members, blockedViewers] = await Promise.all([
+      this.prisma.contact.findMany({
+        where: { matchedUserId: user.id, status: { not: "BLOCKED" } },
+        select: { ownerId: true },
+      }),
+      this.prisma.channelMember.findMany({
+        where: { channel: { members: { some: { userId: user.id } } } },
+        select: { userId: true },
+      }),
+      this.contacts.blockedByOwner(user.id),
+    ]);
+    const ids = new Set<string>();
+    for (const row of contacts) ids.add(row.ownerId);
+    for (const row of members) if (row.userId !== user.id) ids.add(row.userId);
+    for (const id of ids) {
+      this.realtime.emitToUser(id, SOCKET_EVENTS.USER_UPDATED, {
+        user: blockedViewers.has(id) ? hiddenCard : card,
+      });
+    }
   }
 
   async remove(user: User) {

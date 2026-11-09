@@ -82,10 +82,9 @@ export class TransmissionsService {
     const kind = input.kind === "voice" ? "voice" : "walkie";
 
     const speakerLang = sender.speakLang || sender.listenLang;
-    const targetIds = await this.resolveTargets(sender, input);
-    if (!targetIds.length) throw new BadRequestException("לא נבחרו נמענים");
-
-    const users = await this.prisma.user.findMany({ where: { id: { in: targetIds } } });
+    const planned = await this.planTargets(sender, input, kind);
+    const targetIds = planned.deliverIds;
+    const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
     if (kind === "walkie") {
       return this.relayWalkie(sender, file, input, users, targetIds, clientRelease, input.sourceLanguage || input.speakLang || "");
     }
@@ -103,9 +102,10 @@ export class TransmissionsService {
       this.logger.log(`Same language ${speakerLang} — skip STT`);
     }
 
-    const channel = await this.ensureChannel(sender, input.channelId, targetIds);
+    const channel = await this.ensureChannel(sender, input.channelId, planned.channelIds);
     const audioUrl = await this.storage.save(file.buffer, ext, "audio");
     const sttP = sttEarly;
+    const deliverUsers = planned.silent ? [] : users;
 
     const transmission = await this.prisma.transmission.create({
       data: {
@@ -123,7 +123,7 @@ export class TransmissionsService {
         status: "PROCESSING",
         ...(await this.expiryData(channel.id)),
         targets: {
-          create: users.map((user) => ({
+          create: deliverUsers.map((user) => ({
             userId: user.id,
             language: user.listenLang || user.speakLang,
           })),
@@ -134,7 +134,7 @@ export class TransmissionsService {
 
     void this.finish(transmission, sender, sttP, started, { clientRelease, sameLanguage });
     void Promise.all(
-      users.map(async (target) => {
+      deliverUsers.map(async (target) => {
         await this.contacts.ensureIncoming(target, sender);
         await this.contacts.ensureMutualTalk(sender, target);
       }),
@@ -163,10 +163,10 @@ export class TransmissionsService {
       const duration = Number(input.durationMs) || 0;
       if (duration > 61_500) throw new BadRequestException("הסרטון יכול להיות עד דקה");
     }
-    const targetIds = await this.resolveTargets(sender, input);
-    if (!targetIds.length) throw new BadRequestException("לא נבחרו נמענים");
-    const users = await this.prisma.user.findMany({ where: { id: { in: targetIds } } });
-    const channel = await this.ensureChannel(sender, input.channelId, targetIds);
+    const planned = await this.planTargets(sender, input, kind);
+    const targetIds = planned.deliverIds;
+    const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
+    const channel = await this.ensureChannel(sender, input.channelId, planned.channelIds);
     const saved = await this.storage.save(file.buffer, extFrom(file), "chat");
     const packed = packReply(input.originalText?.trim() || "", {
       id: input.replyToId,
@@ -185,15 +185,18 @@ export class TransmissionsService {
         status: "READY",
         ...(await this.expiryData(channel.id)),
         targets: {
-          create: users.map((user) => ({
-            userId: user.id,
-            language: user.listenLang || user.speakLang,
-          })),
+          create: planned.silent
+            ? []
+            : users.map((user) => ({
+                userId: user.id,
+                language: user.listenLang || user.speakLang,
+              })),
         },
       },
       include: { targets: true },
     });
     const senderPublic = toPublicUser(sender);
+    const hidePhoto = await this.hideAvatarFor(sender.id, transmission.targets.map((row) => row.userId));
     const mediaUrl = this.storage.publicUrl(saved);
     const quoted = decodeReply(packed);
     const readyAt = Date.now();
@@ -217,13 +220,14 @@ export class TransmissionsService {
         needsAccept: false,
         live: false,
         senderPhone: sender.phoneE164,
-        senderAvatarUrl: senderPublic.avatarUrl,
+        senderAvatarUrl: hidePhoto.has(target.userId) ? null : senderPublic.avatarUrl,
         voiceGender: sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male",
         kind,
         viewOnce: Boolean(transmission.viewOnce),
         releasedAt: readyAt,
         readyAt,
         expiresAt: transmission.expiresAt?.toISOString() || null,
+        group: isGroupType("type" in channel ? channel.type : undefined),
       };
       const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
       this.logger.log(`Deliver ${kind} ${transmission.id} -> ${target.userId} reached=${reached}`);
@@ -240,7 +244,7 @@ export class TransmissionsService {
           senderId: sender.id,
           senderName: sender.displayName || "",
           senderPhone: sender.phoneE164,
-          senderAvatarUrl: senderPublic.avatarUrl || "",
+          senderAvatarUrl: hidePhoto.has(target.userId) ? "" : senderPublic.avatarUrl || "",
           audioUrl: mediaUrl,
           viewOnce: transmission.viewOnce ? "1" : "0",
         },
@@ -340,6 +344,7 @@ export class TransmissionsService {
       viewOnce: false,
       releasedAt: clientRelease,
       readyAt: Date.now(),
+      group: isGroupType("type" in channel ? channel.type : undefined),
     };
     const speak = (lang || "").slice(0, 2).toLowerCase();
     let textOnly = 0;
@@ -503,10 +508,11 @@ export class TransmissionsService {
     });
     const visible = decodeReply(packed).text.trim();
     if (!visible) throw new BadRequestException("חסרה הודעה");
-    const targetIds = await this.resolveTargets(sender, input);
-    if (!targetIds.length) throw new BadRequestException("לא נבחרו נמענים");
-    const channel = await this.ensureChannel(sender, input.channelId, targetIds);
-    const users = await this.prisma.user.findMany({ where: { id: { in: targetIds } } });
+    const planned = await this.planTargets(sender, input, "text");
+    const targetIds = planned.deliverIds;
+    const channel = await this.ensureChannel(sender, input.channelId, planned.channelIds);
+    const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
+    const deliverUsers = planned.silent ? [] : users;
     const transmission = await this.prisma.transmission.create({
       data: {
         senderId: sender.id,
@@ -518,7 +524,7 @@ export class TransmissionsService {
         status: "PROCESSING",
         ...(await this.expiryData(channel.id)),
         targets: {
-          create: users.map((user) => ({
+          create: deliverUsers.map((user) => ({
             userId: user.id,
             language: user.listenLang || user.speakLang,
           })),
@@ -537,7 +543,7 @@ export class TransmissionsService {
       { textOnly: true },
     );
     void Promise.all(
-      users.map(async (target) => {
+      deliverUsers.map(async (target) => {
         await this.contacts.ensureIncoming(target, sender);
         await this.contacts.ensureMutualTalk(sender, target);
       }),
@@ -705,6 +711,15 @@ export class TransmissionsService {
       const originalAudio = textOnly ? null : this.storage.publicUrl(transmission.originalAudioUrl);
       const senderMode = sender.plan === "PLUS" ? "plus" : "free";
       const deliveredJobs: Promise<void>[] = [];
+      const channelRow = await this.prisma.channel.findUnique({
+        where: { id: transmission.channelId },
+        select: { type: true },
+      });
+      const group = isGroupType(channelRow?.type);
+      const hidePhoto = await this.hideAvatarFor(
+        sender.id,
+        transmission.targets.map((row) => row.userId),
+      );
 
       const emitTarget = (
         target: { id: string; userId: string; language: string },
@@ -744,13 +759,14 @@ export class TransmissionsService {
           needsAccept: first || (delivery === "walkie" && !live),
           live,
           senderPhone: sender.phoneE164,
-          senderAvatarUrl: senderPublic.avatarUrl,
+          senderAvatarUrl: hidePhoto.has(target.userId) ? null : senderPublic.avatarUrl,
           voiceGender,
           kind: delivery,
           viewOnce: Boolean(transmission.viewOnce),
           releasedAt: clientRelease,
           readyAt: Date.now(),
           expiresAt: transmission.expiresAt?.toISOString() || null,
+          group,
         };
         const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
         this.logger.log(`Deliver ${delivery} ${transmission.id} -> ${target.userId} reached=${reached}`);
@@ -771,7 +787,7 @@ export class TransmissionsService {
             senderId: sender.id,
             senderName: sender.displayName || sender.phoneE164,
             senderPhone: sender.phoneE164,
-            senderAvatarUrl: senderPublic.avatarUrl || "",
+            senderAvatarUrl: hidePhoto.has(target.userId) ? "" : senderPublic.avatarUrl || "",
             audioUrl: publicAudio || "",
             originalText,
             translatedText: payload.translatedText || originalText || "",
@@ -953,11 +969,7 @@ export class TransmissionsService {
           where: { transmissionId: transmission.id },
           select: { deliveredAt: true, playedAt: true },
         });
-        const senderReceipt = targetRows.length && targetRows.every((row) => row.playedAt)
-          ? "read"
-          : targetRows.some((row) => row.deliveredAt)
-            ? "delivered"
-            : "sent";
+        const senderReceipt = targetRows.some((row) => row.deliveredAt) ? "delivered" : "sent";
         // Sender always gets the source-language transcript back (their language).
         this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, {
           transmissionId: transmission.id,
@@ -1020,6 +1032,7 @@ export class TransmissionsService {
               mine: false,
               peerId: sender.id,
               peerName: sender.displayName || sender.phoneE164,
+              peerPhone: sender.phoneE164,
               peerAvatar: senderPublic.avatarUrl,
               peerGender: voiceGender,
               originalText,
@@ -1041,6 +1054,7 @@ export class TransmissionsService {
               mine: true,
               peerId: target.userId,
               peerName: peer?.displayName || peer?.phoneE164 || "",
+              peerPhone: peer?.phoneE164 || null,
               peerAvatar: peer?.avatarUrl ? publicMedia(this.storage, peer.avatarUrl) : null,
               peerGender:
                 peer?.voiceGender === "female" || peer?.voiceGender === "child" ? peer.voiceGender : "male",
@@ -1104,6 +1118,11 @@ export class TransmissionsService {
       }),
     ]);
     const items: Array<Record<string, unknown>> = [];
+    const blockedViewer = await this.prisma.contact.findMany({
+      where: { matchedUserId: user.id, status: "BLOCKED" },
+      select: { ownerId: true },
+    });
+    const hideAvatarFrom = new Set(blockedViewer.map((row) => row.ownerId));
     for (const row of received) {
       const tx = row.transmission;
       if (tx.senderId === user.id) continue;
@@ -1124,12 +1143,19 @@ export class TransmissionsService {
           : publicMedia(this.storage, sameLang ? tx.originalAudioUrl : langRender?.audioUrl || tx.originalAudioUrl);
       items.push({
         id: tx.id,
-        senderName: tx.sender.displayName,
+        senderName: tx.sender.displayName || tx.sender.phoneE164,
         senderId: tx.senderId,
         mine: false,
         peerId: group ? tx.channelId : tx.senderId,
-        peerName: group ? tx.channel?.name || tx.sender.displayName : tx.sender.displayName,
-        peerAvatar: group ? tx.channel?.avatarUrl || senderPublic.avatarUrl : senderPublic.avatarUrl,
+        peerName: group
+          ? tx.channel?.name || tx.sender.displayName || tx.sender.phoneE164
+          : tx.sender.displayName || tx.sender.phoneE164,
+        peerPhone: group ? null : tx.sender.phoneE164,
+        peerAvatar: group
+          ? tx.channel?.avatarUrl || senderPublic.avatarUrl
+          : hideAvatarFrom.has(tx.senderId)
+            ? null
+            : senderPublic.avatarUrl,
         channelId: tx.channelId,
         peerGender: senderPublic.voiceGender,
         originalText: quoted.text || tx.originalText,
@@ -1192,19 +1218,58 @@ export class TransmissionsService {
         });
         continue;
       }
-      for (const target of tx.targets) {
-        if (target.userId === user.id) continue;
+      const outbound = tx.targets.filter((row) => row.userId !== user.id);
+      if (!outbound.length) {
+        const quoted = decodeReply(tx.originalText);
+        const sourceLang = detectLang(quoted.text) || user.speakLang || user.listenLang;
+        const member = await this.prisma.channelMember.findFirst({
+          where: { channelId: tx.channelId, userId: { not: user.id } },
+          include: { user: true },
+        });
+        const other = member?.user;
+        items.push({
+          id: tx.id,
+          senderName: user.displayName || user.phoneE164,
+          senderId: user.id,
+          mine: true,
+          peerId: other?.id || tx.channelId,
+          peerName: other?.displayName || other?.phoneE164 || "",
+          peerPhone: other?.phoneE164 || null,
+          peerAvatar: other ? toPublicUser(other).avatarUrl : null,
+          peerGender: other ? toPublicUser(other).voiceGender : "male",
+          originalText: quoted.text || tx.originalText,
+          translatedText: quoted.text || tx.originalText,
+          replyToId: quoted.reply?.id || null,
+          replyToName: quoted.reply?.name || null,
+          replyToText: quoted.reply?.text || null,
+          audioUrl: tx.viewOnce && !tx.originalAudioUrl ? null : publicMedia(this.storage, tx.originalAudioUrl),
+          language: sourceLang,
+          speakLang: sourceLang,
+          mode: "free",
+          createdAt: tx.createdAt.toISOString(),
+          durationMs: tx.durationMs,
+          kind: tx.kind || (tx.originalAudioUrl ? "walkie" : "text"),
+          viewOnce: Boolean(tx.viewOnce),
+          openedOnce: Boolean(tx.viewOnce && !tx.originalAudioUrl),
+          receipt: "sent",
+          channelId: tx.channelId,
+          expiresAt: tx.expiresAt?.toISOString() || null,
+        });
+        continue;
+      }
+      for (const target of outbound) {
         const peer = toPublicUser(target.user);
         const quoted = decodeReply(tx.originalText);
         const sourceLang =
           detectLang(quoted.text) || user.speakLang || user.listenLang;
         items.push({
           id: `${tx.id}:${target.userId}`,
-          senderName: user.displayName,
+          senderName: user.displayName || user.phoneE164,
           senderId: user.id,
           mine: true,
           peerId: target.userId,
-          peerName: target.user.displayName,
+          peerName: target.user.displayName || target.user.phoneE164,
+          peerPhone: target.user.phoneE164,
           peerAvatar: peer.avatarUrl,
           peerGender: peer.voiceGender,
           originalText: quoted.text || tx.originalText,
@@ -1251,7 +1316,7 @@ export class TransmissionsService {
           ],
         },
       },
-      include: { transmission: { include: { sender: true, renders: true } } },
+      include: { transmission: { include: { sender: true, renders: true, channel: true } } },
       orderBy: { transmission: { createdAt: "asc" } },
       take: 40,
     });
@@ -1305,6 +1370,7 @@ export class TransmissionsService {
         viewOnce: Boolean(tx.viewOnce),
         readyAt: new Date(tx.createdAt).getTime(),
         releasedAt: new Date(tx.createdAt).getTime(),
+        group: isGroupType(tx.channel?.type),
       });
     }
     return payloads;
@@ -1528,6 +1594,29 @@ export class TransmissionsService {
     }
   }
 
+  private async planTargets(
+    sender: User,
+    input: { channelId?: string; targetUserIds?: string[]; everyone?: boolean },
+    kind: "walkie" | "voice" | "text" | "image" | "video",
+  ) {
+    const deliverIds = await this.resolveTargets(sender, input);
+    if (deliverIds.length) return { deliverIds, channelIds: deliverIds, silent: false };
+    const direct = [...new Set((input.targetUserIds || []).filter((id) => id && id !== sender.id))];
+    const silent =
+      kind !== "walkie" && !input.everyone && !String(input.channelId || "").trim() && direct.length === 1;
+    if (silent) return { deliverIds: [] as string[], channelIds: direct, silent: true };
+    throw new BadRequestException("לא נבחרו נמענים");
+  }
+
+  private async hideAvatarFor(senderId: string, targetIds: string[]) {
+    if (!targetIds.length) return new Set<string>();
+    const rows = await this.prisma.contact.findMany({
+      where: { ownerId: senderId, matchedUserId: { in: targetIds }, status: "BLOCKED" },
+      select: { matchedUserId: true },
+    });
+    return new Set(rows.map((row) => row.matchedUserId).filter((id): id is string => Boolean(id)));
+  }
+
   private async resolveTargets(
     sender: User,
     input: { channelId?: string; targetUserIds?: string[]; everyone?: boolean },
@@ -1540,16 +1629,33 @@ export class TransmissionsService {
       const ids = [...new Set(matches.map((m) => m.matchedUserId).filter((id): id is string => Boolean(id)))];
       return this.withoutBlocked(sender.id, ids);
     }
+    const channelId = input.channelId?.trim();
+    if (channelId) {
+      await this.channels.assertMember(channelId, sender.id);
+      const channel = await this.prisma.channel.findUnique({
+        where: { id: channelId },
+        select: { type: true },
+      });
+      if (!channel) throw new BadRequestException("ערוץ לא נמצא");
+      if (isGroupType(channel.type)) {
+        const members = await this.prisma.channelMember.findMany({
+          where: { channelId, userId: { not: sender.id } },
+        });
+        return this.withoutBlocked(
+          sender.id,
+          members.map((m) => m.userId),
+        );
+      }
+    }
     if (input.targetUserIds?.length) {
       return this.withoutBlocked(
         sender.id,
         [...new Set(input.targetUserIds.filter((id) => id !== sender.id))],
       );
     }
-    if (input.channelId) {
-      await this.channels.assertMember(input.channelId, sender.id);
+    if (channelId) {
       const members = await this.prisma.channelMember.findMany({
-        where: { channelId: input.channelId, userId: { not: sender.id } },
+        where: { channelId, userId: { not: sender.id } },
       });
       return members.map((m) => m.userId);
     }
@@ -1567,20 +1673,22 @@ export class TransmissionsService {
   }
 
   private async ensureChannel(sender: User, channelId: string | undefined, targetIds: string[]) {
-    if (channelId) {
-      await this.channels.assertMember(channelId, sender.id);
+    const id = channelId?.trim();
+    if (id) {
+      await this.channels.assertMember(id, sender.id);
       const channel = await this.prisma.channel.findUnique({
-        where: { id: channelId },
+        where: { id },
         include: { members: { include: { user: true } } },
       });
       if (!channel) throw new BadRequestException("ערוץ לא נמצא");
+      this.logger.log(`ensureChannel keep id=${id} type=${channel.type} targets=${targetIds.length}`);
       return channel;
     }
     if (targetIds.length === 1) {
-      const id = await this.channels.directChannelId(sender, targetIds[0]);
-      this.realtime.joinChannel(sender.id, id);
-      this.realtime.joinChannel(targetIds[0], id);
-      return { id };
+      const directId = await this.channels.directChannelId(sender, targetIds[0]);
+      this.realtime.joinChannel(sender.id, directId);
+      this.realtime.joinChannel(targetIds[0], directId);
+      return { id: directId };
     }
     const summary = await this.channels.createGroup(sender, "שידור", targetIds);
     const channel = await this.prisma.channel.findUnique({
@@ -1588,9 +1696,14 @@ export class TransmissionsService {
       include: { members: { include: { user: true } } },
     });
     if (!channel) throw new BadRequestException("ערוץ לא נמצא");
-    for (const id of [sender.id, ...targetIds]) this.realtime.joinChannel(id, channel.id);
+    for (const memberId of [sender.id, ...targetIds]) this.realtime.joinChannel(memberId, channel.id);
+    this.logger.log(`ensureChannel created broadcast id=${channel.id} targets=${targetIds.length}`);
     return channel;
   }
+}
+
+function isGroupType(type?: string | null) {
+  return type === "GROUP" || type === "BROADCAST";
 }
 
 function extFrom(file: Express.Multer.File) {

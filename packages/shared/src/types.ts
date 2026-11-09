@@ -13,6 +13,8 @@ export type PublicUser = {
   email?: string | null;
   displayName: string;
   avatarUrl: string | null;
+  /** True when this viewer must not see the photo (they were blocked by this user). */
+  avatarHidden?: boolean;
   speakLang: LanguageCode;
   listenLang: LanguageCode;
   voiceGender: VoiceGender;
@@ -52,6 +54,8 @@ export type ChannelMember = {
   displayName: string;
   listenLang: LanguageCode;
   online: boolean;
+  avatarUrl?: string | null;
+  admin?: boolean;
 };
 
 export type ChannelSummary = {
@@ -59,6 +63,10 @@ export type ChannelSummary = {
   type: ChannelType;
   name: string | null;
   members: ChannelMember[];
+  avatarUrl?: string | null;
+  ownerId?: string | null;
+  createdAt?: string;
+  disappearAfterSec?: number;
 };
 
 export type MessageReceipt = "sent" | "delivered" | "read";
@@ -78,6 +86,7 @@ export type HistoryItem = {
   mine?: boolean;
   peerId?: string;
   peerName?: string;
+  peerPhone?: string | null;
   peerAvatar?: string | null;
   peerGender?: VoiceGender;
   kind?: "walkie" | "voice" | "text" | "image" | "video";
@@ -87,6 +96,7 @@ export type HistoryItem = {
   replyToName?: string | null;
   replyToText?: string | null;
   receipt?: MessageReceipt;
+  edited?: boolean;
   channelId?: string | null;
   expiresAt?: string | null;
 };

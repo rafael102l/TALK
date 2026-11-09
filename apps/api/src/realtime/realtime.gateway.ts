@@ -214,9 +214,28 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       take: 40,
     });
     if (!rows.length) return;
+    const blockedSenders = await this.prisma.contact.findMany({
+      where: {
+        ownerId: userId,
+        matchedUserId: { in: rows.map((row) => row.transmission.senderId) },
+        status: "BLOCKED",
+      },
+      select: { matchedUserId: true },
+    });
+    const skipSenders = new Set(blockedSenders.map((row) => row.matchedUserId));
+    const hiddenBySender = await this.prisma.contact.findMany({
+      where: {
+        ownerId: { in: rows.map((row) => row.transmission.senderId) },
+        matchedUserId: userId,
+        status: "BLOCKED",
+      },
+      select: { ownerId: true },
+    });
+    const hidePhoto = new Set(hiddenBySender.map((row) => row.ownerId));
     let delivered = 0;
     for (const row of rows) {
       const tx = row.transmission;
+      if (skipSenders.has(tx.senderId)) continue;
       const sender = toPublicUser(tx.sender);
       const hear = (row.language || tx.sender.listenLang || "he").slice(0, 2).toLowerCase();
       const sourceLang = (tx.sender.speakLang || tx.sender.listenLang || "he").slice(0, 2).toLowerCase();
@@ -243,7 +262,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         needsAccept: false,
         live: false,
         senderPhone: tx.sender.phoneE164,
-        senderAvatarUrl: sender.avatarUrl,
+        senderAvatarUrl: hidePhoto.has(tx.senderId) ? null : sender.avatarUrl,
         voiceGender: sender.voiceGender ?? "male",
         kind,
         viewOnce: Boolean(tx.viewOnce),
@@ -348,6 +367,21 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       body.targetUserId,
       SOCKET_EVENTS.CHAT_REACTION,
       { userId: client.userId, transmissionId: body.transmissionId, emoji: body.emoji || "" },
+      true,
+    );
+    return { ok: true };
+  }
+
+  @SubscribeMessage(SOCKET_EVENTS.CHAT_EDIT)
+  chatEdit(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { targetUserId?: string; transmissionId?: string; text?: string },
+  ) {
+    if (!client.userId || !body?.targetUserId || !body.transmissionId) return { ok: false };
+    this.emitToUser(
+      body.targetUserId,
+      SOCKET_EVENTS.CHAT_EDIT,
+      { userId: client.userId, transmissionId: body.transmissionId, text: String(body.text || "") },
       true,
     );
     return { ok: true };

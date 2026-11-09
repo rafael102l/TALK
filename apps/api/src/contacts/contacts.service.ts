@@ -71,6 +71,25 @@ export class ContactsService {
     return this.list(owner);
   }
 
+  /** True when `blockerId` has BLOCKED `viewerId`. */
+  async isBlockedBy(blockerId: string, viewerId: string) {
+    if (!blockerId || !viewerId || blockerId === viewerId) return false;
+    const row = await this.prisma.contact.findFirst({
+      where: { ownerId: blockerId, matchedUserId: viewerId, status: "BLOCKED" },
+      select: { id: true },
+    });
+    return Boolean(row);
+  }
+
+  /** User ids that `ownerId` has blocked. */
+  async blockedByOwner(ownerId: string) {
+    const rows = await this.prisma.contact.findMany({
+      where: { ownerId, status: "BLOCKED", matchedUserId: { not: null } },
+      select: { matchedUserId: true },
+    });
+    return new Set(rows.map((row) => row.matchedUserId).filter((id): id is string => Boolean(id)));
+  }
+
   async block(owner: User, userId: string) {
     const other = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!other || other.id === owner.id) {
@@ -157,7 +176,7 @@ export class ContactsService {
     for (const contact of normalized) {
       const matched = byHash.get(contact.phoneHash) ?? byPhone.get(contact.phoneE164);
       if (!matched) continue;
-      const displayName = matched.displayName?.trim() || contact.displayName || contact.phoneE164;
+      const displayName = contact.displayName?.trim() || matched.displayName?.trim() || contact.phoneE164;
       const current = currentByHash.get(contact.phoneHash);
       if (current?.status === "BLOCKED") continue;
       if (
@@ -224,7 +243,7 @@ export class ContactsService {
     });
     return unique.map((row) => ({
       id: row.id,
-      displayName: row.matchedUser?.displayName?.trim() || row.displayName,
+      displayName: row.displayName,
       phoneE164: row.phoneE164,
       matchedUser: row.matchedUser ? toPublicUser(row.matchedUser) : null,
       status: row.status,
@@ -269,7 +288,6 @@ export class ContactsService {
       },
       update: {
         phoneE164: other.phoneE164,
-        displayName,
         matchedUserId: other.id,
         status,
       },

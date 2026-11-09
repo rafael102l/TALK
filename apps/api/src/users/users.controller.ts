@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  Param,
   Patch,
   Post,
   UploadedFile,
@@ -12,6 +13,7 @@ import {
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { User } from "@prisma/client";
+import { memoryStorage } from "multer";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { PushService } from "../push/push.service";
@@ -33,6 +35,11 @@ export class UsersController {
     return this.users.me(user);
   }
 
+  @Get(":userId")
+  publicCard(@CurrentUser() user: User, @Param("userId") userId: string) {
+    return this.users.publicCard(user, userId);
+  }
+
   @Patch("me")
   update(@CurrentUser() user: User, @Body() body: UpdateProfileDto) {
     return this.users.update(user, body);
@@ -50,6 +57,11 @@ export class UsersController {
     return this.push.saveCallDevice(user.id, body);
   }
 
+  @Post("me/call-accept")
+  callAccept(@CurrentUser() user: User, @Body() body: CallEndDto) {
+    return this.realtime.acceptFromHttp(user.id, body.callId);
+  }
+
   @Post("me/call-end")
   callEnd(@CurrentUser() user: User, @Body() body: CallEndDto) {
     return this.realtime.hangupFromHttp(user.id, body.callId, body.reason || "cancelled");
@@ -62,7 +74,7 @@ export class UsersController {
   }
 
   @Post("me/avatar")
-  @UseInterceptors(FileInterceptor("photo"))
+  @UseInterceptors(FileInterceptor("photo", { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   avatar(@CurrentUser() user: User, @UploadedFile() file: Express.Multer.File) {
     if (!file?.buffer?.length) throw new BadRequestException("לא נבחרה תמונה");
     return this.users.saveAvatar(user, file);

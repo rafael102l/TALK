@@ -10,6 +10,7 @@ export type PublicUser = {
     email?: string | null;
     displayName: string;
     avatarUrl: string | null;
+    avatarHidden?: boolean;
     speakLang: LanguageCode;
     listenLang: LanguageCode;
     voiceGender: VoiceGender;
@@ -38,12 +39,18 @@ export type ChannelMember = {
     displayName: string;
     listenLang: LanguageCode;
     online: boolean;
+    avatarUrl?: string | null;
+    admin?: boolean;
 };
 export type ChannelSummary = {
     id: string;
     type: ChannelType;
     name: string | null;
     members: ChannelMember[];
+    avatarUrl?: string | null;
+    ownerId?: string | null;
+    createdAt?: string;
+    disappearAfterSec?: number;
 };
 export type HistoryItem = {
     id: string;
