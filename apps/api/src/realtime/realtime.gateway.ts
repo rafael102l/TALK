@@ -21,6 +21,7 @@ import { CallRegistry, type LiveCall } from "./call.registry";
 import { FloorService } from "./floor.service";
 import { PresenceService } from "./presence.service";
 import { PushService } from "../push/push.service";
+import { APP_NAME_EN, notifyChrome } from "../i18n/notifyChrome";
 
 type AuthedSocket = Socket & { userId?: string; displayName?: string; sessionVersion?: number };
 
@@ -1059,13 +1060,26 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     });
     this.calls.end(callId);
     client.emit(SOCKET_EVENTS.CALL_UNAVAILABLE, { callId, reason: "offline" });
-    void this.push.notifyUsers([targetUserId], caller.displayName || caller.phoneE164 || "TALK", "שיחה שלא נענתה", {
+    void this.notifyMissedCall(targetUserId, caller.displayName || caller.phoneE164 || APP_NAME_EN, {
       type: "missed-call",
       callId,
       callerId: client.userId || "",
       callerName: caller.displayName || "",
     });
     this.logger.warn(`call unavailable id=${callId} to=${targetUserId} no socket`);
+  }
+
+  private async notifyMissedCall(
+    targetUserId: string,
+    title: string,
+    data: Record<string, string>,
+  ) {
+    const peer = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { speakLang: true, listenLang: true },
+    });
+    const lang = peer?.speakLang || peer?.listenLang;
+    void this.push.notifyUsers([targetUserId], title, notifyChrome(lang, "missedCall"), data);
   }
 
   async acceptFromHttp(userId: string, callId: string) {

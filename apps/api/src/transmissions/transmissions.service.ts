@@ -32,6 +32,7 @@ import { RealtimeGateway } from "../realtime/realtime.gateway";
 import { FirebaseRtdbService } from "../firebase/firebase-rtdb.service";
 import { StorageService } from "../storage/storage.service";
 import { toPublicUser } from "../users/user.mapper";
+import { notifyChrome } from "../i18n/notifyChrome";
 
 @Injectable()
 export class TransmissionsService {
@@ -235,7 +236,9 @@ export class TransmissionsService {
       void this.push.notifyUsers(
         [target.userId],
         sender.displayName?.trim() || sender.phoneE164,
-        transmission.viewOnce ? (kind === "video" ? "סרטון חד-פעמי" : "תמונה חד-פעמית") : kind === "video" ? "סרטון" : "תמונה",
+        transmission.viewOnce
+          ? notifyChrome(target.language, kind === "video" ? "videoOnce" : "photoOnce")
+          : notifyChrome(target.language, kind === "video" ? "video" : "photo"),
         {
           type: "message",
           transmissionId: transmission.id,

@@ -6,6 +6,7 @@ import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
 import { PrismaService } from "../prisma/prisma.service";
+import { APP_NAME_EN, notifyChrome } from "../i18n/notifyChrome";
 
 type CallWake = {
   callId: string;
@@ -108,7 +109,8 @@ export class PushService implements OnModuleInit {
       .trim()
       .slice(0, 900);
     const title = name;
-    const body = text || (walkie ? "ווקי-טוקי" : "הודעה חדשה");
+    const uiLang = await this.userUiLang(userId);
+    const body = text || notifyChrome(uiLang, walkie ? "walkie" : "newMessage");
     const data = stringData({
       type: walkie ? "walkie" : "message",
       kind: walkie ? "walkie" : input.kind || "text",
@@ -201,7 +203,10 @@ export class PushService implements OnModuleInit {
     const isGroupCall = Boolean(incoming.group || incoming.isGroupCall || incoming.groupName || groupId);
     const groupName = (incoming.groupName || (isGroupCall ? incoming.callerName : "") || "").trim();
     const shownName = isGroupCall ? groupName || incoming.callerName : incoming.callerName;
-    const shownBody = isGroupCall ? "שיחה קבוצתית" : incoming.callerPhone || "שיחה נכנסת";
+    const uiLang = await this.userUiLang(userId);
+    const shownBody = isGroupCall
+      ? notifyChrome(uiLang, "groupCall")
+      : incoming.callerPhone || notifyChrome(uiLang, "incomingCall");
     const callerId = incoming.caller.id;
     const callerPhone = incoming.callerPhone || incoming.caller.phone || "";
     const data = {
@@ -228,7 +233,7 @@ export class PushService implements OnModuleInit {
       this.logger.warn(`call FCM skipped — no fcmToken user=${userId} id=${incoming.callId}`);
     }
     if (!via && device.voipToken && (await this.sendVoip(device.voipToken, data))) via = "voip";
-    if (!via && user?.expoPushToken && (await this.sendExpoCall(user.expoPushToken, incoming, data))) via = "expo";
+    if (!via && user?.expoPushToken && (await this.sendExpoCall(user.expoPushToken, incoming, data, uiLang))) via = "expo";
     if (via) this.logger.log(`call wake user=${userId} id=${incoming.callId} via=${via}`);
     else this.logger.warn(`call wake missed user=${userId} id=${incoming.callId} fcm=${Boolean(device.fcmToken)} expo=${Boolean(user?.expoPushToken)}`);
     return Boolean(via);
@@ -240,7 +245,7 @@ export class PushService implements OnModuleInit {
       const token = (await this.callDevice(userId)).fcmToken;
       const data = { type: "call_ended", callId, reason: reason || "cancelled" };
       if (!token) this.logger.warn(`call end FCM skipped — no fcmToken user=${userId} id=${callId}`);
-      else if (await this.sendFcmCall(token, data, "TALK", "השיחה הסתיימה")) {
+      else if (await this.sendFcmCall(token, data, APP_NAME_EN, notifyChrome(await this.userUiLang(userId), "callEnded"))) {
         this.logger.log(`call end fcm user=${userId} id=${callId} reason=${reason}`);
         return true;
       }
@@ -250,7 +255,7 @@ export class PushService implements OnModuleInit {
       });
       const expo = user?.expoPushToken?.trim();
       if (!expo) return false;
-      const ok = await this.sendExpoCallSilent(expo, data);
+      const ok = await this.sendExpoCallSilent(expo, data, await this.userUiLang(userId));
       if (ok) this.logger.log(`call end expo user=${userId} id=${callId}`);
       return ok;
     } catch (error) {
@@ -352,25 +357,39 @@ export class PushService implements OnModuleInit {
     return this.tableReady;
   }
 
-  private async sendExpoCallSilent(to: string, data: Record<string, string>) {
+  private async userUiLang(userId: string): Promise<string> {
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { speakLang: true, listenLang: true },
+      });
+      return user?.speakLang || user?.listenLang || "en";
+    } catch {
+      return "en";
+    }
+  }
+
+  private async sendExpoCallSilent(to: string, data: Record<string, string>, lang?: string) {
     return this.postExpo({
       to,
       priority: "high",
       channelId: "talk-calls",
       ttl: 60,
-      title: "TALK",
-      body: "השיחה הסתיימה",
+      title: APP_NAME_EN,
+      body: notifyChrome(lang, "callEnded"),
       data,
     }, "call-end expo");
   }
 
-  private async sendExpoCall(to: string, incoming: CallWake, data: Record<string, string>) {
+  private async sendExpoCall(to: string, incoming: CallWake, data: Record<string, string>, lang?: string) {
     return this.postExpo({
       to,
       priority: "high",
       channelId: "talk-calls-fcm",
       title: incoming.group ? incoming.groupName || incoming.callerName : incoming.callerName,
-      body: incoming.group ? "שיחה קבוצתית" : incoming.callerPhone || "שיחה נכנסת",
+      body: incoming.group
+        ? notifyChrome(lang, "groupCall")
+        : incoming.callerPhone || notifyChrome(lang, "incomingCall"),
       categoryId: "incoming-call",
       sound: "default",
       ttl: 60,
