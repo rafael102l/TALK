@@ -23,6 +23,10 @@ export const SOCKET_EVENTS = {
   INCOMING: "incoming:transmission",
   CONTACT_REQUEST: "contact:request",
   CONTACT_ACCEPTED: "contact:accepted",
+  /** Peer changed their profile photo — refresh every surface that shows them. */
+  USER_UPDATED: "user:updated",
+  /** Group photo / members / name changed. New joiners get this plus GET /channels. */
+  CHANNEL_UPDATE: "channel:update",
   /** Previous device must drop auth — another device claimed this phone's session. */
   SESSION_REPLACED: "session:replaced",
   CALL_USER: "call-user",

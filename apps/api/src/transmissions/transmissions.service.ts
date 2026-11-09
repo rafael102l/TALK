@@ -10,7 +10,7 @@ import {
   forwardRef,
 } from "@nestjs/common";
 import { Prisma, User } from "@prisma/client";
-import { decodeReply, HistoryItem, packReply, SOCKET_EVENTS, TransmissionReadyPayload } from "@talk/shared";
+import { decodeReply, HistoryItem, packReply, ReceiveMode, SOCKET_EVENTS, TransmissionReadyPayload } from "@talk/shared";
 import { randomUUID } from "crypto";
 import { readFile } from "fs/promises";
 import {
@@ -984,7 +984,7 @@ export class TransmissionsService {
       const incomingByOwner = new Map(incomingRows.map((row) => [row.ownerId, row]));
       const senderPublic = toPublicUser(sender);
       const originalAudio = textOnly ? null : this.storage.publicUrl(transmission.originalAudioUrl);
-      const senderMode = sender.plan === "PLUS" ? "plus" : "free";
+      const senderMode: ReceiveMode = sender.plan === "PLUS" ? "plus" : "free";
       const deliveredJobs: Promise<void>[] = [];
       const channelRow = await this.prisma.channel.findUnique({
         where: { id: transmission.channelId },
@@ -1341,7 +1341,7 @@ export class TransmissionsService {
               audioUrl,
               language: target.language,
               speakLang: sourceLang,
-              mode: plus ? "plus" : "free",
+              mode: (plus ? "plus" : "free") as ReceiveMode,
               createdAt,
               durationMs: textOnly ? null : transmission.durationMs,
               kind: delivery,
@@ -1407,7 +1407,7 @@ export class TransmissionsService {
           });
         }
       }
-      void this.firebase.saveItems(cloudItems);
+      void this.firebase.saveItems(cloudItems as Array<HistoryItem & { ownerId: string }>);
     } catch {
       this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_FAILED, {
         transmissionId: transmission.id,
