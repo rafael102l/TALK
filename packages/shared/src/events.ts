@@ -123,6 +123,8 @@ export type TransmissionReadyPayload = {
   replyToText?: string | null;
   receipt?: "sent" | "delivered" | "read";
   expiresAt?: string | null;
+  group?: boolean;
+  groupName?: string | null;
 };
 
 export type ChatReceiptPayload = {

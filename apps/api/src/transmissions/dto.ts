@@ -28,6 +28,27 @@ export class CreateTransmissionDto {
   targetUserIds?: string[];
 
   @IsOptional()
+  @Transform(({ value }) => {
+    if (Array.isArray(value)) return value;
+    if (typeof value === "string") {
+      try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [String(parsed)];
+      } catch {
+        return value
+          .replace(/[\[\]"]/g, "")
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+    }
+    return value;
+  })
+  @IsArray()
+  @IsString({ each: true })
+  channelIds?: string[];
+
+  @IsOptional()
   @Transform(({ value }) => value === true || value === "true")
   @IsBoolean()
   everyone?: boolean;

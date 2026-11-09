@@ -63,6 +63,7 @@ export class TransmissionsService {
     file: Express.Multer.File,
     input: {
       channelId?: string;
+      channelIds?: string[];
       targetUserIds?: string[];
       everyone?: boolean;
       durationMs?: number;
@@ -273,7 +274,7 @@ export class TransmissionsService {
   private async relayWalkie(
     sender: User,
     file: Express.Multer.File,
-    input: { channelId?: string; durationMs?: number },
+    input: { channelId?: string; channelIds?: string[]; durationMs?: number },
     users: User[],
     targetIds: string[],
     clientRelease: number,
@@ -300,18 +301,40 @@ export class TransmissionsService {
   private async relayWalkieNow(
     sender: User,
     file: Express.Multer.File,
-    input: { channelId?: string; durationMs?: number },
+    input: { channelId?: string; channelIds?: string[]; durationMs?: number },
     users: User[],
     targetIds: string[],
     clientRelease: number,
     sourceLanguage = "",
   ) {
     const started = Date.now();
-    const audioUrl = await this.storage.save(file.buffer, extFrom(file), "audio");
+    const groupIds = [
+      ...new Set(
+        [input.channelId, ...(input.channelIds || [])]
+          .map((id) => (typeof id === "string" ? id.trim() : ""))
+          .filter(Boolean),
+      ),
+    ];
+    const [audioUrl, groupRows] = await Promise.all([
+      this.storage.save(file.buffer, extFrom(file), "audio"),
+      groupIds.length
+        ? this.prisma.channel.findMany({
+            where: { id: { in: groupIds } },
+            select: {
+              id: true,
+              name: true,
+              type: true,
+              members: { where: { userId: { not: sender.id } }, select: { userId: true } },
+            },
+          })
+        : Promise.resolve(
+            [] as { id: string; name: string | null; type: string; members: { userId: string }[] }[],
+          ),
+    ]);
     const saveMs = Date.now() - started;
-    const channel = await this.ensureChannel(sender, input.channelId, targetIds, {
-      reuseDirect: !input.channelId?.trim(),
-    });
+    const channel = groupIds.length
+      ? { id: groupIds[0], type: groupRows.find((row) => row.id === groupIds[0])?.type }
+      : await this.ensureChannel(sender, input.channelId, targetIds, { reuseDirect: true });
     const channelMs = Date.now() - started - saveMs;
     const lang = (sourceLanguage || sender.speakLang || sender.listenLang || "").slice(0, 2).toLowerCase();
     const transmission = await this.prisma.transmission.create({
@@ -361,38 +384,45 @@ export class TransmissionsService {
       group: Boolean(input.channelId?.trim()) && isGroupType("type" in channel ? channel.type : undefined),
     };
     const speak = (lang || "").slice(0, 2).toLowerCase();
-    const groupId = (input.channelId || "").trim();
-    const groupMemberIds = new Set<string>();
-    if (groupId && "members" in channel) {
-      for (const row of (channel as { members?: { userId?: string }[] }).members || []) {
-        if (row.userId && row.userId !== sender.id) groupMemberIds.add(row.userId);
+    const homesOf = new Map<string, { id: string; name: string }[]>();
+    for (const row of groupRows) {
+      if (!isGroupType(row.type)) continue;
+      for (const member of row.members) {
+        const list = homesOf.get(member.userId) || [];
+        list.push({ id: row.id, name: row.name || "" });
+        homesOf.set(member.userId, list);
       }
     }
     let textOnly = 0;
-    const dubbed: { targetId: string; language: string }[] = [];
+    const dubbed: { targetId: string; language: string; channelId: string; group: boolean; groupName: string }[] = [];
     for (const target of transmission.targets) {
       const listener = users.find((user) => user.id === target.userId);
       const hear = (listener?.listenLang || listener?.speakLang || "").slice(0, 2).toLowerCase();
       const sameLanguage = !speak || !hear || hear === speak;
-      const rowPayload = walkieReadyFor(payload, target.userId, groupId, groupMemberIds);
+      const homes = homesOf.get(target.userId);
+      const stamps = homes?.length
+        ? homes.map((home) => ({ channelId: home.id, group: true, groupName: home.name }))
+        : [{ channelId: payload.channelId, group: false, groupName: "" }];
       if (!sameLanguage) {
         textOnly += 1;
-        if (hear) dubbed.push({ targetId: target.userId, language: hear });
-        // Cross-lang: never FCM the original clip. Early offline push plays the
-        // speaker's language; the dubbed TTS arrives later and "fixes" it.
-        // dubWalkie notifies once with the translated audio.
+        if (hear) {
+          for (const stamp of stamps) dubbed.push({ targetId: target.userId, language: hear, ...stamp });
+        }
         continue;
       }
-      const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, rowPayload);
-      this.logger.log(`Deliver walkie ${transmission.id} -> ${target.userId} reached=${reached} group=${String(rowPayload.group)}`);
-      void this.push.notifyOfflineMessage(target.userId, { ...rowPayload, kind: "walkie" });
+      for (const stamp of stamps) {
+        const rowPayload = { ...payload, channelId: stamp.channelId, group: stamp.group, groupName: stamp.groupName || null };
+        const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, rowPayload);
+        this.logger.log(`Deliver walkie ${transmission.id} -> ${target.userId} reached=${reached} group=${String(rowPayload.group)} channel=${stamp.channelId}`);
+        void this.push.notifyOfflineMessage(target.userId, { ...rowPayload, kind: "walkie" });
+      }
       void this.prisma.transmissionTarget.update({
         where: { id: target.id },
         data: { deliveredAt: new Date() },
       });
     }
     if (dubbed.length) {
-      void this.dubWalkie(file, transmission.id, payload, speak, voiceGender, dubbed, groupId, groupMemberIds);
+      void this.dubWalkie(file, transmission.id, payload, speak, voiceGender, dubbed);
     }
     this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
     this.logger.log(
@@ -414,9 +444,7 @@ export class TransmissionsService {
     payload: TransmissionReadyPayload,
     speak: string,
     voiceGender: "male" | "female" | "child",
-    dubbed: { targetId: string; language: string }[],
-    groupId = "",
-    groupMemberIds = new Set<string>(),
+    dubbed: { targetId: string; language: string; channelId: string; group: boolean; groupName: string }[],
   ) {
     try {
       const ext = extFrom(file);
@@ -486,21 +514,19 @@ export class TransmissionsService {
           kind: "walkie" as const,
         });
         for (const row of dubbed.filter((item) => item.language === language)) {
-          const dubbedPayload = walkieReadyFor(
-            {
-              ...payload,
-              language,
-              audioUrl,
-              originalText,
-              translatedText: line,
-              usedOriginalVoice: false,
-              suppressOriginal: true,
-              kind: "walkie" as const,
-            },
-            row.targetId,
-            groupId,
-            groupMemberIds,
-          );
+          const dubbedPayload = {
+            ...payload,
+            language,
+            audioUrl,
+            originalText,
+            translatedText: line,
+            usedOriginalVoice: false,
+            suppressOriginal: true,
+            kind: "walkie" as const,
+            channelId: row.channelId || payload.channelId,
+            group: row.group,
+            groupName: row.groupName || null,
+          };
           const reached = this.realtime.emitToUser(row.targetId, SOCKET_EVENTS.TRANSMISSION_READY, dubbedPayload);
           this.logger.log(`Deliver walkie ${transmissionId} -> ${row.targetId} reached=${reached}`);
           // Closed app: first (and only) FCM — already translated TTS.
@@ -1719,7 +1745,7 @@ export class TransmissionsService {
 
   private async planTargets(
     sender: User,
-    input: { channelId?: string; targetUserIds?: string[]; everyone?: boolean },
+    input: { channelId?: string; channelIds?: string[]; targetUserIds?: string[]; everyone?: boolean },
     kind: "walkie" | "voice" | "text" | "image" | "video",
   ) {
     const deliverIds = await this.resolveTargets(sender, input);
@@ -1741,7 +1767,7 @@ export class TransmissionsService {
 
   private async resolveTargets(
     sender: User,
-    input: { channelId?: string; targetUserIds?: string[]; everyone?: boolean },
+    input: { channelId?: string; channelIds?: string[]; targetUserIds?: string[]; everyone?: boolean },
   ) {
     if (input.everyone) {
       const matches = await this.prisma.contact.findMany({
@@ -1751,34 +1777,29 @@ export class TransmissionsService {
       const ids = [...new Set(matches.map((m) => m.matchedUserId).filter((id): id is string => Boolean(id)))];
       return this.withoutBlocked(sender.id, ids);
     }
-    const channelId = input.channelId?.trim();
-    if (channelId) {
-      await this.channels.assertMember(channelId, sender.id);
-      const channel = await this.prisma.channel.findUnique({
-        where: { id: channelId },
-        select: { type: true },
-      });
-      if (!channel) throw new BadRequestException("ערוץ לא נמצא");
-      if (isGroupType(channel.type)) {
-        const members = await this.prisma.channelMember.findMany({
-          where: { channelId, userId: { not: sender.id } },
-        });
-        const extra = (input.targetUserIds || []).filter((id) => id && id !== sender.id);
-        return this.withoutBlocked(sender.id, [...new Set([...members.map((m) => m.userId), ...extra])]);
+    const extra = (input.targetUserIds || []).filter((id) => id && id !== sender.id);
+    const channelIds = [
+      ...new Set(
+        [input.channelId, ...(input.channelIds || [])]
+          .map((id) => (typeof id === "string" ? id.trim() : ""))
+          .filter(Boolean),
+      ),
+    ];
+    const fromChannels: string[] = [];
+    for (const channelId of channelIds) {
+      try {
+        await this.channels.assertMember(channelId, sender.id);
+      } catch {
+        this.logger.warn(`resolveTargets skip channel ${channelId}`);
+        continue;
       }
-    }
-    if (input.targetUserIds?.length) {
-      return this.withoutBlocked(
-        sender.id,
-        [...new Set(input.targetUserIds.filter((id) => id !== sender.id))],
-      );
-    }
-    if (channelId) {
       const members = await this.prisma.channelMember.findMany({
         where: { channelId, userId: { not: sender.id } },
       });
-      return members.map((m) => m.userId);
+      fromChannels.push(...members.map((m) => m.userId));
     }
+    const merged = [...new Set([...fromChannels, ...extra])];
+    if (merged.length) return this.withoutBlocked(sender.id, merged);
     return [];
   }
 
