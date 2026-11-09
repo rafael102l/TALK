@@ -96,7 +96,12 @@ export class PushService implements OnModuleInit {
         if (now - at > 60_000) this.lastChatPushAt.delete(id);
       }
     }
-    const walkie = input.kind === "walkie" || input.type === "walkie";
+    const inbox =
+      input.kind === "voice" ||
+      input.kind === "text" ||
+      input.kind === "image" ||
+      input.kind === "video";
+    const walkie = !inbox && (input.kind === "walkie" || input.type === "walkie");
     const name = (input.senderName || input.senderPhone || "TALK").trim() || "TALK";
     const text = String(input.translatedText || input.originalText || "")
       .replace(/\s+/g, " ")
@@ -107,6 +112,7 @@ export class PushService implements OnModuleInit {
     const data = stringData({
       type: walkie ? "walkie" : "message",
       kind: walkie ? "walkie" : input.kind || "text",
+      chat: walkie ? "0" : "1",
       title,
       body,
       transmissionId,

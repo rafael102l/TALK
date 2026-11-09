@@ -767,7 +767,7 @@ export class TransmissionsService {
             transmissionId: transmission.id,
             channelId: transmission.channelId,
             kind: delivery,
-            type: delivery === "text" ? "message" : "walkie",
+            type: delivery === "walkie" ? "walkie" : "message",
             senderId: sender.id,
             senderName: sender.displayName || sender.phoneE164,
             senderPhone: sender.phoneE164,
