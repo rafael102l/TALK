@@ -830,12 +830,33 @@ export class TransmissionsService {
       if (originalText && langsToFill.length) {
         await Promise.all(
           langsToFill.map(async (language) => {
+            const listenerGenders = [
+              ...new Set(
+                transmission.targets
+                  .filter((row) => row.language === language)
+                  .map((row) => {
+                    const peer = people.find((p) => p.id === row.userId);
+                    const g = peer?.voiceGender;
+                    return g === "female" || g === "child" || g === "male" ? g : "";
+                  })
+                  .filter(Boolean),
+              ),
+            ];
             const translated = await this.translate.translate(
               originalText,
               sourceLang,
               language,
               keepNames,
               textOnly,
+              textOnly
+                ? {
+                    speakerGender:
+                      sender.voiceGender === "female" || sender.voiceGender === "child"
+                        ? sender.voiceGender
+                        : "male",
+                    listenerGender: listenerGenders.length === 1 ? listenerGenders[0] : undefined,
+                  }
+                : undefined,
             );
             if (!translated.text) {
               gate(translated.reason || "faithfulness", originalText);
