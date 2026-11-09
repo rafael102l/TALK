@@ -541,11 +541,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     } as Express.Multer.File;
     const { TransmissionsService } = require("../transmissions/transmissions.service") as typeof import("../transmissions/transmissions.service");
     const transmissions = this.moduleRef.get(TransmissionsService, { strict: false });
-    const result = await transmissions.create(user, file, {
+    const result = await transmissions.forwardWalkieClip(user, file, {
       targetUserIds,
       channelId: channelId || undefined,
       durationMs: Number.isFinite(durationMs) ? durationMs : undefined,
-      kind: "walkie",
       releasedAt: Number.isFinite(releasedAt) ? releasedAt : undefined,
       speakLang,
       sourceLanguage,

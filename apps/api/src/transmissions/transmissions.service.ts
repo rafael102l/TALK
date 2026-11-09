@@ -94,14 +94,10 @@ export class TransmissionsService {
     const kind = input.kind === "voice" ? "voice" : "walkie";
 
     const speakerLang = sender.speakLang || sender.listenLang;
-    const saveWalkie = kind === "walkie" ? this.storage.save(file.buffer, ext, "audio") : null;
     const planned = await this.planTargets(sender, input, kind);
     const targetIds = planned.deliverIds;
     if (kind === "walkie") {
-      const [audioUrl, users] = await Promise.all([
-        saveWalkie as Promise<string>,
-        this.prisma.user.findMany({ where: { id: { in: targetIds } } }),
-      ]);
+      const users = await this.prisma.user.findMany({ where: { id: { in: targetIds } } });
       return this.relayWalkie(
         sender,
         file,
@@ -110,7 +106,6 @@ export class TransmissionsService {
         targetIds,
         clientRelease,
         input.sourceLanguage || input.speakLang || "",
-        audioUrl,
       );
     }
     const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
@@ -288,6 +283,117 @@ export class TransmissionsService {
     return { id: transmission.id, status: "READY" as const, channelId: channel.id };
   }
 
+  /** Same-language walkie: forward the clip over the socket now. Disk/history wait in the background. */
+  async forwardWalkieClip(
+    sender: User,
+    file: Express.Multer.File,
+    input: {
+      channelId?: string;
+      targetUserIds?: string[];
+      durationMs?: number;
+      releasedAt?: number;
+      speakLang?: string;
+      sourceLanguage?: string;
+    },
+  ) {
+    const started = Date.now();
+    const targetIds = [...new Set((input.targetUserIds || []).filter((id) => id && id !== sender.id))];
+    const channelId = typeof input.channelId === "string" ? input.channelId.trim() : "";
+    if (!targetIds.length && !channelId) throw new BadRequestException("לא נבחרו נמענים");
+    const lang = (
+      input.sourceLanguage ||
+      input.speakLang ||
+      sender.speakLang ||
+      sender.listenLang ||
+      ""
+    )
+      .slice(0, 2)
+      .toLowerCase();
+    const audioB64 = file.buffer.length <= 1_500_000 ? file.buffer.toString("base64") : undefined;
+    if (!audioB64) {
+      return this.create(sender, file, { ...input, kind: "walkie" });
+    }
+    const transmissionId = randomUUID();
+    const clientRelease = Number(input.releasedAt);
+    const releasedAt = Number.isFinite(clientRelease) && clientRelease > 0 ? clientRelease : started;
+    const senderPublic = toPublicUser(sender);
+    const voiceGender =
+      sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male";
+    const payload: TransmissionReadyPayload = {
+      transmissionId,
+      channelId,
+      senderId: sender.id,
+      senderName: sender.displayName || sender.phoneE164,
+      language: lang,
+      speakLang: lang,
+      mode: sender.plan === "PLUS" ? "plus" : "free",
+      audioUrl: "",
+      originalText: "",
+      translatedText: "",
+      durationMs: input.durationMs ?? null,
+      usedOriginalVoice: true,
+      needsAccept: false,
+      live: false,
+      senderPhone: sender.phoneE164,
+      senderAvatarUrl: senderPublic.avatarUrl,
+      voiceGender,
+      kind: "walkie",
+      viewOnce: false,
+      releasedAt,
+      readyAt: Date.now(),
+      group: Boolean(channelId),
+      audioB64,
+    };
+    const missed: string[] = [];
+    for (const id of targetIds) {
+      const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+      this.logger.log(
+        `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=${String(Boolean(channelId))} channel=${channelId}`,
+      );
+      if (!reached) missed.push(id);
+    }
+    const { audioB64: _omit, ...senderPayload } = payload;
+    this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, senderPayload);
+    const saveP = this.storage.save(file.buffer, extFrom(file), "audio");
+    void (async () => {
+      try {
+        const users = targetIds.length
+          ? await this.prisma.user.findMany({ where: { id: { in: targetIds } } })
+          : [];
+        this.persistWalkie(
+          transmissionId,
+          sender,
+          file,
+          input,
+          users,
+          targetIds,
+          saveP,
+          lang,
+          payload,
+          lang,
+          voiceGender,
+          [],
+          channelId ? [channelId] : [],
+        );
+        if (!missed.length) return;
+        const url = await saveP;
+        for (const id of missed) {
+          void this.push.notifyOfflineMessage(id, {
+            ...senderPayload,
+            audioUrl: this.storage.publicUrl(url),
+            kind: "walkie",
+          });
+        }
+      } catch (error) {
+        this.logger.warn(`walkie persist after forward ${transmissionId} ${(error as Error).message}`);
+      }
+    })();
+    this.logger.log(
+      `Walkie forward ${transmissionId} bytes=${file.buffer.length} targets=${targetIds.length} emitMs=${Date.now() - started}`,
+    );
+    return { id: transmissionId, status: "READY" as const, channelId };
+  }
+
   /** Walkie is the recording itself. Translation stays in the codebase and is not on this path. */
   private async relayWalkie(
     sender: User,
@@ -353,24 +459,20 @@ export class TransmissionsService {
           .filter(Boolean),
       ),
     ];
-    const [audioUrl, groupRows] = await Promise.all([
-      savedAudioUrl
-        ? Promise.resolve(savedAudioUrl)
-        : this.storage.save(file.buffer, extFrom(file), "audio"),
-      groupIds.length
-        ? this.prisma.channel.findMany({
-            where: { id: { in: groupIds } },
-            select: {
-              id: true,
-              name: true,
-              type: true,
-              members: { where: { userId: { not: sender.id } }, select: { userId: true } },
-            },
-          })
-        : Promise.resolve(
-            [] as { id: string; name: string | null; type: string; members: { userId: string }[] }[],
-          ),
-    ]);
+    const saveP = savedAudioUrl
+      ? Promise.resolve(savedAudioUrl)
+      : this.storage.save(file.buffer, extFrom(file), "audio");
+    const groupRows = groupIds.length
+      ? await this.prisma.channel.findMany({
+          where: { id: { in: groupIds } },
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            members: { where: { userId: { not: sender.id } }, select: { userId: true } },
+          },
+        })
+      : ([] as { id: string; name: string | null; type: string; members: { userId: string }[] }[]);
     const saveMs = Date.now() - started;
     const lang = (sourceLanguage || sender.speakLang || sender.listenLang || "").slice(0, 2).toLowerCase();
     const transmissionId = randomUUID();
@@ -380,6 +482,7 @@ export class TransmissionsService {
     const voiceGender =
       sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male";
     const audioB64 = file.buffer.length <= 1_500_000 ? file.buffer.toString("base64") : undefined;
+    const audioUrl = audioB64 ? "" : await saveP;
     const payload: TransmissionReadyPayload = {
       transmissionId,
       channelId: channelHint,
@@ -388,7 +491,7 @@ export class TransmissionsService {
       language: lang,
       speakLang: lang,
       mode: sender.plan === "PLUS" ? "plus" : "free",
-      audioUrl: this.storage.publicUrl(audioUrl),
+      audioUrl: audioUrl ? this.storage.publicUrl(audioUrl) : "",
       originalText: "",
       translatedText: "",
       durationMs: input.durationMs ?? null,
@@ -442,8 +545,16 @@ export class TransmissionsService {
         this.logger.log(
           `Deliver walkie ${transmissionId} -> ${listener.id} reached=${reached} group=${String(rowPayload.group)} channel=${stamp.channelId}`,
         );
-        const { audioB64: _inline, ...pushPayload } = rowPayload;
-        void this.push.notifyOfflineMessage(listener.id, { ...pushPayload, kind: "walkie" });
+        if (!reached) {
+          const { audioB64: _inline, ...pushPayload } = rowPayload;
+          void saveP.then((url) =>
+            this.push.notifyOfflineMessage(listener.id, {
+              ...pushPayload,
+              audioUrl: this.storage.publicUrl(url),
+              kind: "walkie",
+            }),
+          );
+        }
       }
     }
     this.persistWalkie(
@@ -453,7 +564,7 @@ export class TransmissionsService {
       input,
       users,
       targetIds,
-      audioUrl,
+      audioUrl || saveP,
       lang,
       payload,
       speak,
@@ -481,7 +592,7 @@ export class TransmissionsService {
     input: { channelId?: string; channelIds?: string[]; durationMs?: number },
     users: User[],
     targetIds: string[],
-    audioUrl: string,
+    audioUrl: string | Promise<string>,
     lang: string,
     payload: TransmissionReadyPayload,
     speak: string,
@@ -491,6 +602,7 @@ export class TransmissionsService {
   ) {
     void (async () => {
       try {
+        const storedUrl = await audioUrl;
         const channel = groupIds[0]
           ? { id: groupIds[0] }
           : await this.ensureChannel(sender, input.channelId, targetIds, { reuseDirect: true });
@@ -499,7 +611,7 @@ export class TransmissionsService {
             id: transmissionId,
             senderId: sender.id,
             channelId: channel.id,
-            originalAudioUrl: audioUrl,
+            originalAudioUrl: storedUrl,
             originalText: null,
             durationMs: input.durationMs ?? null,
             kind: "walkie",
