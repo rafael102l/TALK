@@ -398,7 +398,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     @MessageBody()
     body: {
       channelId?: string;
+      channelIds?: string[];
       targetUserIds?: string[];
+      personIds?: string[];
+      groups?: { id?: string; name?: string; memberIds?: string[] }[];
       everyone?: boolean;
       speakerName?: string;
       speakerAvatarUrl?: string | null;
@@ -408,11 +411,13 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     },
   ) {
     if (!client.userId) return;
-    // Named targets are already on the phone. Tell the other phone immediately — do not wait for the database.
+    const dest = walkieSpeakDest(client.userId, body);
     const named = [...new Set((body.targetUserIds ?? []).filter((id) => id && id !== client.userId))];
-    const room = named.length
-      ? { key: `targets:${[client.userId, ...named].sort().join(",")}`, listenerIds: named }
-      : await this.floorRoom(client.userId, body);
+    const room = dest.length
+      ? { key: dest[0].channelId || `targets:${[client.userId, ...named].sort().join(",")}`, listenerIds: [...new Set(dest.map((row) => row.listenerId))] }
+      : named.length
+        ? { key: `targets:${[client.userId, ...named].sort().join(",")}`, listenerIds: named }
+        : await this.floorRoom(client.userId, body);
     if (!room) return { ok: false, rooms: "" };
     client.join(`user:${client.userId}`);
     const sentGender =
@@ -420,23 +425,30 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         ? body.voiceGender
         : "";
     const gender = sentGender === "female" || sentGender === "child" ? sentGender : "male";
-    const payload: PttSpeakingPayload = {
-      channelId: room.key,
-      speakerId: client.userId,
-      speakerName: body.speakerName || client.displayName || "דובר",
-      speakerAvatarUrl: body.speakerAvatarUrl ?? null,
-      voiceGender: gender,
-    };
-    for (const userId of room.listenerIds) {
-      if (userId === client.userId) continue;
-      this.emitToUser(userId, SOCKET_EVENTS.PTT_SPEAKING, payload);
+    const speakerName = body.speakerName || client.displayName || "דובר";
+    const rows = dest.length
+      ? dest
+      : room.listenerIds
+          .filter((id) => id && id !== client.userId)
+          .map((listenerId) => ({
+            listenerId,
+            channelId: room.key.startsWith("targets:") ? "" : room.key,
+          }));
+    for (const row of rows) {
+      this.emitToUser(row.listenerId, SOCKET_EVENTS.PTT_SPEAKING, {
+        channelId: row.channelId,
+        speakerId: client.userId,
+        speakerName,
+        speakerAvatarUrl: body.speakerAvatarUrl ?? null,
+        voiceGender: gender,
+      });
     }
     void this.sessionStillValid(client).then((ok) => {
       if (ok) return;
       client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
       this.closeSocket(client);
     });
-    const peers = room.listenerIds.filter((id) => id !== client.userId);
+    const peers = [...new Set(rows.map((row) => row.listenerId))];
     const rooms = peers.map((id) => `${id}:${this.roomCount(id)}`).join(",");
     return { ok: true, floorKey: room.key, rooms };
   }
@@ -444,7 +456,16 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage(SOCKET_EVENTS.PTT_RELEASED)
   async pttReleased(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { channelId?: string; targetUserIds?: string[]; everyone?: boolean; pressId?: string },
+    @MessageBody()
+    body: {
+      channelId?: string;
+      channelIds?: string[];
+      targetUserIds?: string[];
+      personIds?: string[];
+      groups?: { id?: string; name?: string; memberIds?: string[] }[];
+      everyone?: boolean;
+      pressId?: string;
+    },
   ) {
     if (!client.userId) return;
     this.liveDub.finish(client.id, typeof body.pressId === "string" ? body.pressId : "");
@@ -453,13 +474,23 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.closeSocket(client);
       return { ok: false };
     }
-    const room = await this.floorRoom(client.userId, body);
+    const dest = walkieSpeakDest(client.userId, body);
+    const room = dest.length
+      ? { key: dest[0].channelId || "", listenerIds: [...new Set(dest.map((row) => row.listenerId))] }
+      : await this.floorRoom(client.userId, body);
     if (!room) return;
     await this.floor.release(room.key, client.userId);
-    for (const userId of room.listenerIds) {
-      if (userId === client.userId) continue;
-      this.emitToUser(userId, SOCKET_EVENTS.PTT_RELEASED, {
-        channelId: room.key,
+    const rows = dest.length
+      ? dest
+      : room.listenerIds
+          .filter((id) => id && id !== client.userId)
+          .map((listenerId) => ({
+            listenerId,
+            channelId: room.key.startsWith("targets:") ? "" : room.key,
+          }));
+    for (const row of rows) {
+      this.emitToUser(row.listenerId, SOCKET_EVENTS.PTT_RELEASED, {
+        channelId: row.channelId,
         speakerId: client.userId,
       });
     }
@@ -529,8 +560,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     );
     const stampIds = stamps.map((row) => row.id);
     const stampSet = new Set(stampIds);
-    const stampMembers = new Set(stamps.flatMap((row) => row.memberIds).filter((id) => id && id !== client.userId));
-    const personIds = [...new Set(requestedPeople.filter((id) => !stampSet.has(id) && !stampMembers.has(id)))];
+    const personIds = [...new Set(requestedPeople.filter((id) => !stampSet.has(id)))];
     if (!personIds.length && !stampIds.length) {
       this.logger.warn(`walkie send no-targets user=${client.userId}`);
       return { ok: false };
@@ -574,10 +604,21 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const reached: string[] = [];
     const missed: string[] = [];
     const reachedGroup = new Set<string>();
+    const reachedDirect = new Set<string>();
     const note = (id: string, ok: boolean) => {
       if (ok) {
         if (!reached.includes(id)) reached.push(id);
       } else if (!reached.includes(id) && !missed.includes(id)) missed.push(id);
+    };
+    const emitDirect = (id: string) => {
+      const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
+        ...basePayload,
+        channelId: "",
+        group: false,
+        groupName: null,
+      });
+      if (ok) reachedDirect.add(id);
+      note(id, ok);
     };
     const emitStarted = Date.now();
     if (stamps.length) {
@@ -595,36 +636,16 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           note(id, ok);
         }
       }
-      for (const id of personIds) {
-        note(
-          id,
-          this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
-            ...basePayload,
-            channelId: "",
-            group: false,
-            groupName: null,
-          }),
-        );
-      }
+      for (const id of personIds) emitDirect(id);
     } else {
-      for (const id of personIds) {
-        note(
-          id,
-          this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
-            ...basePayload,
-            channelId: "",
-            group: false,
-            groupName: null,
-          }),
-        );
-      }
+      for (const id of personIds) emitDirect(id);
     }
     const { audioB64: _omit, ...senderAck } = basePayload;
     this.emitToUser(client.userId, SOCKET_EVENTS.TRANSMISSION_READY, senderAck);
     this.logger.log(
       `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} people=${personIds.length} groups=${stampIds.length} groupIds=${stampIds.join(",") || "-"} emitMs=${Date.now() - emitStarted} reached=${reached.length} missed=${missed.length}`,
     );
-    void this.finishWalkieSend(client.userId, body, transmissionId, reached, missed, basePayload, reachedGroup);
+    void this.finishWalkieSend(client.userId, body, transmissionId, reached, missed, basePayload, reachedGroup, reachedDirect);
     return { ok: true, id: transmissionId, reached: reached.length };
   }
 
@@ -647,6 +668,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     missed: string[],
     basePayload: TransmissionReadyPayload,
     reachedGroup = new Set<string>(),
+    reachedDirect = new Set<string>(),
   ) {
     void (async () => {
       try {
@@ -668,15 +690,17 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           }
         }
         for (const id of resolved.personIds) {
-          if (reachedGroup.has(id) || reached.includes(id) || missed.includes(id)) continue;
+          if (reachedDirect.has(id) || missed.includes(id)) continue;
           const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
             ...basePayload,
             channelId: "",
             group: false,
             groupName: null,
           });
-          if (ok) reached.push(id);
-          else missed.push(id);
+          if (ok) {
+            reachedDirect.add(id);
+            if (!reached.includes(id)) reached.push(id);
+          } else if (!missed.includes(id)) missed.push(id);
         }
         const channelIds = resolved.groups.map((row) => row.id);
         const deliverIds = [
@@ -752,19 +776,17 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         })
       : [];
     const membersByGroup = new Map<string, string[]>();
-    const groupMemberSet = new Set<string>();
     for (const row of memberRows) {
       const list = membersByGroup.get(row.channelId) || [];
       list.push(row.userId);
       membersByGroup.set(row.channelId, list);
-      groupMemberSet.add(row.userId);
     }
     const groups = [...groupIds].map((id) => ({
       id,
       name: channelName.get(id) || stamps.find((row) => row.id === id)?.name || "",
       memberIds: [...new Set(membersByGroup.get(id) || [])],
     }));
-    const personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id) && !groupMemberSet.has(id)))];
+    const personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id)))];
     return { personIds, groups };
   }
 
@@ -1567,6 +1589,35 @@ function asIdList(raw: unknown): string[] {
     return raw.trim().length >= 8 ? [raw.trim()] : [];
   }
   return [];
+}
+
+function walkieSpeakDest(
+  senderId: string,
+  body: {
+    channelId?: string;
+    channelIds?: string[];
+    targetUserIds?: string[];
+    personIds?: string[];
+    groups?: { id?: string; name?: string; memberIds?: string[] }[];
+  },
+) {
+  const people = asIdList([...(body.personIds || []), ...(body.targetUserIds || [])]).filter(
+    (id) => id && id !== senderId,
+  );
+  const dest: { listenerId: string; channelId: string }[] = [];
+  const seen = new Set<string>();
+  const add = (listenerId: string, channelId: string) => {
+    if (!listenerId || listenerId === senderId) return;
+    const key = `${listenerId}:${channelId || "user"}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    dest.push({ listenerId, channelId });
+  };
+  for (const group of walkieGroupStamps(body)) {
+    for (const memberId of group.memberIds) add(memberId, group.id);
+  }
+  for (const id of people) add(id, "");
+  return dest;
 }
 
 function walkieGroupStamps(body: {

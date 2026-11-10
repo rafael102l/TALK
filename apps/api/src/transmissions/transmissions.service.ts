@@ -594,15 +594,13 @@ export class TransmissionsService {
         homesOf.set(member.userId, list);
       }
     }
+    const explicit = new Set((input.targetUserIds || []).filter((id) => id && id !== sender.id));
     let textOnly = 0;
     const dubbed: { targetId: string; language: string; channelId: string; group: boolean; groupName: string }[] = [];
     for (const listener of users) {
       const hear = (listener.listenLang || listener.speakLang || "").slice(0, 2).toLowerCase();
       const sameLanguage = !speak || !hear || hear === speak;
-      const homes = homesOf.get(listener.id);
-      const stamps = homes?.length
-        ? homes.map((home) => ({ channelId: home.id, group: true, groupName: home.name }))
-        : [{ channelId: payload.channelId, group: false, groupName: "" }];
+      const stamps = walkieDeliveryStamps(listener.id, homesOf.get(listener.id), explicit);
       if (!sameLanguage) {
         textOnly += 1;
         if (hear) {
@@ -2153,21 +2151,41 @@ function isGroupType(type?: string | null) {
   return type === "GROUP" || type === "BROADCAST";
 }
 
+function walkieDeliveryStamps(
+  listenerId: string,
+  homes: { id: string; name: string }[] | undefined,
+  explicit: Set<string>,
+) {
+  const stamps: { channelId: string; group: boolean; groupName: string }[] = [];
+  const seen = new Set<string>();
+  const add = (channelId: string, group: boolean, groupName = "") => {
+    const key = `${group ? "g" : "u"}:${channelId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    stamps.push({ channelId, group, groupName });
+  };
+  if (homes?.length) {
+    for (const home of homes) add(home.id, true, home.name || "");
+  }
+  if (explicit.has(listenerId)) add("", false);
+  if (!stamps.length) add("", false);
+  return stamps;
+}
+
 function walkieDubbedTargets(
   users: User[],
   speak: string,
   payload: TransmissionReadyPayload,
   homesOf?: Map<string, { id: string; name: string }[]>,
+  explicit?: Set<string>,
 ) {
   const dubbed: { targetId: string; language: string; channelId: string; group: boolean; groupName: string }[] = [];
   const src = (speak || "").slice(0, 2).toLowerCase();
+  const named = explicit || new Set<string>();
   for (const listener of users) {
     const hear = (listener.listenLang || listener.speakLang || "").slice(0, 2).toLowerCase();
     if (!src || !hear || hear === src) continue;
-    const homes = homesOf?.get(listener.id);
-    const stamps = homes?.length
-      ? homes.map((home) => ({ channelId: home.id, group: true as const, groupName: home.name }))
-      : [{ channelId: payload.channelId || "", group: Boolean(payload.group), groupName: "" }];
+    const stamps = walkieDeliveryStamps(listener.id, homesOf?.get(listener.id), named);
     for (const stamp of stamps) dubbed.push({ targetId: listener.id, language: hear, ...stamp });
   }
   return dubbed;
