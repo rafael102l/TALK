@@ -63,6 +63,48 @@ export class TransmissionsService {
     private readonly firebase: FirebaseRtdbService,
   ) {}
 
+  private readonly claimedLocal = new Map<string, { id: string; at: number }>();
+
+  clipLocalKey(input?: { clientLocalId?: string; releasedAt?: number }) {
+    const explicit = normalizeClientLocalId(input?.clientLocalId);
+    if (explicit) return explicit;
+    const released = Number(input?.releasedAt);
+    if (Number.isFinite(released) && released > 1_000_000_000_000) return `local-${Math.floor(released)}`;
+    return "";
+  }
+
+  /** Same press / outbox retry returns the first id — never a second clip. */
+  async beginClip(senderId: string, input?: { clientLocalId?: string; releasedAt?: number }) {
+    const localId = this.clipLocalKey(input);
+    if (localId) {
+      const db = await this.existingByClientLocalId(senderId, localId);
+      if (db) {
+        this.claimedLocal.set(`${senderId}:${localId}`, { id: db.id, at: Date.now() });
+        this.logger.log(`clip idempotent db ${db.id} clientLocalId=${localId}`);
+        return { ...db, existing: true as const, localId };
+      }
+      const mem = this.claimedLocal.get(`${senderId}:${localId}`);
+      if (mem && Date.now() - mem.at < 20 * 60_000) {
+        this.logger.log(`clip idempotent mem ${mem.id} clientLocalId=${localId}`);
+        return { id: mem.id, status: "READY" as const, channelId: "", existing: true as const, localId };
+      }
+    }
+    const id = randomUUID();
+    if (localId) {
+      const key = `${senderId}:${localId}`;
+      const raced = this.claimedLocal.get(key);
+      if (raced) return { id: raced.id, status: "READY" as const, channelId: "", existing: true as const, localId };
+      this.claimedLocal.set(key, { id, at: Date.now() });
+      if (this.claimedLocal.size > 400) {
+        const now = Date.now();
+        for (const [k, v] of this.claimedLocal) {
+          if (now - v.at > 20 * 60_000) this.claimedLocal.delete(k);
+        }
+      }
+    }
+    return { id, status: "READY" as const, channelId: "", existing: false as const, localId };
+  }
+
   async create(
     sender: User,
     file: Express.Multer.File,
@@ -81,6 +123,7 @@ export class TransmissionsService {
       replyToId?: string;
       replyToName?: string;
       replyToText?: string;
+      clientLocalId?: string;
     },
   ) {
     if (!file?.buffer?.length) throw new BadRequestException("חסר קובץ");
@@ -109,6 +152,8 @@ export class TransmissionsService {
         input.sourceLanguage || input.speakLang || "",
       );
     }
+    const begun = await this.beginClip(sender.id, input);
+    if (begun.existing) return { id: begun.id, status: begun.status, channelId: begun.channelId };
     const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
     const sameLanguage =
       users.length > 0 &&
@@ -131,6 +176,7 @@ export class TransmissionsService {
 
     const transmission = await this.prisma.transmission.create({
       data: {
+        id: begun.id,
         senderId: sender.id,
         channelId: channel.id,
         originalAudioUrl: audioUrl,
@@ -143,6 +189,7 @@ export class TransmissionsService {
         kind,
         viewOnce: kind === "voice" && Boolean(input.viewOnce),
         status: "PROCESSING",
+        ...(begun.localId ? { clientLocalId: begun.localId } : {}),
         ...(await this.expiryData(channel.id)),
         targets: {
           create: deliverUsers.map((user) => ({
@@ -177,9 +224,13 @@ export class TransmissionsService {
       replyToId?: string;
       replyToName?: string;
       replyToText?: string;
+      clientLocalId?: string;
+      releasedAt?: number;
     },
     kind: "image" | "video",
   ) {
+    const begun = await this.beginClip(sender.id, input);
+    if (begun.existing) return { id: begun.id, status: begun.status, channelId: begun.channelId };
     if (file.buffer.length > 80 * 1024 * 1024) throw new BadRequestException("הקובץ גדול מדי");
     if (kind === "video") {
       const duration = Number(input.durationMs) || 0;
@@ -197,9 +248,11 @@ export class TransmissionsService {
     });
     const transmission = await this.prisma.transmission.create({
       data: {
+        id: begun.id,
         senderId: sender.id,
         channelId: channel.id,
         originalAudioUrl: saved,
+        ...(begun.localId ? { clientLocalId: begun.localId } : {}),
         originalText: packed || null,
         durationMs: kind === "video" ? input.durationMs ?? null : null,
         kind,
@@ -296,6 +349,7 @@ export class TransmissionsService {
       releasedAt?: number;
       speakLang?: string;
       sourceLanguage?: string;
+      clientLocalId?: string;
     },
     opts?: { skipEmit?: boolean; skipEmitFor?: string[]; missed?: string[]; transmissionId?: string },
   ) {
@@ -327,7 +381,14 @@ export class TransmissionsService {
     if (!audioB64) {
       return this.create(sender, file, { ...input, kind: "walkie" });
     }
-    const transmissionId = opts?.transmissionId || randomUUID();
+    let transmissionId = opts?.transmissionId || "";
+    if (!opts?.skipEmit) {
+      const begun = await this.beginClip(sender.id, input);
+      if (begun.existing) return { id: begun.id, status: begun.status, channelId: begun.channelId || channelId };
+      transmissionId = begun.id;
+    } else if (!transmissionId) {
+      transmissionId = randomUUID();
+    }
     const clientRelease = Number(input.releasedAt);
     const releasedAt = Number.isFinite(clientRelease) && clientRelease > 0 ? clientRelease : started;
     const senderPublic = toPublicUser(sender);
@@ -517,7 +578,7 @@ export class TransmissionsService {
   private async relayWalkieNow(
     sender: User,
     file: Express.Multer.File,
-    input: { channelId?: string; channelIds?: string[]; durationMs?: number },
+    input: { channelId?: string; channelIds?: string[]; durationMs?: number; clientLocalId?: string; releasedAt?: number; targetUserIds?: string[] },
     users: User[],
     targetIds: string[],
     clientRelease: number,
@@ -529,6 +590,8 @@ export class TransmissionsService {
       this.logger.warn(`Walkie drop short duration=${input.durationMs} sender=${sender.id}`);
       return { id: "", status: "READY" as const, channelId: "" };
     }
+    const begun = await this.beginClip(sender.id, { ...input, releasedAt: clientRelease });
+    if (begun.existing) return { id: begun.id, status: begun.status, channelId: begun.channelId };
     const groupIds = [
       ...new Set(
         [input.channelId, ...(input.channelIds || [])]
@@ -552,7 +615,7 @@ export class TransmissionsService {
       : ([] as { id: string; name: string | null; type: string; members: { userId: string }[] }[]);
     const saveMs = Date.now() - started;
     const lang = (sourceLanguage || sender.speakLang || sender.listenLang || "").slice(0, 2).toLowerCase();
-    const transmissionId = randomUUID();
+    const transmissionId = begun.id;
     const channelHint = groupIds[0] || "";
     const groupType = groupRows.find((row) => row.id === channelHint)?.type;
     const senderPublic = toPublicUser(sender);
@@ -695,6 +758,7 @@ export class TransmissionsService {
             kind: "walkie",
             viewOnce: false,
             status: "READY",
+            ...(this.clipLocalKey(input) ? { clientLocalId: this.clipLocalKey(input) } : {}),
             targets: {
               create: users.map((user) => ({
                 userId: user.id,

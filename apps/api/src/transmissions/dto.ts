@@ -92,6 +92,11 @@ export class CreateTransmissionDto {
   @IsOptional()
   @IsString()
   @MaxLength(80)
+  clientLocalId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
   replyToId?: string;
 
   @IsOptional()

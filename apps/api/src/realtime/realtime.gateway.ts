@@ -547,6 +547,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       speakerName?: string;
       speakerAvatarUrl?: string | null;
       voiceGender?: "male" | "female" | "child";
+      clientLocalId?: string;
     },
   ) {
     if (!client.userId || typeof body?.audio !== "string") return { ok: false };
@@ -574,7 +575,17 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const releasedAt = Number(body.releasedAt);
     const gender =
       body.voiceGender === "female" || body.voiceGender === "child" ? body.voiceGender : "male";
-    const transmissionId = randomUUID();
+    const { TransmissionsService } = require("../transmissions/transmissions.service") as typeof import("../transmissions/transmissions.service");
+    const transmissions = this.moduleRef.get(TransmissionsService, { strict: false });
+    const begun = await transmissions.beginClip(client.userId, {
+      clientLocalId: body.clientLocalId,
+      releasedAt: Number.isFinite(releasedAt) ? releasedAt : undefined,
+    });
+    if (begun.existing) {
+      this.logger.log(`walkie send idempotent ${begun.id} user=${client.userId}`);
+      return { ok: true, id: begun.id, reached: 0 };
+    }
+    const transmissionId = begun.id;
     const basePayload: TransmissionReadyPayload = {
       transmissionId,
       channelId: "",
@@ -662,6 +673,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       releasedAt?: number;
       speakLang?: string;
       sourceLanguage?: string;
+      clientLocalId?: string;
     },
     transmissionId: string,
     reached: string[],
@@ -798,6 +810,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       releasedAt?: number;
       speakLang?: string;
       sourceLanguage?: string;
+      clientLocalId?: string;
     },
     targetUserIds: string[],
     channelId: string,
@@ -838,6 +851,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
             releasedAt: Number.isFinite(Number(body.releasedAt)) ? Number(body.releasedAt) : undefined,
             speakLang: body.speakLang,
             sourceLanguage: body.sourceLanguage || body.speakLang,
+            clientLocalId: typeof body.clientLocalId === "string" ? body.clientLocalId : undefined,
           },
           { skipEmit: true, skipEmitFor: reached, missed, transmissionId },
         );
