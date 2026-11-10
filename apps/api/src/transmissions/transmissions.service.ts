@@ -756,6 +756,7 @@ export class TransmissionsService {
         audioUrl: null,
         kind: "walkie" as const,
       });
+      const senderLines: string[] = [];
       await Promise.all(
         languages.map(async (language) => {
         let line = originalText;
@@ -784,10 +785,11 @@ export class TransmissionsService {
           this.logger.warn(`Walkie dub no translation ${transmissionId} ${speak}->${language}`);
           return;
         }
+        if (language !== speak) senderLines.push(line);
         const saved = await this.tts.speak(line, language, null, voiceGender, {
           allowEleven: true,
           preferEleven: true,
-          timeoutMs: 6000,
+          timeoutMs: 12000,
         });
         if (!saved) {
           this.logger.warn(`Walkie dub no tts ${transmissionId} ${speak}->${language}`);
@@ -804,14 +806,6 @@ export class TransmissionsService {
           }
         }
         const audioUrl = saved ? this.storage.publicUrl(saved) : "";
-        this.realtime.emitToUser(payload.senderId, SOCKET_EVENTS.TRANSMISSION_READY, {
-          ...basePayload,
-          language,
-          originalText,
-          translatedText: line,
-          audioUrl: null,
-          kind: "walkie" as const,
-        });
         for (const row of dubbed.filter((item) => item.language === language)) {
           const dubbedPayload = {
             ...basePayload,
@@ -837,6 +831,13 @@ export class TransmissionsService {
         }
         }),
       );
+      this.realtime.emitToUser(payload.senderId, SOCKET_EVENTS.TRANSMISSION_READY, {
+        ...basePayload,
+        originalText,
+        translatedText: [...new Set(senderLines)].join(" · "),
+        audioUrl: null,
+        kind: "walkie" as const,
+      });
     } catch (error) {
       this.logger.warn(`Walkie dub failed ${transmissionId}: ${(error as Error).message}`);
     }

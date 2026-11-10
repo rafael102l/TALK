@@ -504,33 +504,31 @@ export class LiveDubService {
   }
 
   private async deliver(press: Press, ears: Ear[], seq: number, listenLang: string, line: string, sttText = "") {
-    await Promise.all(
-      ears.map(async (ear) => {
-        const spoken = usableSpeech(line === "[unclear]" ? "" : line);
-        if (!spoken || isHallucination(spoken) || isStutterGarbage(spoken)) return;
-        const saved = await this.tts.speak(spoken, listenLang, ear.voiceId, ear.gender, {
-          allowEleven: true,
-          preferEleven: true,
-          timeoutMs: 12000,
-        });
-        const audioUrl = saved ? this.storage.publicUrl(saved) : null;
-        this.emit(ear.userId, {
-          speakerId: press.speakerId,
-          seq,
-          text: spoken,
-          lang: listenLang,
-          mode: audioUrl ? "plus" : "free",
-          audioUrl,
-          voiceGender: ear.gender,
-          sttText,
-          translatedText: spoken,
-          targetLanguage: speechTag(listenLang),
-        });
-        this.logger.log(
-          `live dub out user=${ear.userId} mode=${audioUrl ? "plus" : "free"} lang=${listenLang} seq=${seq} "${line}"`,
-        );
-      }),
-    );
+    const spoken = usableSpeech(line === "[unclear]" ? "" : line);
+    if (!spoken || isHallucination(spoken) || isStutterGarbage(spoken)) return;
+    const saved = await this.tts.speak(spoken, listenLang, null, press.speakerGender, {
+      allowEleven: true,
+      preferEleven: true,
+      timeoutMs: 12000,
+    });
+    const audioUrl = saved ? this.storage.publicUrl(saved) : null;
+    for (const ear of ears) {
+      this.emit(ear.userId, {
+        speakerId: press.speakerId,
+        seq,
+        text: spoken,
+        lang: listenLang,
+        mode: audioUrl ? "plus" : "free",
+        audioUrl,
+        voiceGender: press.speakerGender,
+        sttText,
+        translatedText: spoken,
+        targetLanguage: speechTag(listenLang),
+      });
+      this.logger.log(
+        `live dub out user=${ear.userId} mode=${audioUrl ? "plus" : "free"} lang=${listenLang} seq=${seq} "${spoken}"`,
+      );
+    }
   }
 }
 
