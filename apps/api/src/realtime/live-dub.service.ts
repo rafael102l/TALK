@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PttCaptionPayload, VoiceGender } from "@talk/shared";
-import { SttService, speechTag } from "../ai/stt.service";
+import { SttService, speechTag, MIN_WALKIE_MS, isHallucination, isStutterGarbage, usableSpeech } from "../ai/stt.service";
 import { TtsService } from "../ai/tts.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
@@ -356,6 +356,11 @@ export class LiveDubService {
     this.logger.log(
       `live dub audio press=${press.pressId || "-"} format=audio/wav rate=16000 ch=1 pcm16 bytes=${wav.length} pcmBytes=${pcmBytes} duration_sec=${(heard.durMs / 1000).toFixed(2)} rms=${Math.round(heard.rms)} peak=${Math.round(heard.peak)} reason=release`,
     );
+    if (heard.durMs > 0 && heard.durMs < MIN_WALKIE_MS) {
+      this.logger.warn(`live dub drop short press=${press.pressId || "-"} durMs=${heard.durMs}`);
+      this.idle(press, wav.length);
+      return;
+    }
     const byLang = new Map<string, Ear[]>();
     for (const ear of press.dub) {
       const list = byLang.get(ear.listenLang) ?? [];
@@ -366,14 +371,12 @@ export class LiveDubService {
     const seq = press.seq;
     if (reject) {
       this.logUnclear(press, "gate", reject, wav.length, heard);
-      await Promise.all([...byLang.entries()].map(([listenLang, ears]) => this.deliver(press, ears, seq, listenLang, "[unclear]")));
       this.idle(press, wav.length);
       return;
     }
     const sourceLang = press.speakLang;
     if (!sourceLang) {
       this.logger.warn(`LOG [TRACE] STT language missing press=${press.pressId || "-"}`);
-      await Promise.all([...byLang.entries()].map(([listenLang, ears]) => this.deliver(press, ears, seq, listenLang, "[unclear]")));
       this.idle(press, wav.length);
       return;
     }
@@ -383,10 +386,17 @@ export class LiveDubService {
     await Promise.all(
       [...byLang.entries()].map(async ([listenLang, ears]) => {
       const started = Date.now();
-      const translated = stt ? await this.stt.translateHeard(stt, listenLang, press.speakerGender) : { text: "", raw: "" };
+      if (!stt) {
+        this.logUnclear(press, "stt", "empty", wav.length, heard);
+        return;
+      }
+      const translated = await this.stt.translateHeard(stt, listenLang, press.speakerGender);
       const line = captionLine(translated.text);
-      if (line === "[unclear]") this.logUnclear(press, "gemini", "model", wav.length, heard, translated.raw || stt);
-      else translations.push(line);
+      if (line === "[unclear]") {
+        this.logUnclear(press, "gemini", "model", wav.length, heard, translated.raw || stt);
+        return;
+      }
+      translations.push(line);
       this.logger.log(
         `live dub phrase reason=release gemini=${Date.now() - started}ms lang=${listenLang} "${line}"`,
       );
@@ -394,17 +404,19 @@ export class LiveDubService {
       }),
     );
     const translatedText = [...new Set(translations)].join(" · ");
-    this.emit(press.speakerId, {
-      speakerId: press.speakerId,
-      seq,
-      text: translatedText,
-      lang: sourceLang,
-      mode: "free",
-      sttText: stt,
-      translatedText,
-      forSpeaker: true,
-      voiceGender: press.speakerGender,
-    });
+    if (stt && translations.length) {
+      this.emit(press.speakerId, {
+        speakerId: press.speakerId,
+        seq,
+        text: translatedText,
+        lang: sourceLang,
+        mode: "free",
+        sttText: stt,
+        translatedText,
+        forSpeaker: true,
+        voiceGender: press.speakerGender,
+      });
+    }
     this.logger.log(`LOG [PERF] Total Pipeline duration: ${Date.now() - pipelineStarted} ms`);
     this.logger.log(`live dub sender press=${press.pressId || "-"} stt=${JSON.stringify(stt)} translated=${JSON.stringify(translatedText)}`);
     this.idle(press, wav.length);
@@ -456,8 +468,8 @@ export class LiveDubService {
     if (press.previewJob) {
       void press.previewJob.catch(() => "");
     }
-    const heardOnce = await this.stt.hearClip(wav, "audio/wav", "wav", sourceLang);
-    return heardOnce.stt || press.previewStt || "";
+    const heardOnce = await this.stt.hearClip(wav, "audio/wav", "wav", sourceLang, pcmStats(wavPcm(wav)).durMs);
+    return heardOnce.stt || "";
   }
 
   private idle(press: Press, bytes: number) {
@@ -494,26 +506,24 @@ export class LiveDubService {
   private async deliver(press: Press, ears: Ear[], seq: number, listenLang: string, line: string, sttText = "") {
     await Promise.all(
       ears.map(async (ear) => {
-        const unclear = line === "[unclear]";
-        let audioUrl: string | null = null;
-        if (!unclear) {
-          const saved = await this.tts.speak(line, listenLang, ear.voiceId, ear.gender, {
-            allowEleven: true,
-            preferEleven: true,
-            timeoutMs: 12000,
-          });
-          audioUrl = saved ? this.storage.publicUrl(saved) : null;
-        }
+        const spoken = usableSpeech(line === "[unclear]" ? "" : line);
+        if (!spoken || isHallucination(spoken) || isStutterGarbage(spoken)) return;
+        const saved = await this.tts.speak(spoken, listenLang, ear.voiceId, ear.gender, {
+          allowEleven: true,
+          preferEleven: true,
+          timeoutMs: 12000,
+        });
+        const audioUrl = saved ? this.storage.publicUrl(saved) : null;
         this.emit(ear.userId, {
           speakerId: press.speakerId,
           seq,
-          text: line,
+          text: spoken,
           lang: listenLang,
           mode: audioUrl ? "plus" : "free",
           audioUrl,
           voiceGender: ear.gender,
           sttText,
-          translatedText: line === "[unclear]" ? "" : line,
+          translatedText: spoken,
           targetLanguage: speechTag(listenLang),
         });
         this.logger.log(

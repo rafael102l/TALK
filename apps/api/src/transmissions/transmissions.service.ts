@@ -23,6 +23,7 @@ import {
   matchesLang,
   spokenLang,
   usableSpeech,
+  tooShortWalkie,
 } from "../ai/stt.service";
 import { TranslateService } from "../ai/translate.service";
 import { TtsService } from "../ai/tts.service";
@@ -299,6 +300,10 @@ export class TransmissionsService {
     opts?: { skipEmit?: boolean; skipEmitFor?: string[]; missed?: string[]; transmissionId?: string },
   ) {
     const started = Date.now();
+    if (tooShortWalkie(input.durationMs)) {
+      this.logger.warn(`Walkie drop short duration=${input.durationMs} sender=${sender.id}`);
+      return { id: "", status: "READY" as const, channelId: "" };
+    }
     const targetIds = [...new Set((input.targetUserIds || []).filter((id) => id && id !== sender.id))];
     const groupIds = [
       ...new Set(
@@ -499,6 +504,10 @@ export class TransmissionsService {
     savedAudioUrl?: string,
   ) {
     const started = Date.now();
+    if (tooShortWalkie(input.durationMs)) {
+      this.logger.warn(`Walkie drop short duration=${input.durationMs} sender=${sender.id}`);
+      return { id: "", status: "READY" as const, channelId: "" };
+    }
     const groupIds = [
       ...new Set(
         [input.channelId, ...(input.channelIds || [])]
@@ -692,9 +701,19 @@ export class TransmissionsService {
     dubbed: { targetId: string; language: string; channelId: string; group: boolean; groupName: string }[],
   ) {
     try {
+      if (tooShortWalkie(payload.durationMs)) {
+        this.logger.warn(`Walkie dub skip short ${transmissionId} ${payload.durationMs}ms`);
+        return;
+      }
       const ext = extFrom(file);
       const languages = [...new Set(dubbed.map((row) => row.language))];
-      const heard = await this.stt.hearClip(file.buffer, file.mimetype || "audio/wav", ext, speak);
+      const heard = await this.stt.hearClip(
+        file.buffer,
+        file.mimetype || "audio/wav",
+        ext,
+        speak,
+        payload.durationMs ?? undefined,
+      );
       const originalText = usableSpeech((heard.stt || "").replace(/\s+/g, " ").trim());
       const { audioB64: _omitAudio, ...basePayload } = payload;
       if (!originalText || isHallucination(originalText) || isStutterGarbage(originalText)) {

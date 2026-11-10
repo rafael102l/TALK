@@ -48,7 +48,15 @@ const TAMIL = /[\u0B80-\u0BFF]/;
 const JUNK =
   /thank you for watching|thanks for watching|thanks for listening|subscribe|subtitle by|www\.|https?:\/\/|transcribe the complete|spoken sentence|walkie-talkie|תעתיק את המשפט|החזיקו את המיקרופון|hold the mic/i;
 const HALLUCINATION =
-  /^(thank you( very much)?|thanks( for (watching|listening))?|bye|goodbye|the end|you|subtitles?|captions?|how can i help( you)?( today)?|i love you|תודה( רבה)?( לך)?|כתוביות( כתוביות)?|נעים להכיר|אני אוהב(ת)? אותך|شكرا( جزيلا)?)$/i;
+  /^(thank you( very much)?|thanks( for (watching|listening))?|bye|goodbye|the end|you|subtitles?|captions?|how can i help( you)?( today)?|i love you|\[?(music|applause|silence|blank_audio)\]?|music|silence|applause|תודה( רבה)?( לך)?|כתוביות( כתוביות)?|נעים להכיר|אני אוהב(ת)? אותך|شكرا( جزيلا)?)$/i;
+
+/** Accidental tap. A real spoken walkie is longer. */
+export const MIN_WALKIE_MS = 400;
+
+export function tooShortWalkie(durationMs?: number | null) {
+  const ms = Number(durationMs);
+  return Number.isFinite(ms) && ms > 0 && ms < MIN_WALKIE_MS;
+}
 
 export type SttResult = { text: string; lang: string };
 
@@ -113,15 +121,31 @@ export class SttService {
     mime = "audio/wav",
     ext = "wav",
     sourceLang = "",
+    durationMs?: number,
   ): Promise<{ stt: string; raw: string; started: number }> {
     const started = Date.now();
     const key = process.env.GEMINI_API_KEY;
     const empty = { stt: "", raw: "", started };
     if (!key || !audio.length) return empty;
+    if (tooShortWalkie(durationMs)) {
+      this.logger.log(`LOG [TRACE] STT skip short ${durationMs}ms`);
+      return empty;
+    }
     const code = normLang(sourceLang);
     const tag = code ? speechTag(code) : "";
     if (!code || !tag) {
       this.logger.warn("LOG [TRACE] STT language missing");
+      return empty;
+    }
+    const isWav = audio.length >= 12 && audio.toString("ascii", 0, 4) === "RIFF";
+    const givenMs = Number(durationMs);
+    const seconds = isWav
+      ? wavSeconds(audio)
+      : Number.isFinite(givenMs) && givenMs > 0
+        ? givenMs / 1000
+        : 0;
+    if (isWav && seconds * 1000 > 0 && seconds * 1000 < MIN_WALKIE_MS) {
+      this.logger.log(`LOG [TRACE] STT skip short wav ${seconds.toFixed(2)}s`);
       return empty;
     }
     const hear = hearInstruction(code, tag);
@@ -146,6 +170,7 @@ export class SttService {
       pickFaithfulTranscript(
         liveSpeech(heard.text),
         liveSpeech(usableSpeech(whisper.text)),
+        seconds,
       ),
     );
     this.logger.log(`LOG [PERF] STT duration: ${Date.now() - started} ms`);
@@ -650,18 +675,26 @@ function stockHits(text: string) {
   return [...(text || "").matchAll(new RegExp(STOCK_EXTRA.source, "gi"))].map((row) => row[0].toLowerCase());
 }
 
-function pickFaithfulTranscript(gemini: string, whisper: string) {
+function tooManyWords(text: string, seconds: number) {
+  const n = (text || "").split(/\s+/).filter(Boolean).length;
+  if (!(seconds > 0) || n <= 3) return false;
+  return n > Math.ceil(seconds * 3.5) + 1;
+}
+
+function pickFaithfulTranscript(gemini: string, whisper: string, seconds = 0) {
   const g = usableSpeech(stripStock((gemini || "").replace(/\s+/g, " ").trim()));
   const w = usableSpeech(stripStock((whisper || "").replace(/\s+/g, " ").trim()));
-  // Gemini-only on a walkie clip is the usual silence hallucination. Whisper is the transcript.
   if (!w) return "";
-  if (!g) return w;
+  if (tooManyWords(w, seconds)) return "";
+  // One engine on a short/silent clip is almost always invented.
+  if (!g) return seconds > 0 && seconds < 0.8 ? "" : w;
+  // Two different inventions — do not pick one and send it.
+  if (textOverlap(g, w) < 0.4) return "";
   const extraGemini = stockHits(g).some((hit) => !stockHits(w).includes(hit));
   if (extraGemini) return w;
   const gw = g.split(/\s+/).filter(Boolean).length;
   const ww = w.split(/\s+/).filter(Boolean).length;
   if (gw > ww + 3 && gw > Math.ceil(ww * 1.6)) return w;
-  if (ww >= 2 && textOverlap(g, w) < 0.55) return w;
   return w;
 }
 

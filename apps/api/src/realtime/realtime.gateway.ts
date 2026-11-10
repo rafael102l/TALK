@@ -24,6 +24,7 @@ import { FloorService } from "./floor.service";
 import { PresenceService } from "./presence.service";
 import { PushService } from "../push/push.service";
 import { APP_NAME_EN, notifyChrome } from "../i18n/notifyChrome";
+import { tooShortWalkie } from "../ai/stt.service";
 
 type AuthedSocket = Socket & { userId?: string; displayName?: string; sessionVersion?: number };
 
@@ -535,6 +536,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
     const lang = (body.sourceLanguage || body.speakLang || "").slice(0, 2).toLowerCase();
     const durationMs = Number(body.durationMs);
+    if (tooShortWalkie(durationMs)) {
+      this.logger.warn(`walkie send drop short duration=${durationMs} user=${client.userId}`);
+      return { ok: false };
+    }
     const releasedAt = Number(body.releasedAt);
     const gender =
       body.voiceGender === "female" || body.voiceGender === "child" ? body.voiceGender : "male";
