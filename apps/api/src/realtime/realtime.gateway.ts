@@ -522,11 +522,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.warn(`walkie send drop size=${body.audio.length} user=${client.userId}`);
       return { ok: false };
     }
-    const { personIds, groups } = await this.resolveWalkieTargets(client.userId, body);
-    const channelIds = groups.map((row) => row.id);
-    const channelId = channelIds[0] || "";
-    const memberIds = [...new Set(groups.flatMap((row) => row.memberIds))];
-    if (!personIds.length && !channelIds.length && !memberIds.length) {
+    const stamps = walkieGroupStamps(body);
+    const requestedPeople = asIdList(Array.isArray(body.personIds) ? body.personIds : body.targetUserIds).filter(
+      (id) => id && id !== client.userId,
+    );
+    const stampIds = stamps.map((row) => row.id);
+    const stampSet = new Set(stampIds);
+    const personIds = [...new Set(requestedPeople.filter((id) => !stampSet.has(id)))];
+    if (!personIds.length && !stampIds.length) {
       this.logger.warn(`walkie send no-targets user=${client.userId}`);
       return { ok: false };
     }
@@ -569,18 +572,15 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         if (!reached.includes(id)) reached.push(id);
       } else if (!reached.includes(id) && !missed.includes(id)) missed.push(id);
     };
-    if (groups.length) {
-      for (const group of groups) {
+    const emitStarted = Date.now();
+    if (stamps.length) {
+      for (const group of stamps) {
         const row = {
           ...basePayload,
           channelId: group.id,
           group: true as const,
           groupName: group.name || null,
         };
-        for (const id of group.memberIds) {
-          if (!id || id === client.userId) continue;
-          note(id, this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row));
-        }
         this.emitToChannel(group.id, SOCKET_EVENTS.TRANSMISSION_READY, row);
       }
       for (const id of personIds) {
@@ -609,12 +609,78 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
     const { audioB64: _omit, ...senderAck } = basePayload;
     this.emitToUser(client.userId, SOCKET_EVENTS.TRANSMISSION_READY, senderAck);
-    const deliverIds = [...new Set([...personIds, ...memberIds])];
     this.logger.log(
-      `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} people=${personIds.length} groups=${channelIds.length} groupIds=${channelIds.join(",") || "-"} reached=${reached.length} missed=${missed.length}`,
+      `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} people=${personIds.length} groups=${stampIds.length} groupIds=${stampIds.join(",") || "-"} emitMs=${Date.now() - emitStarted} reached=${reached.length} missed=${missed.length}`,
     );
-    void this.persistWalkieSend(client.userId, body, deliverIds, channelId, channelIds, transmissionId, reached, missed);
+    void this.finishWalkieSend(client.userId, body, transmissionId, reached, missed, basePayload);
     return { ok: true, id: transmissionId, reached: reached.length };
+  }
+
+  private finishWalkieSend(
+    senderId: string,
+    body: {
+      audio?: string;
+      personIds?: string[];
+      targetUserIds?: string[];
+      channelId?: string;
+      channelIds?: string[];
+      groups?: { id?: string; name?: string; memberIds?: string[] }[];
+      durationMs?: number;
+      releasedAt?: number;
+      speakLang?: string;
+      sourceLanguage?: string;
+    },
+    transmissionId: string,
+    reached: string[],
+    missed: string[],
+    basePayload: TransmissionReadyPayload,
+  ) {
+    void (async () => {
+      try {
+        const resolved = await this.resolveWalkieTargets(senderId, body);
+        for (const group of resolved.groups) {
+          const row = {
+            ...basePayload,
+            channelId: group.id,
+            group: true as const,
+            groupName: group.name || null,
+          };
+          for (const id of group.memberIds) {
+            if (!id || id === senderId || reached.includes(id)) continue;
+            const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row);
+            if (ok) reached.push(id);
+            else if (!missed.includes(id)) missed.push(id);
+          }
+        }
+        for (const id of resolved.personIds) {
+          if (reached.includes(id) || missed.includes(id)) continue;
+          const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
+            ...basePayload,
+            channelId: "",
+            group: false,
+            groupName: null,
+          });
+          if (ok) reached.push(id);
+          else missed.push(id);
+        }
+        const channelIds = resolved.groups.map((row) => row.id);
+        const deliverIds = [
+          ...new Set([...resolved.personIds, ...resolved.groups.flatMap((row) => row.memberIds)]),
+        ];
+        this.persistWalkieSend(
+          senderId,
+          body,
+          deliverIds,
+          channelIds[0] || "",
+          channelIds,
+          transmissionId,
+          reached,
+          missed,
+        );
+      } catch (error) {
+        this.logger.warn(`walkie finish ${transmissionId} ${(error as Error).message}`);
+      }
+    })();
   }
 
   /**
