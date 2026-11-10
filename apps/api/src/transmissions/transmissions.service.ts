@@ -784,31 +784,22 @@ export class TransmissionsService {
           return;
         }
         if (language !== speak) senderLines.push(line);
-        const saved = await this.tts.speak(line, language, null, voiceGender, {
+        const spoken = await this.tts.speakBytes(line, language, null, voiceGender, {
           allowEleven: true,
           preferEleven: true,
           timeoutMs: 12000,
         });
-        if (!saved) {
+        if (!spoken?.length) {
           this.logger.warn(`Walkie dub no tts ${transmissionId} ${speak}->${language}`);
         }
-        if (saved) {
-          try {
-            await this.prisma.transmissionRender.upsert({
-              where: { transmissionId_language: { transmissionId, language } },
-              create: { transmissionId, language, audioUrl: saved, translatedText: line },
-              update: { audioUrl: saved, translatedText: line },
-            });
-          } catch (error) {
-            this.logger.warn(`Walkie dub render ${transmissionId} ${language} ${(error as Error).message}`);
-          }
-        }
-        const audioUrl = saved ? this.storage.publicUrl(saved) : "";
+        const audioB64 = spoken && spoken.length <= 1_500_000 ? spoken.toString("base64") : undefined;
+        const saveP = spoken?.length ? this.storage.save(spoken, "mp3", "renders") : Promise.resolve("");
         for (const row of dubbed.filter((item) => item.language === language)) {
           const dubbedPayload = {
             ...basePayload,
             language,
-            audioUrl,
+            audioUrl: "",
+            audioB64,
             originalText,
             translatedText: line,
             usedOriginalVoice: false,
@@ -820,13 +811,30 @@ export class TransmissionsService {
           };
           const reached = this.realtime.emitToUser(row.targetId, SOCKET_EVENTS.TRANSMISSION_READY, dubbedPayload);
           this.logger.log(`Deliver walkie ${transmissionId} -> ${row.targetId} reached=${reached}`);
-          if (audioUrl) void this.push.notifyOfflineMessage(row.targetId, dubbedPayload);
+          void saveP.then((saved) => {
+            const audioUrl = saved ? this.storage.publicUrl(saved) : "";
+            if (audioUrl) {
+              void this.push.notifyOfflineMessage(row.targetId, { ...dubbedPayload, audioUrl, audioB64: undefined });
+            }
+          });
           void this.prisma.transmissionTarget.updateMany({
             where: { transmissionId, userId: row.targetId, deliveredAt: null },
             data: { deliveredAt: new Date() },
           });
           this.logger.log(`Walkie dub ${transmissionId} ${speak}->${language} user=${row.targetId} tts`);
         }
+        void saveP.then(async (saved) => {
+          if (!saved) return;
+          try {
+            await this.prisma.transmissionRender.upsert({
+              where: { transmissionId_language: { transmissionId, language } },
+              create: { transmissionId, language, audioUrl: saved, translatedText: line },
+              update: { audioUrl: saved, translatedText: line },
+            });
+          } catch (error) {
+            this.logger.warn(`Walkie dub render ${transmissionId} ${language} ${(error as Error).message}`);
+          }
+        });
         }),
       );
       this.realtime.emitToUser(payload.senderId, SOCKET_EVENTS.TRANSMISSION_READY, {

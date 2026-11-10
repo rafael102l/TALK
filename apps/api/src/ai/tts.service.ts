@@ -88,6 +88,18 @@ export class TtsService {
     gender: VoiceGender = "male",
     opts: { allowEleven?: boolean; timeoutMs?: number; preferEleven?: boolean } = {},
   ): Promise<string | null> {
+    const buf = await this.speakBytes(text, language, voiceId, gender, opts);
+    if (!buf?.length) return null;
+    return this.storage.save(buf, "mp3", "renders");
+  }
+
+  async speakBytes(
+    text: string,
+    language: string,
+    voiceId?: string | null,
+    gender: VoiceGender = "male",
+    opts: { allowEleven?: boolean; timeoutMs?: number; preferEleven?: boolean } = {},
+  ): Promise<Buffer | null> {
     const clean = normalizeSpeechText(text);
     if (!clean) return null;
     const started = Date.now();
@@ -102,10 +114,10 @@ export class TtsService {
       const eleven = await this.viaEleven(clean, voiceId, gender, Math.max(timeoutMs, 4500), lang).catch(
         (error) => {
           this.logger.warn(`ElevenLabs TTS ${(error as Error).message}`);
-          return null as string | null;
+          return null as Buffer | null;
         },
       );
-      if (eleven) {
+      if (eleven?.length) {
         this.logger.log(`TTS eleven ${lang} ${Date.now() - started}ms chars=${clean.length}`);
         return eleven;
       }
@@ -113,9 +125,9 @@ export class TtsService {
 
     const openai = await this.viaOpenAi(clean, gender, Math.max(timeoutMs, 5000)).catch((error) => {
       this.logger.warn(`OpenAI TTS ${(error as Error).message}`);
-      return null as string | null;
+      return null as Buffer | null;
     });
-    if (openai) {
+    if (openai?.length) {
       this.logger.log(`TTS openai ${lang} ${Date.now() - started}ms chars=${clean.length}`);
       return openai;
     }
@@ -123,9 +135,9 @@ export class TtsService {
     if (allowEleven && !preferEleven) {
       const eleven = await this.viaEleven(clean, voiceId, gender, timeoutMs, lang).catch((error) => {
         this.logger.warn(`ElevenLabs TTS ${(error as Error).message}`);
-        return null as string | null;
+        return null as Buffer | null;
       });
-      if (eleven) {
+      if (eleven?.length) {
         this.logger.log(`TTS eleven ${lang} ${Date.now() - started}ms chars=${clean.length}`);
         return eleven;
       }
@@ -158,7 +170,7 @@ export class TtsService {
     }
     const buffer = Buffer.from(await res.arrayBuffer());
     if (!buffer.length) return null;
-    return this.storage.save(buffer, "mp3", "renders");
+    return buffer;
   }
 
   private async viaEleven(
@@ -196,7 +208,7 @@ export class TtsService {
     }
     const buffer = Buffer.from(await res.arrayBuffer());
     if (!buffer.length) return null;
-    return this.storage.save(buffer, "mp3", "renders");
+    return buffer;
   }
 }
 
