@@ -695,10 +695,10 @@ export class TransmissionsService {
       const ext = extFrom(file);
       const languages = [...new Set(dubbed.map((row) => row.language))];
       const heard = await this.stt.hearClip(file.buffer, file.mimetype || "audio/wav", ext, speak);
-      const originalText = (heard.stt || "").replace(/\s+/g, " ").trim();
+      const originalText = usableSpeech((heard.stt || "").replace(/\s+/g, " ").trim());
       const { audioB64: _omitAudio, ...basePayload } = payload;
-      if (!originalText) {
-        this.logger.warn(`Walkie dub empty stt ${transmissionId}`);
+      if (!originalText || isHallucination(originalText) || isStutterGarbage(originalText)) {
+        this.logger.warn(`Walkie dub empty/junk stt ${transmissionId}`);
         return;
       }
       try {
@@ -720,17 +720,21 @@ export class TransmissionsService {
         languages.map(async (language) => {
         let line = originalText;
         if (language !== speak) {
-          const live = await this.stt.translateHeard(originalText, language, voiceGender);
-          line = (live.text || "").replace(/\s+/g, " ").trim();
           const sameAsSource = (value: string) =>
             value.replace(/\s+/g, " ").trim().toLowerCase() === originalText.toLowerCase();
-          // Echoed source text is not a translation — try cloud, else drop.
-          if (!line || sameAsSource(line)) {
+          const padded = (src: string, out: string) => {
+            const a = src.split(/\s+/).filter(Boolean).length;
+            const b = out.split(/\s+/).filter(Boolean).length;
+            return b > a + 2 && b > Math.ceil(a * 1.5);
+          };
+          const live = await this.stt.translateHeard(originalText, language, voiceGender);
+          line = (live.text || "").replace(/\s+/g, " ").trim();
+          if (!line || sameAsSource(line) || padded(originalText, line)) {
             const cloud = await this.translate.translate(originalText, speak, language);
             line = (cloud.text || "").replace(/\s+/g, " ").trim();
-            if (cloud.reason || !line || sameAsSource(line)) {
+            if (cloud.reason || !line || sameAsSource(line) || padded(originalText, line)) {
               this.logger.warn(
-                `Walkie dub reject ${transmissionId} ${speak}->${language} reason=${cloud.reason || "source-echo"}`,
+                `Walkie dub reject ${transmissionId} ${speak}->${language} reason=${cloud.reason || "source-echo-or-padded"}`,
               );
               line = "";
             }

@@ -48,7 +48,7 @@ const TAMIL = /[\u0B80-\u0BFF]/;
 const JUNK =
   /thank you for watching|thanks for watching|thanks for listening|subscribe|subtitle by|www\.|https?:\/\/|transcribe the complete|spoken sentence|walkie-talkie|תעתיק את המשפט|החזיקו את המיקרופון|hold the mic/i;
 const HALLUCINATION =
-  /^(thank you( very much)?|thanks|bye|goodbye|the end|you|subtitles?|captions?|תודה( רבה)?( לך)?|כתוביות( כתוביות)?|شكرا( جزيلا)?)$/i;
+  /^(thank you( very much)?|thanks( for (watching|listening))?|bye|goodbye|the end|you|subtitles?|captions?|how can i help( you)?( today)?|i love you|תודה( רבה)?( לך)?|כתוביות( כתוביות)?|נעים להכיר|אני אוהב(ת)? אותך|شكرا( جزيلا)?)$/i;
 
 export type SttResult = { text: string; lang: string };
 
@@ -142,9 +142,11 @@ export class SttService {
       ),
       this.viaOpenAi(audio, ext, mime, 10000, code).catch(() => ({ text: "", lang: "" })),
     ]);
-    const spoken = pickFaithfulTranscript(
-      liveSpeech(heard.text),
-      liveSpeech(usableSpeech(whisper.text)),
+    const spoken = usableSpeech(
+      pickFaithfulTranscript(
+        liveSpeech(heard.text),
+        liveSpeech(usableSpeech(whisper.text)),
+      ),
     );
     this.logger.log(`LOG [PERF] STT duration: ${Date.now() - started} ms`);
     this.logger.log(`LOG [STT] Transcribed text: ${JSON.stringify(spoken || heard.raw)}`);
@@ -649,22 +651,18 @@ function stockHits(text: string) {
 }
 
 function pickFaithfulTranscript(gemini: string, whisper: string) {
-  const g = (gemini || "").replace(/\s+/g, " ").trim();
-  const w = (whisper || "").replace(/\s+/g, " ").trim();
+  const g = usableSpeech(stripStock((gemini || "").replace(/\s+/g, " ").trim()));
+  const w = usableSpeech(stripStock((whisper || "").replace(/\s+/g, " ").trim()));
+  // Gemini-only on a walkie clip is the usual silence hallucination. Whisper is the transcript.
+  if (!w) return "";
   if (!g) return w;
-  if (!w) return stripStock(g);
   const extraGemini = stockHits(g).some((hit) => !stockHits(w).includes(hit));
-  if (extraGemini) return stripStock(w) || stripStock(g);
-  const extraWhisper = stockHits(w).some((hit) => !stockHits(g).includes(hit));
-  // Whisper invents less on short walkie clips — prefer it when both are usable.
-  if (!extraWhisper && !isStutterGarbage(w) && w.split(/\s+/).filter(Boolean).length >= 1) {
-    return stripStock(w);
-  }
+  if (extraGemini) return w;
   const gw = g.split(/\s+/).filter(Boolean).length;
   const ww = w.split(/\s+/).filter(Boolean).length;
-  if (gw > ww + 3 && gw > Math.ceil(ww * 1.6)) return stripStock(w) || stripStock(g);
-  if (ww >= 2 && textOverlap(g, w) < 0.55) return stripStock(w) || stripStock(g);
-  return stripStock(w) || stripStock(g);
+  if (gw > ww + 3 && gw > Math.ceil(ww * 1.6)) return w;
+  if (ww >= 2 && textOverlap(g, w) < 0.55) return w;
+  return w;
 }
 
 function textOverlap(left: string, right: string) {
