@@ -289,6 +289,7 @@ export class TransmissionsService {
     file: Express.Multer.File,
     input: {
       channelId?: string;
+      channelIds?: string[];
       targetUserIds?: string[];
       durationMs?: number;
       releasedAt?: number;
@@ -299,8 +300,15 @@ export class TransmissionsService {
   ) {
     const started = Date.now();
     const targetIds = [...new Set((input.targetUserIds || []).filter((id) => id && id !== sender.id))];
-    const channelId = typeof input.channelId === "string" ? input.channelId.trim() : "";
-    if (!targetIds.length && !channelId) throw new BadRequestException("לא נבחרו נמענים");
+    const groupIds = [
+      ...new Set(
+        [input.channelId, ...(input.channelIds || [])]
+          .map((id) => (typeof id === "string" ? id.trim() : ""))
+          .filter(Boolean),
+      ),
+    ];
+    const channelId = groupIds[0] || "";
+    if (!targetIds.length && !groupIds.length) throw new BadRequestException("לא נבחרו נמענים");
     const lang = (
       input.sourceLanguage ||
       input.speakLang ||
@@ -345,6 +353,7 @@ export class TransmissionsService {
       group: Boolean(channelId),
       audioB64,
     };
+    const groupIdsForPersist = groupIds;
     const already = new Set(opts?.skipEmitFor || []);
     const missed = [...new Set(opts?.missed || [])];
     if (!opts?.skipEmit) {
@@ -364,16 +373,17 @@ export class TransmissionsService {
     const saveP = this.storage.save(file.buffer, extFrom(file), "audio");
     void (async () => {
       try {
-        if (channelId) {
+        for (const gid of groupIdsForPersist) {
           const members = await this.prisma.channelMember.findMany({
-            where: { channelId, userId: { not: sender.id } },
+            where: { channelId: gid, userId: { not: sender.id } },
             select: { userId: true },
           });
+          const stamped = { ...payload, channelId: gid, group: true };
           for (const row of members) {
-            if (!row.userId || targetIds.includes(row.userId)) continue;
-            targetIds.push(row.userId);
+            if (!row.userId) continue;
+            if (!targetIds.includes(row.userId)) targetIds.push(row.userId);
             if (already.has(row.userId) || missed.includes(row.userId)) continue;
-            const reached = this.realtime.emitToUser(row.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+            const reached = this.realtime.emitToUser(row.userId, SOCKET_EVENTS.TRANSMISSION_READY, stamped);
             if (!reached) missed.push(row.userId);
             else already.add(row.userId);
           }
@@ -394,7 +404,7 @@ export class TransmissionsService {
           lang,
           voiceGender,
           [],
-          channelId ? [channelId] : [],
+          groupIdsForPersist,
         );
         if (!missed.length) return;
         const url = await saveP;

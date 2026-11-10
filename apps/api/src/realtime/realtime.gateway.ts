@@ -505,6 +505,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       audio?: string;
       targetUserIds?: string[];
       channelId?: string;
+      channelIds?: string[];
+      groups?: { id?: string; name?: string; memberIds?: string[] }[];
       durationMs?: number;
       releasedAt?: number;
       speakLang?: string;
@@ -519,10 +521,13 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.warn(`walkie send drop size=${body.audio.length} user=${client.userId}`);
       return { ok: false };
     }
-    const targetUserIds = [...new Set(asIdList(body.targetUserIds).filter((id) => id !== client.userId))];
-    const channelId = typeof body.channelId === "string" ? body.channelId.trim() : "";
-    if (!targetUserIds.length && !channelId) {
-      this.logger.warn(`walkie send no-targets user=${client.userId} channel=${channelId || "-"}`);
+    const personIds = [...new Set(asIdList(body.targetUserIds).filter((id) => id !== client.userId))];
+    const groups = walkieGroupStamps(body);
+    const channelIds = groups.map((row) => row.id);
+    const channelId = channelIds[0] || "";
+    const memberIds = [...new Set(groups.flatMap((row) => row.memberIds).filter((id) => id !== client.userId))];
+    if (!personIds.length && !channelIds.length && !memberIds.length) {
+      this.logger.warn(`walkie send no-targets user=${client.userId}`);
       return { ok: false };
     }
     const lang = (body.sourceLanguage || body.speakLang || "").slice(0, 2).toLowerCase();
@@ -531,9 +536,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const gender =
       body.voiceGender === "female" || body.voiceGender === "child" ? body.voiceGender : "male";
     const transmissionId = randomUUID();
-    const payload: TransmissionReadyPayload = {
+    const basePayload: TransmissionReadyPayload = {
       transmissionId,
-      channelId,
+      channelId: "",
       senderId: client.userId,
       senderName: (body.speakerName || client.displayName || "").trim() || client.userId,
       language: lang,
@@ -554,22 +559,56 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       viewOnce: false,
       releasedAt: Number.isFinite(releasedAt) && releasedAt > 0 ? releasedAt : Date.now(),
       readyAt: Date.now(),
-      group: Boolean(channelId),
+      group: false,
     };
     client.join(`user:${client.userId}`);
     const reached: string[] = [];
     const missed: string[] = [];
-    for (const id of targetUserIds) {
-      if (this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload)) reached.push(id);
-      else missed.push(id);
+    const note = (id: string, ok: boolean) => {
+      if (ok) {
+        if (!reached.includes(id)) reached.push(id);
+      } else if (!reached.includes(id) && !missed.includes(id)) missed.push(id);
+    };
+    const stamped = Array.isArray(body.groups);
+    if (stamped) {
+      for (const group of groups) {
+        const row = {
+          ...basePayload,
+          channelId: group.id,
+          group: true,
+          groupName: group.name || null,
+        };
+        for (const id of group.memberIds) {
+          if (!id || id === client.userId) continue;
+          note(id, this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row));
+        }
+        this.emitToChannel(group.id, SOCKET_EVENTS.TRANSMISSION_READY, row);
+      }
+      for (const id of personIds) {
+        note(
+          id,
+          this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
+            ...basePayload,
+            channelId: "",
+            group: false,
+            groupName: null,
+          }),
+        );
+      }
+    } else {
+      const payload = { ...basePayload, channelId, group: Boolean(channelId) };
+      for (const id of personIds) {
+        note(id, this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload));
+      }
+      if (channelId) this.emitToChannel(channelId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
     }
-    if (channelId) this.emitToChannel(channelId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
-    const { audioB64: _omit, ...senderAck } = payload;
+    const { audioB64: _omit, ...senderAck } = basePayload;
     this.emitToUser(client.userId, SOCKET_EVENTS.TRANSMISSION_READY, senderAck);
+    const deliverIds = [...new Set([...personIds, ...memberIds])];
     this.logger.log(
-      `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} targets=${targetUserIds.join(",") || "-"} reached=${reached.length} missed=${missed.length} group=${String(Boolean(channelId))}`,
+      `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} people=${personIds.length} groups=${channelIds.length} reached=${reached.length} missed=${missed.length}`,
     );
-    void this.persistWalkieSend(client.userId, body, targetUserIds, channelId, transmissionId, reached, missed);
+    void this.persistWalkieSend(client.userId, body, deliverIds, channelId, channelIds, transmissionId, reached, missed);
     return { ok: true, id: transmissionId, reached: reached.length };
   }
 
@@ -584,6 +623,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     },
     targetUserIds: string[],
     channelId: string,
+    channelIds: string[],
     transmissionId: string,
     reached: string[],
     missed: string[],
@@ -615,6 +655,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           {
             targetUserIds,
             channelId: channelId || undefined,
+            channelIds: channelIds.length ? channelIds : undefined,
             durationMs: Number.isFinite(Number(body.durationMs)) ? Number(body.durationMs) : undefined,
             releasedAt: Number.isFinite(Number(body.releasedAt)) ? Number(body.releasedAt) : undefined,
             speakLang: body.speakLang,
@@ -1370,4 +1411,26 @@ function asIdList(raw: unknown): string[] {
     return raw.trim().length > 8 ? [raw.trim()] : [];
   }
   return [];
+}
+
+function walkieGroupStamps(body: {
+  channelId?: string;
+  channelIds?: string[];
+  groups?: { id?: string; name?: string; memberIds?: string[] }[];
+}) {
+  const map = new Map<string, { id: string; name: string; memberIds: string[] }>();
+  for (const row of body.groups || []) {
+    const id = typeof row?.id === "string" ? row.id.trim() : "";
+    if (!id) continue;
+    map.set(id, {
+      id,
+      name: typeof row.name === "string" ? row.name : "",
+      memberIds: asIdList(row.memberIds),
+    });
+  }
+  for (const id of [...asIdList(body.channelIds), typeof body.channelId === "string" ? body.channelId.trim() : ""]) {
+    if (!id || map.has(id)) continue;
+    map.set(id, { id, name: "", memberIds: [] });
+  }
+  return [...map.values()];
 }
