@@ -503,6 +503,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     @MessageBody()
     body: {
       audio?: string;
+      personIds?: string[];
       targetUserIds?: string[];
       channelId?: string;
       channelIds?: string[];
@@ -521,11 +522,16 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.warn(`walkie send drop size=${body.audio.length} user=${client.userId}`);
       return { ok: false };
     }
-    const personIds = [...new Set(asIdList(body.targetUserIds).filter((id) => id !== client.userId))];
     const groups = walkieGroupStamps(body);
+    const rawPeople = asIdList(body.personIds?.length ? body.personIds : body.targetUserIds).filter(
+      (id) => id !== client.userId,
+    );
+    await this.expandWalkieGroups(client.userId, groups, rawPeople);
     const channelIds = groups.map((row) => row.id);
     const channelId = channelIds[0] || "";
-    const memberIds = [...new Set(groups.flatMap((row) => row.memberIds).filter((id) => id !== client.userId))];
+    const groupIdSet = new Set(channelIds);
+    const memberIds = [...new Set(groups.flatMap((row) => row.memberIds).filter((id) => id && id !== client.userId))];
+    const personIds = [...new Set(rawPeople.filter((id) => !groupIdSet.has(id)))];
     if (!personIds.length && !channelIds.length && !memberIds.length) {
       this.logger.warn(`walkie send no-targets user=${client.userId}`);
       return { ok: false };
@@ -569,13 +575,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         if (!reached.includes(id)) reached.push(id);
       } else if (!reached.includes(id) && !missed.includes(id)) missed.push(id);
     };
-    const stamped = Array.isArray(body.groups);
-    if (stamped) {
+    if (groups.length) {
       for (const group of groups) {
         const row = {
           ...basePayload,
           channelId: group.id,
-          group: true,
+          group: true as const,
           groupName: group.name || null,
         };
         for (const id of group.memberIds) {
@@ -596,11 +601,17 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         );
       }
     } else {
-      const payload = { ...basePayload, channelId, group: Boolean(channelId) };
       for (const id of personIds) {
-        note(id, this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload));
+        note(
+          id,
+          this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
+            ...basePayload,
+            channelId: "",
+            group: false,
+            groupName: null,
+          }),
+        );
       }
-      if (channelId) this.emitToChannel(channelId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
     }
     const { audioB64: _omit, ...senderAck } = basePayload;
     this.emitToUser(client.userId, SOCKET_EVENTS.TRANSMISSION_READY, senderAck);
@@ -610,6 +621,40 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     );
     void this.persistWalkieSend(client.userId, body, deliverIds, channelId, channelIds, transmissionId, reached, missed);
     return { ok: true, id: transmissionId, reached: reached.length };
+  }
+
+  /** Reclassify group ids that the client stuffed into personIds, and load members if the client omitted them. */
+  private async expandWalkieGroups(
+    senderId: string,
+    groups: { id: string; name: string; memberIds: string[] }[],
+    maybePeople: string[],
+  ) {
+    const lookup = [...new Set([...groups.map((row) => row.id), ...maybePeople])].filter(Boolean);
+    if (!lookup.length) return;
+    const channels = await this.prisma.channel.findMany({
+      where: { id: { in: lookup } },
+      select: { id: true, name: true },
+    });
+    const names = new Map(channels.map((row) => [row.id, row.name || ""]));
+    for (const id of maybePeople) {
+      if (!names.has(id) || groups.some((row) => row.id === id)) continue;
+      groups.push({ id, name: names.get(id) || "", memberIds: [] });
+    }
+    const needMembers = groups.filter((row) => !row.memberIds.length).map((row) => row.id);
+    if (!needMembers.length) return;
+    const members = await this.prisma.channelMember.findMany({
+      where: { channelId: { in: needMembers }, userId: { not: senderId } },
+      select: { channelId: true, userId: true },
+    });
+    const byChannel = new Map<string, string[]>();
+    for (const row of members) {
+      const list = byChannel.get(row.channelId) || [];
+      list.push(row.userId);
+      byChannel.set(row.channelId, list);
+    }
+    for (const group of groups) {
+      if (!group.memberIds.length) group.memberIds = byChannel.get(group.id) || [];
+    }
   }
 
   private persistWalkieSend(
@@ -1398,7 +1443,7 @@ function isWalkiePayload(payload: unknown) {
 
 function asIdList(raw: unknown): string[] {
   if (Array.isArray(raw)) {
-    return raw.filter((id): id is string => typeof id === "string" && id.trim().length > 8);
+    return raw.filter((id): id is string => typeof id === "string" && id.trim().length >= 8);
   }
   if (typeof raw === "string" && raw.trim()) {
     try {
@@ -1408,7 +1453,7 @@ function asIdList(raw: unknown): string[] {
       /* plain id or csv */
     }
     if (raw.includes(",")) return asIdList(raw.split(",").map((id) => id.trim()));
-    return raw.trim().length > 8 ? [raw.trim()] : [];
+    return raw.trim().length >= 8 ? [raw.trim()] : [];
   }
   return [];
 }
