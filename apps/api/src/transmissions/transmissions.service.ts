@@ -811,12 +811,15 @@ export class TransmissionsService {
           };
           const reached = this.realtime.emitToUser(row.targetId, SOCKET_EVENTS.TRANSMISSION_READY, dubbedPayload);
           this.logger.log(`Deliver walkie ${transmissionId} -> ${row.targetId} reached=${reached}`);
-          void saveP.then((saved) => {
-            const audioUrl = saved ? this.storage.publicUrl(saved) : "";
-            if (audioUrl) {
-              void this.push.notifyOfflineMessage(row.targetId, { ...dubbedPayload, audioUrl, audioB64: undefined });
-            }
-          });
+          if (!reached) {
+            void saveP.then((saved) => {
+              if (this.realtime.hasLiveSocket(row.targetId)) return;
+              const audioUrl = saved ? this.storage.publicUrl(saved) : "";
+              if (audioUrl) {
+                void this.push.notifyOfflineMessage(row.targetId, { ...dubbedPayload, audioUrl, audioB64: undefined });
+              }
+            });
+          }
           void this.prisma.transmissionTarget.updateMany({
             where: { transmissionId, userId: row.targetId, deliveredAt: null },
             data: { deliveredAt: new Date() },
@@ -1160,7 +1163,7 @@ export class TransmissionsService {
         } else if (reached) {
           deliveredJobs.push(this.noteDelivered(target.id, sender.id, transmission.id, target.userId));
         }
-        if (delivery !== "walkie" || !reached) {
+        if (!reached) {
           void this.push.notifyOfflineMessage(target.userId, {
             transmissionId: transmission.id,
             channelId: transmission.channelId,

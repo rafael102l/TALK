@@ -90,11 +90,23 @@ export class PushService implements OnModuleInit {
     if (!userId || !transmissionId) return false;
     const key = `${userId}:${transmissionId}`;
     const now = Date.now();
-    if ((this.lastChatPushAt.get(key) ?? 0) > now - 2_000) return true;
+    if ((this.lastChatPushAt.get(key) ?? 0) > now - 15 * 60_000) return true;
+    try {
+      const already = await this.prisma.transmissionTarget.findFirst({
+        where: { userId, transmissionId, playedAt: { not: null } },
+        select: { id: true },
+      });
+      if (already) {
+        this.logger.log(`chat FCM skipped — already played user=${userId} id=${transmissionId}`);
+        return true;
+      }
+    } catch {
+      /* table shape may lag a migration — still send rather than drop a real wake */
+    }
     this.lastChatPushAt.set(key, now);
     if (this.lastChatPushAt.size > 200) {
       for (const [id, at] of this.lastChatPushAt) {
-        if (now - at > 60_000) this.lastChatPushAt.delete(id);
+        if (now - at > 15 * 60_000) this.lastChatPushAt.delete(id);
       }
     }
     const inbox =
