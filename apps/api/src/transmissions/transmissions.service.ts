@@ -373,15 +373,28 @@ export class TransmissionsService {
     const saveP = this.storage.save(file.buffer, extFrom(file), "audio");
     void (async () => {
       try {
+        const homesOf = new Map<string, { id: string; name: string }[]>();
+        const groupRows = groupIdsForPersist.length
+          ? await this.prisma.channel.findMany({
+              where: { id: { in: groupIdsForPersist } },
+              select: { id: true, name: true },
+            })
+          : [];
+        const groupName = new Map(groupRows.map((row) => [row.id, row.name || ""]));
         for (const gid of groupIdsForPersist) {
           const members = await this.prisma.channelMember.findMany({
             where: { channelId: gid, userId: { not: sender.id } },
             select: { userId: true },
           });
-          const stamped = { ...payload, channelId: gid, group: true };
+          const stamped = { ...payload, channelId: gid, group: true, groupName: groupName.get(gid) || null };
           for (const row of members) {
             if (!row.userId) continue;
             if (!targetIds.includes(row.userId)) targetIds.push(row.userId);
+            const list = homesOf.get(row.userId) || [];
+            if (!list.some((home) => home.id === gid)) {
+              list.push({ id: gid, name: groupName.get(gid) || "" });
+              homesOf.set(row.userId, list);
+            }
             if (already.has(row.userId) || missed.includes(row.userId)) continue;
             const reached = this.realtime.emitToUser(row.userId, SOCKET_EVENTS.TRANSMISSION_READY, stamped);
             if (!reached) missed.push(row.userId);
@@ -391,6 +404,7 @@ export class TransmissionsService {
         const users = targetIds.length
           ? await this.prisma.user.findMany({ where: { id: { in: targetIds } } })
           : [];
+        const dubbed = walkieDubbedTargets(users, lang, payload, homesOf);
         this.persistWalkie(
           transmissionId,
           sender,
@@ -403,12 +417,14 @@ export class TransmissionsService {
           payload,
           lang,
           voiceGender,
-          [],
+          dubbed,
           groupIdsForPersist,
         );
         if (!missed.length) return;
         const url = await saveP;
+        const dubbedIds = new Set(dubbed.map((row) => row.targetId));
         for (const id of [...new Set(missed)]) {
+          if (dubbedIds.has(id)) continue;
           void this.push.notifyOfflineMessage(id, {
             ...senderPayload,
             audioUrl: this.storage.publicUrl(url),
@@ -632,6 +648,9 @@ export class TransmissionsService {
     groupIds: string[],
   ) {
     void (async () => {
+      if (dubbed.length) {
+        void this.dubWalkie(file, transmissionId, payload, speak, voiceGender, dubbed);
+      }
       try {
         const storedUrl = await audioUrl;
         const channel = groupIds[0]
@@ -657,9 +676,6 @@ export class TransmissionsService {
             },
           },
         });
-        if (dubbed.length) {
-          void this.dubWalkie(file, transmissionId, payload, speak, voiceGender, dubbed);
-        }
       } catch (error) {
         this.logger.warn(`walkie persist ${transmissionId} ${(error as Error).message}`);
       }
@@ -680,16 +696,21 @@ export class TransmissionsService {
       const languages = [...new Set(dubbed.map((row) => row.language))];
       const heard = await this.stt.hearClip(file.buffer, file.mimetype || "audio/wav", ext, speak);
       const originalText = (heard.stt || "").replace(/\s+/g, " ").trim();
+      const { audioB64: _omitAudio, ...basePayload } = payload;
       if (!originalText) {
         this.logger.warn(`Walkie dub empty stt ${transmissionId}`);
         return;
       }
-      await this.prisma.transmission.update({
-        where: { id: transmissionId },
-        data: { originalText },
-      });
+      try {
+        await this.prisma.transmission.update({
+          where: { id: transmissionId },
+          data: { originalText },
+        });
+      } catch (error) {
+        this.logger.warn(`Walkie dub originalText ${transmissionId} ${(error as Error).message}`);
+      }
       this.realtime.emitToUser(payload.senderId, SOCKET_EVENTS.TRANSMISSION_READY, {
-        ...payload,
+        ...basePayload,
         originalText,
         translatedText: "",
         audioUrl: null,
@@ -726,16 +747,21 @@ export class TransmissionsService {
         });
         if (!saved) {
           this.logger.warn(`Walkie dub no tts ${transmissionId} ${speak}->${language}`);
-          return;
         }
-        await this.prisma.transmissionRender.upsert({
-          where: { transmissionId_language: { transmissionId, language } },
-          create: { transmissionId, language, audioUrl: saved, translatedText: line },
-          update: { audioUrl: saved, translatedText: line },
-        });
-        const audioUrl = this.storage.publicUrl(saved);
+        if (saved) {
+          try {
+            await this.prisma.transmissionRender.upsert({
+              where: { transmissionId_language: { transmissionId, language } },
+              create: { transmissionId, language, audioUrl: saved, translatedText: line },
+              update: { audioUrl: saved, translatedText: line },
+            });
+          } catch (error) {
+            this.logger.warn(`Walkie dub render ${transmissionId} ${language} ${(error as Error).message}`);
+          }
+        }
+        const audioUrl = saved ? this.storage.publicUrl(saved) : "";
         this.realtime.emitToUser(payload.senderId, SOCKET_EVENTS.TRANSMISSION_READY, {
-          ...payload,
+          ...basePayload,
           language,
           originalText,
           translatedText: line,
@@ -744,7 +770,7 @@ export class TransmissionsService {
         });
         for (const row of dubbed.filter((item) => item.language === language)) {
           const dubbedPayload = {
-            ...payload,
+            ...basePayload,
             language,
             audioUrl,
             originalText,
@@ -758,8 +784,7 @@ export class TransmissionsService {
           };
           const reached = this.realtime.emitToUser(row.targetId, SOCKET_EVENTS.TRANSMISSION_READY, dubbedPayload);
           this.logger.log(`Deliver walkie ${transmissionId} -> ${row.targetId} reached=${reached}`);
-          // Closed app: first (and only) FCM — already translated TTS.
-          void this.push.notifyOfflineMessage(row.targetId, dubbedPayload);
+          if (audioUrl) void this.push.notifyOfflineMessage(row.targetId, dubbedPayload);
           void this.prisma.transmissionTarget.updateMany({
             where: { transmissionId, userId: row.targetId, deliveredAt: null },
             data: { deliveredAt: new Date() },
@@ -2081,6 +2106,26 @@ export class TransmissionsService {
 
 function isGroupType(type?: string | null) {
   return type === "GROUP" || type === "BROADCAST";
+}
+
+function walkieDubbedTargets(
+  users: User[],
+  speak: string,
+  payload: TransmissionReadyPayload,
+  homesOf?: Map<string, { id: string; name: string }[]>,
+) {
+  const dubbed: { targetId: string; language: string; channelId: string; group: boolean; groupName: string }[] = [];
+  const src = (speak || "").slice(0, 2).toLowerCase();
+  for (const listener of users) {
+    const hear = (listener.listenLang || listener.speakLang || "").slice(0, 2).toLowerCase();
+    if (!src || !hear || hear === src) continue;
+    const homes = homesOf?.get(listener.id);
+    const stamps = homes?.length
+      ? homes.map((home) => ({ channelId: home.id, group: true as const, groupName: home.name }))
+      : [{ channelId: payload.channelId || "", group: Boolean(payload.group), groupName: "" }];
+    for (const stamp of stamps) dubbed.push({ targetId: listener.id, language: hear, ...stamp });
+  }
+  return dubbed;
 }
 
 function walkieReadyFor(
