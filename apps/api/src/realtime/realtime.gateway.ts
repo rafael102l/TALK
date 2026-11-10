@@ -611,7 +611,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.emitToUser(client.userId, SOCKET_EVENTS.TRANSMISSION_READY, senderAck);
     const deliverIds = [...new Set([...personIds, ...memberIds])];
     this.logger.log(
-      `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} people=${personIds.length} groups=${channelIds.length} reached=${reached.length} missed=${missed.length}`,
+      `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} people=${personIds.length} groups=${channelIds.length} groupIds=${channelIds.join(",") || "-"} reached=${reached.length} missed=${missed.length}`,
     );
     void this.persistWalkieSend(client.userId, body, deliverIds, channelId, channelIds, transmissionId, reached, missed);
     return { ok: true, id: transmissionId, reached: reached.length };
@@ -658,7 +658,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       });
       const senderIn = new Set(mine.map((row) => row.channelId));
       for (const id of allowed) {
-        if (!senderIn.has(id)) groupIds.delete(id);
+        if (!senderIn.has(id)) {
+          this.logger.warn(`walkie drop group ${id} sender=${senderId} not a member`);
+          groupIds.delete(id);
+        }
       }
     }
     const memberRows = groupIds.size
@@ -1490,11 +1493,19 @@ function asIdList(raw: unknown): string[] {
 
 function walkieGroupStamps(body: {
   channelId?: string;
-  channelIds?: string[];
-  groups?: { id?: string; name?: string; memberIds?: string[] }[];
+  channelIds?: string[] | string;
+  groups?: { id?: string; name?: string; memberIds?: string[] }[] | string;
 }) {
   const map = new Map<string, { id: string; name: string; memberIds: string[] }>();
-  for (const row of body.groups || []) {
+  let rows = body.groups;
+  if (typeof rows === "string") {
+    try {
+      rows = JSON.parse(rows) as { id?: string; name?: string; memberIds?: string[] }[];
+    } catch {
+      rows = [];
+    }
+  }
+  for (const row of rows || []) {
     const id = typeof row?.id === "string" ? row.id.trim() : "";
     if (!id) continue;
     map.set(id, {

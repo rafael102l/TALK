@@ -37,6 +37,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         `ALTER TABLE "Channel" ADD COLUMN IF NOT EXISTS "disappearAfterSec" INTEGER NOT NULL DEFAULT 0`,
       );
       await this.$executeRawUnsafe(`ALTER TABLE "Transmission" ADD COLUMN IF NOT EXISTS "expiresAt" TIMESTAMP(3)`);
+      await this.$executeRawUnsafe(`ALTER TABLE "Transmission" ADD COLUMN IF NOT EXISTS "clientLocalId" TEXT`);
+      await this.$executeRawUnsafe(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "Transmission_senderId_clientLocalId_key" ON "Transmission"("senderId", "clientLocalId")`,
+      );
       await this.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "fcmToken" TEXT`);
       await this.$executeRawUnsafe(
         `CREATE TABLE IF NOT EXISTS "CallDevice" (
