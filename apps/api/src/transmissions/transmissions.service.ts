@@ -362,14 +362,21 @@ export class TransmissionsService {
     const already = new Set(opts?.skipEmitFor || []);
     const missed = [...new Set(opts?.missed || [])];
     if (!opts?.skipEmit) {
-      for (const id of targetIds) {
-        if (already.has(id)) continue;
-        const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, payload);
-        this.logger.log(
-          `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=${String(Boolean(channelId))} channel=${channelId}`,
-        );
-        if (!reached) missed.push(id);
-        else already.add(id);
+      if (!groupIdsForPersist.length) {
+        for (const id of targetIds) {
+          if (already.has(id)) continue;
+          const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
+            ...payload,
+            channelId: "",
+            group: false,
+            groupName: null,
+          });
+          this.logger.log(
+            `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=false channel=`,
+          );
+          if (!reached) missed.push(id);
+          else already.add(id);
+        }
       }
       const { audioB64: _omit, ...senderPayload } = payload;
       this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, senderPayload);
@@ -405,6 +412,20 @@ export class TransmissionsService {
             if (!reached) missed.push(row.userId);
             else already.add(row.userId);
           }
+        }
+        for (const id of targetIds) {
+          if (already.has(id) || missed.includes(id) || homesOf.has(id)) continue;
+          const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
+            ...payload,
+            channelId: "",
+            group: false,
+            groupName: null,
+          });
+          this.logger.log(
+            `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=false channel=`,
+          );
+          if (!reached) missed.push(id);
+          else already.add(id);
         }
         const users = targetIds.length
           ? await this.prisma.user.findMany({ where: { id: { in: targetIds } } })

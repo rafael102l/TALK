@@ -529,7 +529,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     );
     const stampIds = stamps.map((row) => row.id);
     const stampSet = new Set(stampIds);
-    const personIds = [...new Set(requestedPeople.filter((id) => !stampSet.has(id)))];
+    const stampMembers = new Set(stamps.flatMap((row) => row.memberIds).filter((id) => id && id !== client.userId));
+    const personIds = [...new Set(requestedPeople.filter((id) => !stampSet.has(id) && !stampMembers.has(id)))];
     if (!personIds.length && !stampIds.length) {
       this.logger.warn(`walkie send no-targets user=${client.userId}`);
       return { ok: false };
@@ -572,6 +573,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     client.join(`user:${client.userId}`);
     const reached: string[] = [];
     const missed: string[] = [];
+    const reachedGroup = new Set<string>();
     const note = (id: string, ok: boolean) => {
       if (ok) {
         if (!reached.includes(id)) reached.push(id);
@@ -588,7 +590,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         };
         for (const id of group.memberIds) {
           if (!id || id === client.userId) continue;
-          note(id, this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row));
+          const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row);
+          if (ok) reachedGroup.add(id);
+          note(id, ok);
         }
       }
       for (const id of personIds) {
@@ -620,7 +624,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.logger.log(
       `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} people=${personIds.length} groups=${stampIds.length} groupIds=${stampIds.join(",") || "-"} emitMs=${Date.now() - emitStarted} reached=${reached.length} missed=${missed.length}`,
     );
-    void this.finishWalkieSend(client.userId, body, transmissionId, reached, missed, basePayload);
+    void this.finishWalkieSend(client.userId, body, transmissionId, reached, missed, basePayload, reachedGroup);
     return { ok: true, id: transmissionId, reached: reached.length };
   }
 
@@ -642,6 +646,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     reached: string[],
     missed: string[],
     basePayload: TransmissionReadyPayload,
+    reachedGroup = new Set<string>(),
   ) {
     void (async () => {
       try {
@@ -654,14 +659,16 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
             groupName: group.name || null,
           };
           for (const id of group.memberIds) {
-            if (!id || id === senderId || reached.includes(id)) continue;
+            if (!id || id === senderId || reachedGroup.has(id)) continue;
             const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row);
-            if (ok) reached.push(id);
-            else if (!missed.includes(id)) missed.push(id);
+            if (ok) {
+              reachedGroup.add(id);
+              if (!reached.includes(id)) reached.push(id);
+            } else if (!missed.includes(id)) missed.push(id);
           }
         }
         for (const id of resolved.personIds) {
-          if (reached.includes(id) || missed.includes(id)) continue;
+          if (reachedGroup.has(id) || reached.includes(id) || missed.includes(id)) continue;
           const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
             ...basePayload,
             channelId: "",
@@ -757,10 +764,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       name: channelName.get(id) || stamps.find((row) => row.id === id)?.name || "",
       memberIds: [...new Set(membersByGroup.get(id) || [])],
     }));
-    let personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id)))];
-    if (!explicitPersonField) {
-      personIds = personIds.filter((id) => !groupMemberSet.has(id));
-    }
+    const personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id) && !groupMemberSet.has(id)))];
     return { personIds, groups };
   }
 
