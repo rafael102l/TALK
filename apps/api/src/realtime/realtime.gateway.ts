@@ -582,6 +582,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           groupName: group.name || null,
         };
         this.emitToChannel(group.id, SOCKET_EVENTS.TRANSMISSION_READY, row);
+        for (const id of group.memberIds) {
+          if (!id || id === client.userId) continue;
+          note(id, this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row));
+        }
       }
       for (const id of personIds) {
         note(
