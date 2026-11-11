@@ -1984,7 +1984,7 @@ export class TransmissionsService {
         playedAt: null,
         transmission: {
           senderId: peerId,
-          OR: [{ kind: { in: ["text", "voice"] } }, { originalAudioUrl: "" }],
+          kind: { in: ["text", "voice", "image", "video"] },
         },
       },
       select: { id: true, transmissionId: true, deliveredAt: true },
@@ -2021,11 +2021,14 @@ export class TransmissionsService {
       where: { transmissionId, userId: user.id },
       include: { transmission: { select: { senderId: true, kind: true } } },
     });
-    if (!row || row.transmission.kind === "walkie" || row.deliveredAt) return { ok: true };
-    await this.prisma.transmissionTarget.update({
-      where: { id: row.id },
-      data: { deliveredAt: new Date() },
-    });
+    if (!row || row.transmission.kind === "walkie") return { ok: true };
+    if (!row.deliveredAt) {
+      await this.prisma.transmissionTarget.update({
+        where: { id: row.id },
+        data: { deliveredAt: new Date() },
+      });
+    }
+    // Status-only sync for an existing message — never re-sends content.
     this.realtime.emitToUser(row.transmission.senderId, "chat:receipt", {
       transmissionId,
       peerId: user.id,
@@ -2035,7 +2038,7 @@ export class TransmissionsService {
     return { ok: true };
   }
 
-  /** Chat only. Drop the server copy once every recipient has it — reconnect must not replay. */
+  /** Chat only. Keep rows until every recipient has read (blue ticks); then drop so reconnect does not replay. */
   async purgeChatIfDelivered(transmissionId: string) {
     if (!transmissionId) return;
     const tx = await this.prisma.transmission.findUnique({
@@ -2044,7 +2047,8 @@ export class TransmissionsService {
     });
     if (!tx) return;
     if (tx.kind !== "text" && tx.kind !== "voice" && tx.kind !== "image" && tx.kind !== "video") return;
-    if (!tx.targets.length || tx.targets.some((row) => !row.deliveredAt)) return;
+    // Do not purge on delivered alone — that blocked read receipts and left sender ticks stuck.
+    if (!tx.targets.length || tx.targets.some((row) => !row.playedAt)) return;
     try {
       await this.storage.remove(tx.originalAudioUrl);
       for (const render of tx.renders) await this.storage.remove(render.audioUrl);
@@ -2082,7 +2086,7 @@ export class TransmissionsService {
         transmission: {
           senderId: { not: userId },
           status: "READY",
-          OR: [{ kind: { in: ["text", "voice"] } }, { originalAudioUrl: "" }],
+          kind: { in: ["text", "voice", "image", "video"] },
         },
       },
       select: {

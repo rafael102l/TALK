@@ -282,10 +282,18 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         releasedAt: tx.createdAt.getTime(),
       };
       if (!this.emitToUser(userId, SOCKET_EVENTS.TRANSMISSION_READY, payload, false)) break;
-      await this.prisma.transmissionTarget.updateMany({
+      const marked = await this.prisma.transmissionTarget.updateMany({
         where: { id: row.id, deliveredAt: null },
         data: { deliveredAt: new Date() },
       });
+      if (marked.count) {
+        // Receipt-only notify — do not re-emit message content to the sender.
+        this.emitToUser(tx.senderId, SOCKET_EVENTS.CHAT_RECEIPT, {
+          transmissionId: tx.id,
+          peerId: userId,
+          receipt: "delivered",
+        });
+      }
       delivered += 1;
       void transmissions?.purgeChatIfDelivered(tx.id);
     }
