@@ -40,8 +40,10 @@ import { notifyChrome } from "../i18n/notifyChrome";
 
 function normalizeClientLocalId(value?: string | null) {
   const id = typeof value === "string" ? value.trim() : "";
-  if (!id || id.length > 80 || !/^local-[\w-]+$/.test(id)) return "";
-  return id;
+  if (!id || id.length > 80) return "";
+  if (/^local-[\w-]+$/.test(id)) return id;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return id;
+  return "";
 }
 
 @Injectable()
@@ -936,14 +938,12 @@ export class TransmissionsService {
     });
     const visible = decodeReply(packed).text.trim();
     if (!visible) throw new BadRequestException("חסרה הודעה");
-    const clientLocalId = normalizeClientLocalId(input.clientLocalId);
-    if (clientLocalId) {
-      const existing = await this.existingByClientLocalId(sender.id, clientLocalId);
-      if (existing) {
-        this.logger.log(`TEXT idempotent ${existing.id} clientLocalId=${clientLocalId}`);
-        return existing;
-      }
+    const begun = await this.beginClip(sender.id, { clientLocalId: input.clientLocalId });
+    if (begun.existing) {
+      this.logger.log(`TEXT idempotent ${begun.id} clientLocalId=${begun.localId}`);
+      return { id: begun.id, status: begun.status, channelId: begun.channelId };
     }
+    const clientLocalId = begun.localId;
     const planned = await this.planTargets(sender, input, "text");
     const targetIds = planned.deliverIds;
     const channel = await this.ensureChannel(sender, input.channelId, planned.channelIds);
@@ -953,6 +953,7 @@ export class TransmissionsService {
     try {
       transmission = await this.prisma.transmission.create({
         data: {
+          id: begun.id,
           senderId: sender.id,
           channelId: channel.id,
           originalAudioUrl: "",
@@ -1938,6 +1939,9 @@ export class TransmissionsService {
         receipt: "read",
       });
     }
+    for (const id of [...new Set(pending.map((row) => row.transmissionId))]) {
+      void this.purgeChatIfDelivered(id);
+    }
     return { ok: true };
   }
 
@@ -1957,7 +1961,33 @@ export class TransmissionsService {
       peerId: user.id,
       receipt: row.playedAt ? "read" : "delivered",
     });
+    void this.purgeChatIfDelivered(transmissionId);
     return { ok: true };
+  }
+
+  /** Chat only. Drop the server copy once every recipient has it — reconnect must not replay. */
+  async purgeChatIfDelivered(transmissionId: string) {
+    if (!transmissionId) return;
+    const tx = await this.prisma.transmission.findUnique({
+      where: { id: transmissionId },
+      include: { targets: true, renders: true },
+    });
+    if (!tx) return;
+    if (tx.kind !== "text" && tx.kind !== "voice" && tx.kind !== "image" && tx.kind !== "video") return;
+    if (!tx.targets.length || tx.targets.some((row) => !row.deliveredAt)) return;
+    try {
+      await this.storage.remove(tx.originalAudioUrl);
+      for (const render of tx.renders) await this.storage.remove(render.audioUrl);
+    } catch (error) {
+      this.logger.warn(`chat purge files ${tx.id}: ${(error as Error).message}`);
+    }
+    const watchers = [...new Set([tx.senderId, ...tx.targets.map((row) => row.userId)])];
+    if (tx.clientLocalId) {
+      this.claimedLocal.set(`${tx.senderId}:${tx.clientLocalId}`, { id: tx.id, at: Date.now() });
+    }
+    await this.prisma.transmission.delete({ where: { id: tx.id } });
+    void this.firebase.removeTransmission(watchers, tx.id);
+    this.logger.log(`chat purged ${tx.id} kind=${tx.kind} targets=${tx.targets.length}`);
   }
 
   private async noteDelivered(targetRowId: string, senderId: string, transmissionId: string, peerId: string) {
@@ -1971,6 +2001,7 @@ export class TransmissionsService {
       peerId,
       receipt: "delivered",
     });
+    void this.purgeChatIfDelivered(transmissionId);
   }
 
   private async markInboxDelivered(userId: string) {
@@ -2004,6 +2035,9 @@ export class TransmissionsService {
         receipt: row.playedAt ? "read" : "delivered",
       });
     }
+    for (const id of [...new Set(rows.map((row) => row.transmissionId))]) {
+      void this.purgeChatIfDelivered(id);
+    }
   }
 
   async markPlayed(user: User, transmissionId: string) {
@@ -2031,6 +2065,7 @@ export class TransmissionsService {
         receipt: "read",
       });
     }
+    if (row.transmission.kind !== "walkie") void this.purgeChatIfDelivered(transmissionId);
     return { ok: true };
   }
 

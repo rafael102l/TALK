@@ -219,6 +219,13 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       take: 40,
     });
     if (!rows.length) return;
+    let transmissions: { purgeChatIfDelivered: (id: string) => Promise<void> } | null = null;
+    try {
+      const { TransmissionsService } = require("../transmissions/transmissions.service") as typeof import("../transmissions/transmissions.service");
+      transmissions = this.moduleRef.get(TransmissionsService, { strict: false });
+    } catch {
+      transmissions = null;
+    }
     const blockedSenders = await this.prisma.contact.findMany({
       where: {
         ownerId: userId,
@@ -280,6 +287,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         data: { deliveredAt: new Date() },
       });
       delivered += 1;
+      void transmissions?.purgeChatIfDelivered(tx.id);
     }
     if (delivered) this.logger.log(`Chat replay user=${userId} count=${delivered}`);
   }
