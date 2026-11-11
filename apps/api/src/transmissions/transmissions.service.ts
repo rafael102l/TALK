@@ -792,7 +792,13 @@ export class TransmissionsService {
     transmissionId: string,
     sender: User,
     file: Express.Multer.File,
-    input: { channelId?: string; channelIds?: string[]; durationMs?: number },
+    input: {
+      channelId?: string;
+      channelIds?: string[];
+      durationMs?: number;
+      clientLocalId?: string;
+      releasedAt?: number;
+    },
     users: User[],
     targetIds: string[],
     audioUrl: string | Promise<string>,
@@ -945,7 +951,8 @@ export class TransmissionsService {
               if (this.realtime.hasLiveSocket(row.targetId)) return;
               const audioUrl = saved ? this.storage.publicUrl(saved) : "";
               if (audioUrl) {
-                void this.push.notifyOfflineMessage(row.targetId, { ...dubbedPayload, audioUrl, audioB64: undefined });
+                const { audioB64: _omitB64, ...pushPayload } = dubbedPayload;
+                void this.push.notifyOfflineMessage(row.targetId, { ...pushPayload, audioUrl });
               }
             });
           }
