@@ -28,6 +28,29 @@ export class MediaController {
     }
     sendAudio(req, res, file.body, file.mime);
   }
+
+  @Get("renders/:name")
+  async renders(@Param("name") name: string, @Req() req: Request, @Res() res: Response) {
+    // TTS dubs live here — Postgres fallback so play never gets HTML/JSON 404.
+    const file = await this.storage.readRender(name);
+    if (!file) {
+      console.warn(`[renders] missing ${name}`);
+      res.status(404).json({ message: "missing" });
+      return;
+    }
+    sendAudio(req, res, file.body, file.mime);
+  }
+
+  @Get("avatars/:name")
+  async avatar(@Param("name") name: string, @Req() req: Request, @Res() res: Response) {
+    const file = await this.storage.readAvatar(name);
+    if (!file) {
+      console.warn(`[avatar] missing ${name}`);
+      res.status(404).json({ message: "missing" });
+      return;
+    }
+    sendAudio(req, res, file.body, file.mime);
+  }
 }
 
 function sendAudio(req: Request, res: Response, body: Buffer, mime: string) {

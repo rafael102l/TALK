@@ -30,9 +30,10 @@ export class StorageService {
     await mkdir(dir, { recursive: true });
     const name = `${randomUUID()}.${ext.replace(/^\./, "")}`;
     await writeFile(join(dir, name), buffer);
-    if (folder === "audio" || folder === "chat") {
-      // Walkie must emit as soon as the file is on disk. Postgres backup can lag.
-      void this.rememberAudio(name, buffer, mimeFor(name)).catch((error: Error) => {
+    // Await Postgres backup before returning the URL — otherwise phones hit 404 JSON
+    // on another Render instance and ExoPlayer cannot open the clip.
+    if (folder === "avatars" || folder === "audio" || folder === "chat" || folder === "renders") {
+      await this.rememberAudio(name, buffer, mimeFor(name)).catch((error: Error) => {
         console.error(`[media] store failed: ${error.message}`);
       });
     }
@@ -72,10 +73,23 @@ export class StorageService {
     return this.readStored(name, "chat");
   }
 
-  private async readStored(name: string, folder: "audio" | "chat"): Promise<{ body: Buffer; mime: string } | null> {
+  async readRender(name: string): Promise<{ body: Buffer; mime: string } | null> {
     const clean = name.split("/").pop() ?? name;
     if (!/^[\w.-]+$/.test(clean)) return null;
-    const extras = folder === "audio" ? [clean, `${clean}.m4a`, `${clean}.mp3`, `${clean}.wav`] : [clean];
+    // Disk in renders/ first, then same Postgres row (name is global in WalkieAudio).
+    const onDisk = await this.readNamedFile(clean, "renders");
+    if (onDisk) return onDisk;
+    return this.readStored(clean, "audio");
+  }
+
+  async readAvatar(name: string): Promise<{ body: Buffer; mime: string } | null> {
+    return this.readStored(name, "avatars");
+  }
+
+  private async readStored(name: string, folder: "audio" | "chat" | "avatars" | "renders"): Promise<{ body: Buffer; mime: string } | null> {
+    const clean = name.split("/").pop() ?? name;
+    if (!/^[\w.-]+$/.test(clean)) return null;
+    const extras = folder === "audio" || folder === "renders" ? [clean, `${clean}.m4a`, `${clean}.mp3`, `${clean}.wav`] : [clean];
     const names = clean.includes(".") ? [clean] : extras;
     for (const candidate of names) {
       const found = await this.readNamedFile(candidate, folder);
@@ -84,7 +98,7 @@ export class StorageService {
     return null;
   }
 
-  private async readNamedFile(name: string, folder: "audio" | "chat"): Promise<{ body: Buffer; mime: string } | null> {
+  private async readNamedFile(name: string, folder: "audio" | "chat" | "avatars" | "renders"): Promise<{ body: Buffer; mime: string } | null> {
     const diskPath = join(this.root, folder, name);
     try {
       const body = await readFile(diskPath);
