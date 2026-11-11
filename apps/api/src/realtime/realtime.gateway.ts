@@ -10,8 +10,7 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from "@nestjs/websockets";
-import { randomUUID } from "crypto";
-import { PttSpeakingPayload, SOCKET_EVENTS, TransmissionReadyPayload } from "@talk/shared";
+import { PttSpeakingPayload, SOCKET_EVENTS } from "@talk/shared";
 import { StorageService } from "../storage/storage.service";
 import { LiveDubService } from "./live-dub.service";
 import { toPublicUser } from "../users/user.mapper";
@@ -27,6 +26,19 @@ import { APP_NAME_EN, notifyChrome } from "../i18n/notifyChrome";
 import { tooShortWalkie } from "../ai/stt.service";
 
 type AuthedSocket = Socket & { userId?: string; displayName?: string; sessionVersion?: number };
+
+type WalkieGroupHint = { id?: string; name?: string; memberIds?: string[] };
+
+type WalkieDestBody = {
+  channelId?: string;
+  channelIds?: string[];
+  targetUserIds?: string[];
+  personIds?: string[];
+  groups?: WalkieGroupHint[];
+  everyone?: boolean;
+};
+
+type WalkieDest = { listenerId: string; channelId: string; group: boolean };
 
 @WebSocketGateway({ cors: { origin: true }, maxHttpBufferSize: 8 * 1024 * 1024 })
 export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -295,7 +307,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         });
       }
       delivered += 1;
-      void transmissions?.purgeChatIfDelivered(tx.id);
+      void transmissions?.purgeChatIfDelivered(tx.id)?.catch((error: Error) => {
+        this.logger.warn(`chat purge after replay ${tx.id}: ${error.message}`);
+      });
     }
     if (delivered) this.logger.log(`Chat replay user=${userId} count=${delivered}`);
   }
@@ -412,13 +426,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   async pttStart(
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody()
-    body: {
-      channelId?: string;
-      channelIds?: string[];
-      targetUserIds?: string[];
-      personIds?: string[];
-      groups?: { id?: string; name?: string; memberIds?: string[] }[];
-      everyone?: boolean;
+    body: WalkieDestBody & {
       speakerName?: string;
       speakerAvatarUrl?: string | null;
       voiceGender?: "male" | "female" | "child";
@@ -427,14 +435,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     },
   ) {
     if (!client.userId) return;
-    const dest = walkieSpeakDest(client.userId, body);
-    const named = [...new Set((body.targetUserIds ?? []).filter((id) => id && id !== client.userId))];
-    const room = dest.length
-      ? { key: dest[0].channelId || `targets:${[client.userId, ...named].sort().join(",")}`, listenerIds: [...new Set(dest.map((row) => row.listenerId))] }
-      : named.length
-        ? { key: `targets:${[client.userId, ...named].sort().join(",")}`, listenerIds: named }
-        : await this.floorRoom(client.userId, body);
-    if (!room) return { ok: false, rooms: "" };
+    const dest = await this.walkieDestinations(client.userId, body);
+    if (!dest.length) return { ok: false, rooms: "" };
     client.join(`user:${client.userId}`);
     const sentGender =
       body.voiceGender === "female" || body.voiceGender === "child" || body.voiceGender === "male"
@@ -442,46 +444,29 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         : "";
     const gender = sentGender === "female" || sentGender === "child" ? sentGender : "male";
     const speakerName = body.speakerName || client.displayName || "דובר";
-    const rows = dest.length
-      ? dest
-      : room.listenerIds
-          .filter((id) => id && id !== client.userId)
-          .map((listenerId) => ({
-            listenerId,
-            channelId: room.key.startsWith("targets:") ? "" : room.key,
-          }));
-    for (const row of rows) {
+    for (const row of dest) {
       this.emitToUser(row.listenerId, SOCKET_EVENTS.PTT_SPEAKING, {
         channelId: row.channelId,
         speakerId: client.userId,
         speakerName,
         speakerAvatarUrl: body.speakerAvatarUrl ?? null,
         voiceGender: gender,
-      });
+      } as PttSpeakingPayload);
     }
     void this.sessionStillValid(client).then((ok) => {
       if (ok) return;
       client.emit(SOCKET_EVENTS.SESSION_REPLACED, { reason: "single_session" });
       this.closeSocket(client);
     });
-    const peers = [...new Set(rows.map((row) => row.listenerId))];
+    const peers = [...new Set(dest.map((row) => row.listenerId))];
     const rooms = peers.map((id) => `${id}:${this.roomCount(id)}`).join(",");
-    return { ok: true, floorKey: room.key, rooms };
+    return { ok: true, floorKey: dest[0]?.channelId || "", rooms };
   }
 
   @SubscribeMessage(SOCKET_EVENTS.PTT_RELEASED)
   async pttReleased(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody()
-    body: {
-      channelId?: string;
-      channelIds?: string[];
-      targetUserIds?: string[];
-      personIds?: string[];
-      groups?: { id?: string; name?: string; memberIds?: string[] }[];
-      everyone?: boolean;
-      pressId?: string;
-    },
+    @MessageBody() body: WalkieDestBody & { pressId?: string },
   ) {
     if (!client.userId) return;
     this.liveDub.finish(client.id, typeof body.pressId === "string" ? body.pressId : "");
@@ -490,21 +475,11 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.closeSocket(client);
       return { ok: false };
     }
-    const dest = walkieSpeakDest(client.userId, body);
-    const room = dest.length
-      ? { key: dest[0].channelId || "", listenerIds: [...new Set(dest.map((row) => row.listenerId))] }
-      : await this.floorRoom(client.userId, body);
-    if (!room) return;
-    await this.floor.release(room.key, client.userId);
-    const rows = dest.length
-      ? dest
-      : room.listenerIds
-          .filter((id) => id && id !== client.userId)
-          .map((listenerId) => ({
-            listenerId,
-            channelId: room.key.startsWith("targets:") ? "" : room.key,
-          }));
-    for (const row of rows) {
+    const dest = await this.walkieDestinations(client.userId, body);
+    if (!dest.length) return;
+    const keys = [...new Set(dest.map((row) => row.channelId).filter(Boolean))];
+    for (const key of keys) await this.floor.release(key, client.userId);
+    for (const row of dest) {
       this.emitToUser(row.listenerId, SOCKET_EVENTS.PTT_RELEASED, {
         channelId: row.channelId,
         speakerId: client.userId,
@@ -549,20 +524,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   async walkieSend(
     @ConnectedSocket() client: AuthedSocket,
     @MessageBody()
-    body: {
+    body: WalkieDestBody & {
       audio?: string;
-      personIds?: string[];
-      targetUserIds?: string[];
-      channelId?: string;
-      channelIds?: string[];
-      groups?: { id?: string; name?: string; memberIds?: string[] }[];
       durationMs?: number;
       releasedAt?: number;
       speakLang?: string;
       sourceLanguage?: string;
-      speakerName?: string;
-      speakerAvatarUrl?: string | null;
-      voiceGender?: "male" | "female" | "child";
       clientLocalId?: string;
     },
   ) {
@@ -571,337 +538,54 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.warn(`walkie send drop size=${body.audio.length} user=${client.userId}`);
       return { ok: false };
     }
+    const buf = Buffer.from(body.audio, "base64");
+    if (buf.length < 32) return { ok: false };
+    const user = await loadUser(this.prisma, client.userId);
+    if (!user) return { ok: false };
     const expanded = await this.expandWalkieGroups(client.userId, body);
-    const personIds = expanded.personIds;
-    const stamps = expanded.groups;
-    const stampIds = stamps.map((row) => row.id);
-    if (!personIds.length && !stampIds.length) {
-      this.logger.warn(`walkie send no-targets user=${client.userId}`);
-      return { ok: false };
-    }
-    const lang = (body.sourceLanguage || body.speakLang || "").slice(0, 2).toLowerCase();
+    const targetUserIds = expanded.personIds;
+    const channelIds = expanded.groups.map((row) => row.id);
+    const channelId = channelIds[0] || "";
+    if (!targetUserIds.length && !channelId) return { ok: false };
     const durationMs = Number(body.durationMs);
     if (tooShortWalkie(durationMs)) {
       this.logger.warn(`walkie send drop short duration=${durationMs} user=${client.userId}`);
       return { ok: false };
     }
     const releasedAt = Number(body.releasedAt);
-    const gender =
-      body.voiceGender === "female" || body.voiceGender === "child" ? body.voiceGender : "male";
+    const speakLang = typeof body.speakLang === "string" ? body.speakLang : undefined;
+    const sourceLanguage =
+      typeof body.sourceLanguage === "string" ? body.sourceLanguage : speakLang;
+    const file = {
+      fieldname: "audio",
+      originalname: "ptt.m4a",
+      encoding: "7bit",
+      mimetype: "audio/mp4",
+      size: buf.length,
+      destination: "",
+      filename: "ptt.m4a",
+      path: "",
+      buffer: buf,
+      stream: undefined as never,
+    } as Express.Multer.File;
     const { TransmissionsService } = require("../transmissions/transmissions.service") as typeof import("../transmissions/transmissions.service");
     const transmissions = this.moduleRef.get(TransmissionsService, { strict: false });
-    const begun = await transmissions.beginClip(client.userId, {
-      clientLocalId: body.clientLocalId,
+    const result = await transmissions.forwardWalkieClip(user, file, {
+      targetUserIds,
+      personIds: targetUserIds,
+      channelId: channelId || undefined,
+      channelIds: channelIds.length ? channelIds : undefined,
+      groups: expanded.groups,
+      durationMs: Number.isFinite(durationMs) ? durationMs : undefined,
       releasedAt: Number.isFinite(releasedAt) ? releasedAt : undefined,
+      speakLang,
+      sourceLanguage,
+      clientLocalId: typeof body.clientLocalId === "string" ? body.clientLocalId : undefined,
     });
-    if (begun.existing) {
-      this.logger.log(`walkie send idempotent ${begun.id} user=${client.userId}`);
-      return { ok: true, id: begun.id, reached: 0 };
-    }
-    const transmissionId = begun.id;
-    const basePayload: TransmissionReadyPayload = {
-      transmissionId,
-      channelId: "",
-      senderId: client.userId,
-      senderName: (body.speakerName || client.displayName || "").trim() || client.userId,
-      language: lang,
-      speakLang: lang,
-      mode: "free",
-      audioUrl: "",
-      audioB64: body.audio,
-      originalText: "",
-      translatedText: "",
-      durationMs: Number.isFinite(durationMs) ? durationMs : null,
-      usedOriginalVoice: true,
-      needsAccept: false,
-      live: false,
-      senderPhone: "",
-      senderAvatarUrl: body.speakerAvatarUrl || null,
-      voiceGender: gender,
-      kind: "walkie",
-      viewOnce: false,
-      releasedAt: Number.isFinite(releasedAt) && releasedAt > 0 ? releasedAt : Date.now(),
-      readyAt: Date.now(),
-      group: false,
-    };
-    client.join(`user:${client.userId}`);
-    const reached: string[] = [];
-    const missed: string[] = [];
-    const reachedGroup = new Set<string>();
-    const reachedDirect = new Set<string>();
-    const note = (id: string, ok: boolean) => {
-      if (ok) {
-        if (!reached.includes(id)) reached.push(id);
-        const at = missed.indexOf(id);
-        if (at >= 0) missed.splice(at, 1);
-      } else if (!reached.includes(id) && !missed.includes(id)) {
-        missed.push(id);
-      }
-    };
-    const emitDirect = (id: string) => {
-      const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
-        ...basePayload,
-        channelId: "",
-        group: false,
-        groupName: null,
-      });
-      if (ok) reachedDirect.add(id);
-      note(id, ok);
-    };
-    const emitStarted = Date.now();
-    // Private 1:1 first so an explicitly selected person gets their own board
-    // even when they also sit in a selected group (group stamp follows).
-    for (const id of personIds) emitDirect(id);
-    for (const group of stamps) {
-      const row = {
-        ...basePayload,
-        channelId: group.id,
-        group: true as const,
-        groupName: group.name || null,
-      };
-      for (const id of group.memberIds) {
-        if (!id || id === client.userId) continue;
-        const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row);
-        if (ok) reachedGroup.add(id);
-        note(id, ok);
-      }
-    }
-    const { audioB64: _omit, ...senderAck } = basePayload;
-    this.emitToUser(client.userId, SOCKET_EVENTS.TRANSMISSION_READY, senderAck);
     this.logger.log(
-      `walkie relay from=${client.userId} bytes=${body.audio.length} id=${transmissionId} people=${personIds.length} groups=${stampIds.length} groupIds=${stampIds.join(",") || "-"} emitMs=${Date.now() - emitStarted} reached=${reached.length} missed=${missed.length}`,
+      `walkie send from=${client.userId} bytes=${buf.length} id=${(result as { id?: string })?.id ?? "-"}`,
     );
-    void this.finishWalkieSend(client.userId, body, transmissionId, reached, missed, basePayload, reachedGroup, reachedDirect);
-    return { ok: true, id: transmissionId, reached: reached.length };
-  }
-
-  private finishWalkieSend(
-    senderId: string,
-    body: {
-      audio?: string;
-      personIds?: string[];
-      targetUserIds?: string[];
-      channelId?: string;
-      channelIds?: string[];
-      groups?: { id?: string; name?: string; memberIds?: string[] }[];
-      durationMs?: number;
-      releasedAt?: number;
-      speakLang?: string;
-      sourceLanguage?: string;
-      clientLocalId?: string;
-    },
-    transmissionId: string,
-    reached: string[],
-    missed: string[],
-    basePayload: TransmissionReadyPayload,
-    reachedGroup = new Set<string>(),
-    reachedDirect = new Set<string>(),
-  ) {
-    void (async () => {
-      try {
-        const resolved = await this.expandWalkieGroups(senderId, body);
-        // Private retry is independent of group reach/miss — only skip if 1:1 already landed.
-        for (const id of resolved.personIds) {
-          if (reachedDirect.has(id)) continue;
-          const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
-            ...basePayload,
-            channelId: "",
-            group: false,
-            groupName: null,
-          });
-          if (ok) {
-            reachedDirect.add(id);
-            if (!reached.includes(id)) reached.push(id);
-            const at = missed.indexOf(id);
-            if (at >= 0) missed.splice(at, 1);
-          } else if (!missed.includes(id)) {
-            missed.push(id);
-          }
-        }
-        for (const group of resolved.groups) {
-          const row = {
-            ...basePayload,
-            channelId: group.id,
-            group: true as const,
-            groupName: group.name || null,
-          };
-          for (const id of group.memberIds) {
-            if (!id || id === senderId || reachedGroup.has(id)) continue;
-            const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row);
-            if (ok) {
-              reachedGroup.add(id);
-              if (!reached.includes(id)) reached.push(id);
-            } else if (!missed.includes(id)) missed.push(id);
-          }
-        }
-        const channelIds = resolved.groups.map((row) => row.id);
-        const deliverIds = [
-          ...new Set([...resolved.personIds, ...resolved.groups.flatMap((row) => row.memberIds)]),
-        ];
-        this.persistWalkieSend(
-          senderId,
-          body,
-          deliverIds,
-          resolved.personIds,
-          channelIds[0] || "",
-          channelIds,
-          transmissionId,
-          reached,
-          missed,
-          [...reachedDirect],
-          [...reachedGroup],
-        );
-      } catch (error) {
-        this.logger.warn(`walkie finish ${transmissionId} ${(error as Error).message}`);
-      }
-    })();
-  }
-
-  /**
-   * Group-only → group channel only.
-   * A member who was not personally selected never gets a 1:1 copy.
-   * Mixed 1:1 + group only when personIds names that person.
-   * Client-supplied memberIds are ignored; DB membership wins.
-   */
-  private async expandWalkieGroups(
-    senderId: string,
-    body: {
-      personIds?: string[];
-      targetUserIds?: string[];
-      channelId?: string;
-      channelIds?: string[];
-      groups?: { id?: string; name?: string; memberIds?: string[] }[];
-    },
-  ): Promise<{ personIds: string[]; groups: { id: string; name: string; memberIds: string[] }[] }> {
-    const stamps = walkieGroupStamps(body);
-    // Merge personIds + targetUserIds. An empty personIds:[] must not wipe targetUserIds.
-    const namedPeople = asIdList(body.personIds);
-    const targetPeople = asIdList(body.targetUserIds);
-    const requestedPeople = [...new Set([...namedPeople, ...targetPeople])].filter(
-      (id) => id && id !== senderId,
-    );
-    const lookup = [...new Set([...stamps.map((row) => row.id), ...requestedPeople])];
-    const channels = lookup.length
-      ? await this.prisma.channel.findMany({
-          where: { id: { in: lookup } },
-          select: { id: true, name: true },
-        })
-      : [];
-    const channelName = new Map(channels.map((row) => [row.id, row.name || ""]));
-    const groupIds = new Set(stamps.map((row) => row.id).filter((id) => channelName.has(id)));
-    for (const id of requestedPeople) {
-      if (channelName.has(id)) groupIds.add(id);
-    }
-    const allowed = [...groupIds];
-    if (allowed.length) {
-      const mine = await this.prisma.channelMember.findMany({
-        where: { channelId: { in: allowed }, userId: senderId },
-        select: { channelId: true },
-      });
-      const senderIn = new Set(mine.map((row) => row.channelId));
-      for (const id of allowed) {
-        if (!senderIn.has(id)) {
-          this.logger.warn(`walkie drop group ${id} sender=${senderId} not a member`);
-          groupIds.delete(id);
-        }
-      }
-    }
-    const memberRows = groupIds.size
-      ? await this.prisma.channelMember.findMany({
-          where: { channelId: { in: [...groupIds] }, userId: { not: senderId } },
-          select: { channelId: true, userId: true },
-        })
-      : [];
-    const membersByGroup = new Map<string, string[]>();
-    for (const row of memberRows) {
-      const list = membersByGroup.get(row.channelId) || [];
-      list.push(row.userId);
-      membersByGroup.set(row.channelId, list);
-    }
-    const groups = [...groupIds].map((id) => {
-      const fromDb = membersByGroup.get(id) || [];
-      const fromClient = stamps.find((row) => row.id === id)?.memberIds || [];
-      return {
-        id,
-        name: channelName.get(id) || stamps.find((row) => row.id === id)?.name || "",
-        // Prefer DB membership; keep client memberIds so no selected group is emptied.
-        memberIds: [...new Set([...fromDb, ...fromClient])].filter((uid) => uid && uid !== senderId),
-      };
-    });
-    // Every named person keeps an independent 1:1 path — never filter by group membership.
-    const personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id)))];
-    return { personIds, groups };
-  }
-
-  private persistWalkieSend(
-    senderId: string,
-    body: {
-      audio?: string;
-      durationMs?: number;
-      releasedAt?: number;
-      speakLang?: string;
-      sourceLanguage?: string;
-      clientLocalId?: string;
-    },
-    targetUserIds: string[],
-    personIds: string[],
-    channelId: string,
-    channelIds: string[],
-    transmissionId: string,
-    reached: string[],
-    missed: string[],
-    reachedDirect: string[] = [],
-    reachedGroup: string[] = [],
-  ) {
-    void (async () => {
-      try {
-        if (!body.audio) return;
-        const buf = Buffer.from(body.audio, "base64");
-        if (buf.length < 32) return;
-        const user = await loadUser(this.prisma, senderId);
-        if (!user) return;
-        const file = {
-          fieldname: "audio",
-          originalname: "ptt.m4a",
-          encoding: "7bit",
-          mimetype: "audio/mp4",
-          size: buf.length,
-          destination: "",
-          filename: "ptt.m4a",
-          path: "",
-          buffer: buf,
-          stream: undefined as never,
-        } as Express.Multer.File;
-        const { TransmissionsService } = require("../transmissions/transmissions.service") as typeof import("../transmissions/transmissions.service");
-        const transmissions = this.moduleRef.get(TransmissionsService, { strict: false });
-        await transmissions.forwardWalkieClip(
-          user,
-          file,
-          {
-            targetUserIds,
-            personIds,
-            channelId: channelId || undefined,
-            channelIds: channelIds.length ? channelIds : undefined,
-            durationMs: Number.isFinite(Number(body.durationMs)) ? Number(body.durationMs) : undefined,
-            releasedAt: Number.isFinite(Number(body.releasedAt)) ? Number(body.releasedAt) : undefined,
-            speakLang: body.speakLang,
-            sourceLanguage: body.sourceLanguage || body.speakLang,
-            clientLocalId: typeof body.clientLocalId === "string" ? body.clientLocalId : undefined,
-          },
-          {
-            skipEmit: true,
-            // Keep private vs group skip lists separate so a group land never blocks 1:1.
-            skipEmitFor: reached,
-            skipEmitPrivateFor: reachedDirect,
-            skipEmitGroupFor: reachedGroup,
-            missed,
-            transmissionId,
-          },
-        );
-      } catch (error) {
-        this.logger.warn(`walkie persist ${transmissionId} ${(error as Error).message}`);
-      }
-    })();
+    return { ok: true, id: (result as { id?: string })?.id };
   }
 
   @SubscribeMessage(SOCKET_EVENTS.PTT_AUDIO)
@@ -970,6 +654,112 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         this.emitLive(userId, SOCKET_EVENTS.PTT_AUDIO, { speakerId, pcm, seq });
       },
     });
+  }
+
+  /**
+   * Group-only → that group channel only.
+   * A group member who was not personally selected never gets a 1:1 copy.
+   * Mixed 1:1 + group only when personIds names that person.
+   */
+  private async expandWalkieGroups(senderId: string, body: WalkieDestBody) {
+    const groupIds = [
+      ...new Set(
+        [body.channelId, ...(body.channelIds || []), ...((body.groups || []).map((row) => row.id))]
+          .map((id) => (typeof id === "string" ? id.trim() : ""))
+          .filter((id) => id && !id.startsWith("targets:")),
+      ),
+    ];
+    const namedPeople = [...new Set((body.personIds ?? []).filter((id) => id && id !== senderId))];
+    const targetPeople = [...new Set((body.targetUserIds ?? []).filter((id) => id && id !== senderId))];
+    const explicitField = namedPeople.length > 0 || Array.isArray(body.personIds);
+    const requestedPeople = [...new Set([...namedPeople, ...targetPeople])];
+    const lookup = [...new Set([...groupIds, ...requestedPeople])];
+    const channels = lookup.length
+      ? await this.prisma.channel.findMany({
+          where: { id: { in: lookup } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const channelName = new Map(channels.map((row) => [row.id, row.name || ""]));
+    const allowed = new Set(groupIds.filter((id) => channelName.has(id)));
+    for (const id of requestedPeople) {
+      if (channelName.has(id)) allowed.add(id);
+    }
+    if (allowed.size) {
+      const mine = await this.prisma.channelMember.findMany({
+        where: { channelId: { in: [...allowed] }, userId: senderId },
+        select: { channelId: true },
+      });
+      const senderIn = new Set(mine.map((row) => row.channelId));
+      for (const id of [...allowed]) {
+        if (!senderIn.has(id)) allowed.delete(id);
+      }
+    }
+    const memberRows = allowed.size
+      ? await this.prisma.channelMember.findMany({
+          where: { channelId: { in: [...allowed] }, userId: { not: senderId } },
+          select: { channelId: true, userId: true },
+        })
+      : [];
+    const membersByGroup = new Map<string, string[]>();
+    const groupMemberSet = new Set<string>();
+    for (const row of memberRows) {
+      const list = membersByGroup.get(row.channelId) || [];
+      list.push(row.userId);
+      membersByGroup.set(row.channelId, list);
+      groupMemberSet.add(row.userId);
+    }
+    const clientStamps = new Map(
+      (Array.isArray(body.groups) ? body.groups : []).map((row) => [
+        typeof row?.id === "string" ? row.id.trim() : "",
+        Array.isArray(row?.memberIds) ? row.memberIds : [],
+      ]),
+    );
+    const groups = [...allowed].map((id) => {
+      const fromDb = membersByGroup.get(id) || [];
+      const fromClient = (clientStamps.get(id) || []).filter(
+        (uid): uid is string => typeof uid === "string" && Boolean(uid) && uid !== senderId,
+      );
+      return {
+        id,
+        name: channelName.get(id) || "",
+        // Prefer DB membership; keep client memberIds so no selected group is emptied.
+        memberIds: [...new Set([...fromDb, ...fromClient])],
+      };
+    });
+    // Explicit personIds always keep a private 1:1 path, even for group members.
+    let personIds = requestedPeople.filter((id) => !channelName.has(id));
+    if (!namedPeople.length && !Array.isArray(body.personIds)) {
+      personIds = personIds.filter((id) => !groupMemberSet.has(id));
+    }
+    return { personIds, groups };
+  }
+
+  private async walkieDestinations(senderId: string, body: WalkieDestBody): Promise<WalkieDest[]> {
+    const expanded = await this.expandWalkieGroups(senderId, body);
+    const dest: WalkieDest[] = [];
+    const seen = new Set<string>();
+    const add = (listenerId: string, channelId: string, group: boolean) => {
+      if (!listenerId || listenerId === senderId) return;
+      const key = `${listenerId}:${group ? channelId : "user"}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      dest.push({ listenerId, channelId, group });
+    };
+    for (const group of expanded.groups) {
+      for (const memberId of group.memberIds) add(memberId, group.id, true);
+    }
+    for (const id of expanded.personIds) add(id, "", false);
+    if (dest.length) return dest;
+    const room = await this.floorRoom(senderId, body);
+    if (!room) return [];
+    return room.listenerIds
+      .filter((id) => id && id !== senderId)
+      .map((listenerId) => ({
+        listenerId,
+        channelId: room.key.startsWith("targets:") ? "" : room.key,
+        group: Boolean(room.key) && !room.key.startsWith("targets:"),
+      }));
   }
 
   private async floorRoom(
@@ -1059,13 +849,6 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         event === SOCKET_EVENTS.REJECT_CALL ||
         event === SOCKET_EVENTS.INCOMING_CALL;
       const walkieReady = event === SOCKET_EVENTS.TRANSMISSION_READY && isWalkiePayload(payload);
-      if (walkieReady && retry) {
-        setTimeout(() => {
-          if (this.emitLive(userId, event, payload)) return;
-          this.wakeOffline(userId, event, payload);
-        }, 250);
-        return false;
-      }
       if (callEvent || walkieReady) {
         this.logger.warn(`No live socket for ${event} user=${userId} — sending FCM`);
         this.wakeOffline(userId, event, payload);
@@ -1081,7 +864,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           event === "chat:receipt" ||
           event === SOCKET_EVENTS.TRANSMISSION_REMOVED)
       ) {
-        setTimeout(() => this.emitToUser(userId, event, payload, false), 400);
+        setTimeout(() => this.emitToUser(userId, event, payload, false), 2000);
+        setTimeout(() => this.emitToUser(userId, event, payload, false), 8000);
       }
       return false;
     }
@@ -1101,8 +885,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       return;
     }
     if (event === SOCKET_EVENTS.TRANSMISSION_READY && isWalkiePayload(payload)) {
-      const { audioB64: _drop, ...pushRow } = row;
-      void this.push.notifyWalkie(userId, pushRow as Parameters<PushService["notifyWalkie"]>[1]);
+      void this.push.notifyWalkie(userId, row as Parameters<PushService["notifyWalkie"]>[1]);
     }
   }
 
@@ -1629,86 +1412,4 @@ function isWalkiePayload(payload: unknown) {
   if (!payload || typeof payload !== "object") return false;
   const row = payload as { kind?: unknown; type?: unknown };
   return row.kind === "walkie" || row.type === "walkie";
-}
-
-function asIdList(raw: unknown): string[] {
-  if (Array.isArray(raw)) {
-    return raw.filter((id): id is string => typeof id === "string" && id.trim().length >= 8);
-  }
-  if (typeof raw === "string" && raw.trim()) {
-    try {
-      const parsed = JSON.parse(raw) as unknown;
-      if (Array.isArray(parsed) || typeof parsed === "string") return asIdList(parsed);
-    } catch {
-      /* plain id or csv */
-    }
-    if (raw.includes(",")) return asIdList(raw.split(",").map((id) => id.trim()));
-    return raw.trim().length >= 8 ? [raw.trim()] : [];
-  }
-  return [];
-}
-
-function walkieSpeakDest(
-  senderId: string,
-  body: {
-    channelId?: string;
-    channelIds?: string[];
-    targetUserIds?: string[];
-    personIds?: string[];
-    groups?: { id?: string; name?: string; memberIds?: string[] }[];
-  },
-) {
-  const groups = walkieGroupStamps(body);
-  const groupIds = new Set(groups.map((row) => row.id));
-  const implied = new Set(groups.flatMap((row) => row.memberIds));
-  const namedPeople = asIdList(body.personIds);
-  const targetPeople = asIdList(body.targetUserIds);
-  const explicitField = namedPeople.length > 0 || Array.isArray(body.personIds);
-  const people = [...new Set([...namedPeople, ...targetPeople])].filter(
-    (id) => id && id !== senderId && !groupIds.has(id) && (explicitField || !implied.has(id)),
-  );
-  const dest: { listenerId: string; channelId: string }[] = [];
-  const seen = new Set<string>();
-  const add = (listenerId: string, channelId: string) => {
-    if (!listenerId || listenerId === senderId) return;
-    const key = `${listenerId}:${channelId || "user"}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    dest.push({ listenerId, channelId });
-  };
-  for (const group of groups) {
-    for (const memberId of group.memberIds) add(memberId, group.id);
-  }
-  for (const id of people) add(id, "");
-  return dest;
-}
-
-function walkieGroupStamps(body: {
-  channelId?: string;
-  channelIds?: string[] | string;
-  groups?: { id?: string; name?: string; memberIds?: string[] }[] | string;
-}) {
-  const map = new Map<string, { id: string; name: string; memberIds: string[] }>();
-  let rows = body.groups;
-  if (typeof rows === "string") {
-    try {
-      rows = JSON.parse(rows) as { id?: string; name?: string; memberIds?: string[] }[];
-    } catch {
-      rows = [];
-    }
-  }
-  for (const row of rows || []) {
-    const id = typeof row?.id === "string" ? row.id.trim() : "";
-    if (!id) continue;
-    map.set(id, {
-      id,
-      name: typeof row.name === "string" ? row.name : "",
-      memberIds: asIdList(row.memberIds),
-    });
-  }
-  for (const id of [...asIdList(body.channelIds), typeof body.channelId === "string" ? body.channelId.trim() : ""]) {
-    if (!id || map.has(id)) continue;
-    map.set(id, { id, name: "", memberIds: [] });
-  }
-  return [...map.values()];
 }

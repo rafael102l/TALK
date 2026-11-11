@@ -473,6 +473,7 @@ export class TransmissionsService {
     input: {
       channelId?: string;
       channelIds?: string[];
+      groups?: { id?: string; name?: string; memberIds?: string[] }[];
       personIds?: string[];
       targetUserIds?: string[];
       durationMs?: number;
@@ -2179,7 +2180,9 @@ export class TransmissionsService {
       });
     }
     for (const id of [...new Set(pending.map((row) => row.transmissionId))]) {
-      void this.purgeChatIfDelivered(id);
+      void this.purgeChatIfDelivered(id).catch((error) => {
+        this.logger.warn(`chat purge after read ${id}: ${(error as Error).message}`);
+      });
     }
     return { ok: true };
   }
@@ -2203,34 +2206,42 @@ export class TransmissionsService {
       peerId: user.id,
       receipt: row.playedAt ? "read" : "delivered",
     });
-    void this.purgeChatIfDelivered(transmissionId);
+    void this.purgeChatIfDelivered(transmissionId).catch((error) => {
+      this.logger.warn(`chat purge after delivered ${transmissionId}: ${(error as Error).message}`);
+    });
     return { ok: true };
   }
 
   /** Chat only. Keep rows until every recipient has read (blue ticks); then drop so reconnect does not replay. */
   async purgeChatIfDelivered(transmissionId: string) {
     if (!transmissionId) return;
-    const tx = await this.prisma.transmission.findUnique({
-      where: { id: transmissionId },
-      include: { targets: true, renders: true },
-    });
-    if (!tx) return;
-    if (tx.kind !== "text" && tx.kind !== "voice" && tx.kind !== "image" && tx.kind !== "video") return;
-    // Do not purge on delivered alone — that blocked read receipts and left sender ticks stuck.
-    if (!tx.targets.length || tx.targets.some((row) => !row.playedAt)) return;
     try {
-      await this.storage.remove(tx.originalAudioUrl);
-      for (const render of tx.renders) await this.storage.remove(render.audioUrl);
+      const tx = await this.prisma.transmission.findUnique({
+        where: { id: transmissionId },
+        include: { targets: true, renders: true },
+      });
+      if (!tx) return;
+      if (tx.kind !== "text" && tx.kind !== "voice" && tx.kind !== "image" && tx.kind !== "video") return;
+      // Do not purge on delivered alone — that blocked read receipts and left sender ticks stuck.
+      if (!tx.targets.length || tx.targets.some((row) => !row.playedAt)) return;
+      try {
+        await this.storage.remove(tx.originalAudioUrl);
+        for (const render of tx.renders) await this.storage.remove(render.audioUrl);
+      } catch (error) {
+        this.logger.warn(`chat purge files ${tx.id}: ${(error as Error).message}`);
+      }
+      const watchers = [...new Set([tx.senderId, ...tx.targets.map((row) => row.userId)])];
+      if (tx.clientLocalId) {
+        this.claimedLocal.set(`${tx.senderId}:${tx.clientLocalId}`, { id: tx.id, at: Date.now() });
+      }
+      // deleteMany: concurrent purge of the same id must not throw P2025 and crash the API.
+      const removed = await this.prisma.transmission.deleteMany({ where: { id: tx.id } });
+      if (!removed.count) return;
+      void this.firebase.removeTransmission(watchers, tx.id);
+      this.logger.log(`chat purged ${tx.id} kind=${tx.kind} targets=${tx.targets.length}`);
     } catch (error) {
-      this.logger.warn(`chat purge files ${tx.id}: ${(error as Error).message}`);
+      this.logger.warn(`chat purge ${transmissionId}: ${(error as Error).message}`);
     }
-    const watchers = [...new Set([tx.senderId, ...tx.targets.map((row) => row.userId)])];
-    if (tx.clientLocalId) {
-      this.claimedLocal.set(`${tx.senderId}:${tx.clientLocalId}`, { id: tx.id, at: Date.now() });
-    }
-    await this.prisma.transmission.delete({ where: { id: tx.id } });
-    void this.firebase.removeTransmission(watchers, tx.id);
-    this.logger.log(`chat purged ${tx.id} kind=${tx.kind} targets=${tx.targets.length}`);
   }
 
   private async noteDelivered(targetRowId: string, senderId: string, transmissionId: string, peerId: string) {
@@ -2244,7 +2255,9 @@ export class TransmissionsService {
       peerId,
       receipt: "delivered",
     });
-    void this.purgeChatIfDelivered(transmissionId);
+    void this.purgeChatIfDelivered(transmissionId).catch((error) => {
+      this.logger.warn(`chat purge after noteDelivered ${transmissionId}: ${(error as Error).message}`);
+    });
   }
 
   private async markInboxDelivered(userId: string) {
@@ -2279,7 +2292,9 @@ export class TransmissionsService {
       });
     }
     for (const id of [...new Set(rows.map((row) => row.transmissionId))]) {
-      void this.purgeChatIfDelivered(id);
+      void this.purgeChatIfDelivered(id).catch((error) => {
+        this.logger.warn(`chat purge after inbox ${id}: ${(error as Error).message}`);
+      });
     }
   }
 
@@ -2308,7 +2323,11 @@ export class TransmissionsService {
         receipt: "read",
       });
     }
-    if (row.transmission.kind !== "walkie") void this.purgeChatIfDelivered(transmissionId);
+    if (row.transmission.kind !== "walkie") {
+      void this.purgeChatIfDelivered(transmissionId).catch((error) => {
+        this.logger.warn(`chat purge after played ${transmissionId}: ${(error as Error).message}`);
+      });
+    }
     return { ok: true };
   }
 
