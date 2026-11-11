@@ -470,7 +470,6 @@ export class TransmissionsService {
     input: {
       channelId?: string;
       channelIds?: string[];
-      groups?: { id?: string; name?: string; memberIds?: string[] }[];
       personIds?: string[];
       targetUserIds?: string[];
       durationMs?: number;
@@ -479,61 +478,42 @@ export class TransmissionsService {
       sourceLanguage?: string;
       clientLocalId?: string;
     },
+    opts?: {
+      skipEmit?: boolean;
+      skipEmitFor?: string[];
+      /** Users who already received the private 1:1 stamp (independent of group). */
+      skipEmitPrivateFor?: string[];
+      /** Users who already received a group stamp. */
+      skipEmitGroupFor?: string[];
+      missed?: string[];
+      transmissionId?: string;
+    },
   ) {
     const started = Date.now();
     if (tooShortWalkie(input.durationMs)) {
       this.logger.warn(`Walkie drop short duration=${input.durationMs} sender=${sender.id}`);
       return { id: "", status: "READY" as const, channelId: "" };
     }
-    const explicitIds = [
+    const explicit = new Set(
+      [...(input.personIds || []), ...(input.targetUserIds || [])].filter((id) => id && id !== sender.id),
+    );
+    // personIds stay first-class targets even when also listed via groups.
+    const targetIds = [
       ...new Set(
-        (input.personIds || input.targetUserIds || []).filter((id) => id && id !== sender.id),
+        [...(input.personIds || []), ...(input.targetUserIds || [])].filter(
+          (id) => id && id !== sender.id,
+        ),
       ),
     ];
     const groupIds = [
       ...new Set(
-        [input.channelId, ...(input.channelIds || []), ...((input.groups || []).map((row) => row.id))]
+        [input.channelId, ...(input.channelIds || [])]
           .map((id) => (typeof id === "string" ? id.trim() : ""))
           .filter(Boolean),
       ),
     ];
     const channelId = groupIds[0] || "";
-    if (!explicitIds.length && !channelId) throw new BadRequestException("לא נבחרו נמענים");
-    const homesOf = new Map<string, { id: string; name: string }[]>();
-    for (const row of input.groups || []) {
-      const id = typeof row.id === "string" ? row.id.trim() : "";
-      if (!id) continue;
-      const name = typeof row.name === "string" ? row.name : "";
-      for (const memberId of row.memberIds || []) {
-        if (!memberId || memberId === sender.id) continue;
-        const list = homesOf.get(memberId) || [];
-        if (!list.some((home) => home.id === id)) list.push({ id, name });
-        homesOf.set(memberId, list);
-      }
-    }
-    const missingGroups = groupIds.filter((id) => ![...homesOf.values()].some((homes) => homes.some((home) => home.id === id)));
-    if (missingGroups.length) {
-      const groupRows = await this.prisma.channel.findMany({
-        where: { id: { in: missingGroups } },
-        select: {
-          id: true,
-          name: true,
-          type: true,
-          members: { where: { userId: { not: sender.id } }, select: { userId: true } },
-        },
-      });
-      for (const row of groupRows) {
-        if (row.type !== "GROUP" && row.type !== "BROADCAST") continue;
-        for (const member of row.members) {
-          const list = homesOf.get(member.userId) || [];
-          if (!list.some((home) => home.id === row.id)) list.push({ id: row.id, name: row.name || "" });
-          homesOf.set(member.userId, list);
-        }
-      }
-    }
-    const targetIds = [...new Set([...explicitIds, ...homesOf.keys()])];
-    if (!targetIds.length) throw new BadRequestException("לא נבחרו נמענים");
-    const explicit = new Set(explicitIds);
+    if (!targetIds.length && !groupIds.length) throw new BadRequestException("???? ?????????? ????????????");
     const lang = (
       input.sourceLanguage ||
       input.speakLang ||
@@ -547,9 +527,14 @@ export class TransmissionsService {
     if (!audioB64) {
       return this.create(sender, file, { ...input, kind: "walkie" });
     }
-    const begun = await this.beginClip(sender.id, input);
-    if (begun.existing) return { id: begun.id, status: begun.status, channelId: begun.channelId || channelId };
-    const transmissionId = begun.id;
+    let transmissionId = opts?.transmissionId || "";
+    if (!opts?.skipEmit) {
+      const begun = await this.beginClip(sender.id, input);
+      if (begun.existing) return { id: begun.id, status: begun.status, channelId: begun.channelId || channelId };
+      transmissionId = begun.id;
+    } else if (!transmissionId) {
+      transmissionId = randomUUID();
+    }
     const clientRelease = Number(input.releasedAt);
     const releasedAt = Number.isFinite(clientRelease) && clientRelease > 0 ? clientRelease : started;
     const senderPublic = toPublicUser(sender);
@@ -580,30 +565,118 @@ export class TransmissionsService {
       group: Boolean(channelId),
       audioB64,
     };
-    const missed: string[] = [];
-    for (const id of targetIds) {
-      const stamps = walkieDeliveryStamps(id, homesOf.get(id), explicit);
-      let any = false;
-      for (const stamp of stamps) {
-        const rowPayload = {
+    const groupIdsForPersist = groupIds;
+    const already = new Set(opts?.skipEmitFor || []);
+    const skipPrivate = new Set(opts?.skipEmitPrivateFor || []);
+    const skipGroup = new Set(opts?.skipEmitGroupFor || []);
+    const missed = [...new Set(opts?.missed || [])];
+    // Track private 1:1 separately so a group emit never swallows an explicit person.
+    const gotPrivate = new Set<string>(skipPrivate);
+    if (!opts?.skipEmit) {
+      // Explicit people get a private stamp first ??? even when groups are also selected.
+      for (const id of targetIds) {
+        if (!explicit.has(id) || gotPrivate.has(id)) continue;
+        const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
           ...payload,
-          channelId: stamp.channelId,
-          group: stamp.group,
-          groupName: stamp.groupName || null,
-        };
-        const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, rowPayload);
+          channelId: "",
+          group: false,
+          groupName: null,
+        });
         this.logger.log(
-          `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=${String(rowPayload.group)} channel=${stamp.channelId}`,
+          `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=false channel=`,
         );
-        if (reached) any = true;
+        if (!reached) {
+          if (!missed.includes(id)) missed.push(id);
+        } else {
+          already.add(id);
+          gotPrivate.add(id);
+        }
       }
-      if (!any) missed.push(id);
+      if (!groupIdsForPersist.length) {
+        for (const id of targetIds) {
+          if (gotPrivate.has(id)) continue;
+          const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
+            ...payload,
+            channelId: "",
+            group: false,
+            groupName: null,
+          });
+          this.logger.log(
+            `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=false channel=`,
+          );
+          if (!reached) missed.push(id);
+          else {
+            already.add(id);
+            gotPrivate.add(id);
+          }
+        }
+      }
+      const { audioB64: _omit, ...senderPayload } = payload;
+      this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, senderPayload);
     }
     const { audioB64: _omit, ...senderPayload } = payload;
-    this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, senderPayload);
     const saveP = this.storage.save(file.buffer, extFrom(file), "audio");
     void (async () => {
       try {
+        const homesOf = new Map<string, { id: string; name: string }[]>();
+        const groupRows = groupIdsForPersist.length
+          ? await this.prisma.channel.findMany({
+              where: { id: { in: groupIdsForPersist } },
+              select: { id: true, name: true },
+            })
+          : [];
+        const groupName = new Map(groupRows.map((row) => [row.id, row.name || ""]));
+        for (const gid of groupIdsForPersist) {
+          const members = await this.prisma.channelMember.findMany({
+            where: { channelId: gid, userId: { not: sender.id } },
+            select: { userId: true },
+          });
+          const stamped = { ...payload, channelId: gid, group: true, groupName: groupName.get(gid) || null };
+          for (const row of members) {
+            if (!row.userId) continue;
+            if (!targetIds.includes(row.userId)) targetIds.push(row.userId);
+            const list = homesOf.get(row.userId) || [];
+            if (!list.some((home) => home.id === gid)) {
+              list.push({ id: gid, name: groupName.get(gid) || "" });
+              homesOf.set(row.userId, list);
+            }
+            // Group path is independent of private 1:1 ??? only skip if this user
+            // already got a group stamp (or live skipEmitGroupFor said so).
+            if (opts?.skipEmit && skipGroup.has(row.userId)) continue;
+            const reached = this.realtime.emitToUser(row.userId, SOCKET_EVENTS.TRANSMISSION_READY, stamped);
+            if (!reached) {
+              if (!missed.includes(row.userId)) missed.push(row.userId);
+            } else {
+              already.add(row.userId);
+              skipGroup.add(row.userId);
+            }
+          }
+        }
+        for (const id of targetIds) {
+          // Explicit personIds always get a private 1:1 stamp, independent of groups.
+          if (explicit.has(id)) {
+            if (gotPrivate.has(id)) continue;
+            if (opts?.skipEmit && skipPrivate.has(id)) continue;
+          } else {
+            if (gotPrivate.has(id) || homesOf.has(id)) continue;
+            if (opts?.skipEmit && (skipPrivate.has(id) || already.has(id))) continue;
+          }
+          const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
+            ...payload,
+            channelId: "",
+            group: false,
+            groupName: null,
+          });
+          this.logger.log(
+            `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=false channel=`,
+          );
+          if (!reached) {
+            if (!missed.includes(id)) missed.push(id);
+          } else {
+            already.add(id);
+            gotPrivate.add(id);
+          }
+        }
         const users = targetIds.length
           ? await this.prisma.user.findMany({ where: { id: { in: targetIds } } })
           : [];
@@ -621,12 +694,12 @@ export class TransmissionsService {
           lang,
           voiceGender,
           dubbed,
-          groupIds,
+          groupIdsForPersist,
         );
         if (!missed.length) return;
         const url = await saveP;
         const dubbedIds = new Set(dubbed.map((row) => row.targetId));
-        for (const id of missed) {
+        for (const id of [...new Set(missed)]) {
           if (dubbedIds.has(id)) continue;
           void this.push.notifyOfflineMessage(id, {
             ...senderPayload,
@@ -643,6 +716,7 @@ export class TransmissionsService {
     );
     return { id: transmissionId, status: "READY" as const, channelId };
   }
+
 
   /** Walkie is the recording itself. Translation stays in the codebase and is not on this path. */
   private async relayWalkie(
@@ -996,7 +1070,8 @@ export class TransmissionsService {
               if (this.realtime.hasLiveSocket(row.targetId)) return;
               const audioUrl = saved ? this.storage.publicUrl(saved) : "";
               if (audioUrl) {
-                void this.push.notifyOfflineMessage(row.targetId, { ...dubbedPayload, audioUrl, audioB64: undefined });
+                const { audioB64: _omitB64, ...pushPayload } = dubbedPayload;
+                void this.push.notifyOfflineMessage(row.targetId, { ...pushPayload, audioUrl });
               }
             });
           }
@@ -1723,7 +1798,7 @@ export class TransmissionsService {
           });
         }
       }
-      void this.firebase.saveItems(cloudItems);
+      void this.firebase.saveItems(cloudItems as Array<HistoryItem & { ownerId: string }>);
     } catch {
       this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_FAILED, {
         transmissionId: transmission.id,
