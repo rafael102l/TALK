@@ -637,24 +637,22 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       note(id, ok);
     };
     const emitStarted = Date.now();
-    if (stamps.length) {
-      for (const group of stamps) {
-        const row = {
-          ...basePayload,
-          channelId: group.id,
-          group: true as const,
-          groupName: group.name || null,
-        };
-        for (const id of group.memberIds) {
-          if (!id || id === client.userId) continue;
-          const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row);
-          if (ok) reachedGroup.add(id);
-          note(id, ok);
-        }
+    // Private 1:1 first so an explicitly selected person gets their own board
+    // even when they also sit in a selected group (group stamp follows).
+    for (const id of personIds) emitDirect(id);
+    for (const group of stamps) {
+      const row = {
+        ...basePayload,
+        channelId: group.id,
+        group: true as const,
+        groupName: group.name || null,
+      };
+      for (const id of group.memberIds) {
+        if (!id || id === client.userId) continue;
+        const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, row);
+        if (ok) reachedGroup.add(id);
+        note(id, ok);
       }
-      for (const id of personIds) emitDirect(id);
-    } else {
-      for (const id of personIds) emitDirect(id);
     }
     const { audioB64: _omit, ...senderAck } = basePayload;
     this.emitToUser(client.userId, SOCKET_EVENTS.TRANSMISSION_READY, senderAck);
@@ -690,6 +688,19 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     void (async () => {
       try {
         const resolved = await this.expandWalkieGroups(senderId, body);
+        for (const id of resolved.personIds) {
+          if (reachedDirect.has(id) || missed.includes(id)) continue;
+          const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
+            ...basePayload,
+            channelId: "",
+            group: false,
+            groupName: null,
+          });
+          if (ok) {
+            reachedDirect.add(id);
+            if (!reached.includes(id)) reached.push(id);
+          } else if (!missed.includes(id)) missed.push(id);
+        }
         for (const group of resolved.groups) {
           const row = {
             ...basePayload,
@@ -705,19 +716,6 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
               if (!reached.includes(id)) reached.push(id);
             } else if (!missed.includes(id)) missed.push(id);
           }
-        }
-        for (const id of resolved.personIds) {
-          if (reachedDirect.has(id) || missed.includes(id)) continue;
-          const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
-            ...basePayload,
-            channelId: "",
-            group: false,
-            groupName: null,
-          });
-          if (ok) {
-            reachedDirect.add(id);
-            if (!reached.includes(id)) reached.push(id);
-          } else if (!missed.includes(id)) missed.push(id);
         }
         const channelIds = resolved.groups.map((row) => row.id);
         const deliverIds = [

@@ -2286,10 +2286,11 @@ function walkieDeliveryStamps(
     seen.add(key);
     stamps.push({ channelId, group, groupName });
   };
+  // Private stamp first when the sender named this person explicitly.
+  if (explicit.has(listenerId)) add("", false);
   if (homes?.length) {
     for (const home of homes) add(home.id, true, home.name || "");
   }
-  if (explicit.has(listenerId)) add("", false);
   return stamps;
 }
 
