@@ -755,8 +755,11 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     },
   ): Promise<{ personIds: string[]; groups: { id: string; name: string; memberIds: string[] }[] }> {
     const stamps = walkieGroupStamps(body);
-    const explicitPersonField = Array.isArray(body.personIds);
-    const requestedPeople = asIdList(explicitPersonField ? body.personIds : body.targetUserIds).filter(
+    // Merge personIds + targetUserIds. An empty personIds:[] must not wipe targetUserIds.
+    const namedPeople = asIdList(body.personIds);
+    const targetPeople = asIdList(body.targetUserIds);
+    const explicitPersonField = namedPeople.length > 0 || Array.isArray(body.personIds);
+    const requestedPeople = [...new Set([...namedPeople, ...targetPeople])].filter(
       (id) => id && id !== senderId,
     );
     const lookup = [...new Set([...stamps.map((row) => row.id), ...requestedPeople])];
@@ -804,8 +807,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       name: channelName.get(id) || stamps.find((row) => row.id === id)?.name || "",
       memberIds: [...new Set(membersByGroup.get(id) || [])],
     }));
+    // Keep every explicitly named person for a separate 1:1 emit — even if they
+    // also receive the same clip via a selected group.
     let personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id)))];
-    if (!explicitPersonField) {
+    if (!namedPeople.length && !Array.isArray(body.personIds)) {
       personIds = personIds.filter((id) => !groupMemberSet.has(id));
     }
     return { personIds, groups };
@@ -1629,8 +1634,10 @@ function walkieSpeakDest(
   const groups = walkieGroupStamps(body);
   const groupIds = new Set(groups.map((row) => row.id));
   const implied = new Set(groups.flatMap((row) => row.memberIds));
-  const explicitField = Array.isArray(body.personIds);
-  const people = asIdList(explicitField ? body.personIds : body.targetUserIds).filter(
+  const namedPeople = asIdList(body.personIds);
+  const targetPeople = asIdList(body.targetUserIds);
+  const explicitField = namedPeople.length > 0 || Array.isArray(body.personIds);
+  const people = [...new Set([...namedPeople, ...targetPeople])].filter(
     (id) => id && id !== senderId && !groupIds.has(id) && (explicitField || !implied.has(id)),
   );
   const dest: { listenerId: string; channelId: string }[] = [];
