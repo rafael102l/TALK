@@ -563,13 +563,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       this.logger.warn(`walkie send drop size=${body.audio.length} user=${client.userId}`);
       return { ok: false };
     }
-    const stamps = walkieGroupStamps(body);
-    const requestedPeople = asIdList(Array.isArray(body.personIds) ? body.personIds : body.targetUserIds).filter(
-      (id) => id && id !== client.userId,
-    );
+    const expanded = await this.expandWalkieGroups(client.userId, body);
+    const personIds = expanded.personIds;
+    const stamps = expanded.groups;
     const stampIds = stamps.map((row) => row.id);
-    const stampSet = new Set(stampIds);
-    const personIds = [...new Set(requestedPeople.filter((id) => !stampSet.has(id)))];
     if (!personIds.length && !stampIds.length) {
       this.logger.warn(`walkie send no-targets user=${client.userId}`);
       return { ok: false };
@@ -692,7 +689,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   ) {
     void (async () => {
       try {
-        const resolved = await this.resolveWalkieTargets(senderId, body);
+        const resolved = await this.expandWalkieGroups(senderId, body);
         for (const group of resolved.groups) {
           const row = {
             ...basePayload,
@@ -743,12 +740,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   /**
-   * TRANSMISSION_READY goes only to:
-   * - people explicitly listed in personIds (or legacy targetUserIds), and
-   * - DB members of groups the sender actually selected and belongs to.
-   * Client-supplied memberIds are ignored.
+   * Group-only → group channel only.
+   * A member who was not personally selected never gets a 1:1 copy.
+   * Mixed 1:1 + group only when personIds names that person.
+   * Client-supplied memberIds are ignored; DB membership wins.
    */
-  private async resolveWalkieTargets(
+  private async expandWalkieGroups(
     senderId: string,
     body: {
       personIds?: string[];
@@ -796,17 +793,22 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         })
       : [];
     const membersByGroup = new Map<string, string[]>();
+    const groupMemberSet = new Set<string>();
     for (const row of memberRows) {
       const list = membersByGroup.get(row.channelId) || [];
       list.push(row.userId);
       membersByGroup.set(row.channelId, list);
+      groupMemberSet.add(row.userId);
     }
     const groups = [...groupIds].map((id) => ({
       id,
       name: channelName.get(id) || stamps.find((row) => row.id === id)?.name || "",
       memberIds: [...new Set(membersByGroup.get(id) || [])],
     }));
-    const personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id)))];
+    let personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id)))];
+    if (!explicitPersonField) {
+      personIds = personIds.filter((id) => !groupMemberSet.has(id));
+    }
     return { personIds, groups };
   }
 
@@ -1623,8 +1625,12 @@ function walkieSpeakDest(
     groups?: { id?: string; name?: string; memberIds?: string[] }[];
   },
 ) {
-  const people = asIdList([...(body.personIds || []), ...(body.targetUserIds || [])]).filter(
-    (id) => id && id !== senderId,
+  const groups = walkieGroupStamps(body);
+  const groupIds = new Set(groups.map((row) => row.id));
+  const implied = new Set(groups.flatMap((row) => row.memberIds));
+  const explicitField = Array.isArray(body.personIds);
+  const people = asIdList(explicitField ? body.personIds : body.targetUserIds).filter(
+    (id) => id && id !== senderId && !groupIds.has(id) && (explicitField || !implied.has(id)),
   );
   const dest: { listenerId: string; channelId: string }[] = [];
   const seen = new Set<string>();
@@ -1635,7 +1641,7 @@ function walkieSpeakDest(
     seen.add(key);
     dest.push({ listenerId, channelId });
   };
-  for (const group of walkieGroupStamps(body)) {
+  for (const group of groups) {
     for (const memberId of group.memberIds) add(memberId, group.id);
   }
   for (const id of people) add(id, "");

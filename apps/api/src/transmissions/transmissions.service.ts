@@ -2278,7 +2278,6 @@ function walkieDeliveryStamps(
     for (const home of homes) add(home.id, true, home.name || "");
   }
   if (explicit.has(listenerId)) add("", false);
-  if (!stamps.length) add("", false);
   return stamps;
 }
 
