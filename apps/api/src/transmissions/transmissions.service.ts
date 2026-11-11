@@ -198,7 +198,10 @@ export class TransmissionsService {
         targets: {
           create: deliverUsers.map((user) => ({
             userId: user.id,
-            language: user.listenLang || user.speakLang,
+            language: String(user.listenLang || user.speakLang || "")
+              .trim()
+              .slice(0, 2)
+              .toLowerCase(),
           })),
         },
       },
@@ -1292,11 +1295,21 @@ export class TransmissionsService {
         gate("silence", originalText);
         originalText = "";
       }
-      let sourceLang = originalText
-        ? textOnly
-          ? detectLang(originalText) || spokenLang(originalText, sttResult.lang, speakerLang)
-          : spokenLang(originalText, sttResult.lang, speakerLang)
-        : speakerLang;
+      const normLang = (value: string | null | undefined) =>
+        String(value || "")
+          .trim()
+          .slice(0, 2)
+          .toLowerCase();
+      let sourceLang = normLang(
+        originalText
+          ? textOnly
+            ? detectLang(originalText) || spokenLang(originalText, sttResult.lang, speakerLang)
+            : spokenLang(originalText, sttResult.lang, speakerLang)
+          : speakerLang,
+      ) || normLang(speakerLang) || speakerLang;
+      for (const target of transmission.targets) {
+        target.language = normLang(target.language) || target.language;
+      }
       let retriedStt = false;
       const retranscribeOnce = async () => {
         if (retriedStt || textOnly || !transmission.originalAudioUrl) return;
@@ -1314,7 +1327,7 @@ export class TransmissionsService {
             !(delivery === "voice" && looksLikeSilenceHallucination(next, transmission.durationMs))
           ) {
             originalText = next;
-            sourceLang = spokenLang(next, retry.lang, speakerLang);
+            sourceLang = normLang(spokenLang(next, retry.lang, speakerLang)) || sourceLang;
           }
         } catch (error) {
           this.logger.warn(`Retranscribe failed: ${(error as Error).message}`);
@@ -1326,8 +1339,8 @@ export class TransmissionsService {
       const needTranslate = [
         ...new Set(
           transmission.targets
-            .map((t) => t.language)
-            .filter((lang) => lang !== sourceLang),
+            .map((t) => normLang(t.language) || t.language)
+            .filter((lang) => lang && lang !== sourceLang),
         ),
       ];
       if (!originalText && (textOnly || !transmission.originalAudioUrl)) {
@@ -1344,7 +1357,7 @@ export class TransmissionsService {
       // No words heard — still deliver the recording as it sounded (noise included).
       if (!originalText && !textOnly) {
         originalText = "";
-        sourceLang = speakerLang;
+        sourceLang = normLang(speakerLang) || speakerLang;
       }
       this.logger.log(`Source ${transmission.id} spoke=${sourceLang} profile=${speakerLang}`);
       const keepNames = textOnly
@@ -1356,7 +1369,13 @@ export class TransmissionsService {
         sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male";
       const ttsByLang: Record<string, string | null> = {};
       const langsToFill = textOnly
-        ? [...new Set(transmission.targets.map((t) => t.language).filter((lang) => lang !== sourceLang))]
+        ? [
+            ...new Set(
+              transmission.targets
+                .map((t) => normLang(t.language) || t.language)
+                .filter((lang) => lang && lang !== sourceLang),
+            ),
+          ]
         : needTranslate;
 
       const incomingByOwner = new Map(incomingRows.map((row) => [row.ownerId, row]));
@@ -1381,7 +1400,7 @@ export class TransmissionsService {
       ) => {
         const incoming = incomingByOwner.get(target.userId);
         const plus = planById.get(target.userId) === "PLUS";
-        const sameLang = target.language === sourceLang;
+        const sameLang = normLang(target.language) === sourceLang;
         const first = incoming?.status !== "ACCEPTED";
         const mutualHeard =
           recipientHeardSender.has(target.userId) && senderHeardRecipient.has(target.userId);
@@ -1466,14 +1485,18 @@ export class TransmissionsService {
         );
       }
       // Same language keeps the original voice. Every other language, including Hebrew, is translated.
-      const sameTargets = transmission.targets.filter((t) => t.language === sourceLang);
+      const sameTargets = transmission.targets.filter((t) => normLang(t.language) === sourceLang);
       const crossTargets = transmission.targets.filter((t) => !sameTargets.includes(t));
+      const voiceAlreadyFast = delivery === "voice" && Boolean(transmission.originalAudioUrl);
       for (const target of sameTargets) {
         if (textOnly) {
           emitTarget(target, null, true);
-        } else {
-          emitTarget(target, transmission.originalAudioUrl, true);
+          continue;
         }
+        // Chat voice already landed via dispatchVoiceOriginal — only patch captions once STT has text.
+        // Never fan out a second "new" clip for the same transmissionId.
+        if (voiceAlreadyFast && !originalText) continue;
+        emitTarget(target, transmission.originalAudioUrl, true);
       }
       if (sameTargets.length) {
         this.logger.log(
