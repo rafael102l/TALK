@@ -386,13 +386,19 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
   @SubscribeMessage(SOCKET_EVENTS.CHAT_TYPING)
   chatTyping(
     @ConnectedSocket() client: AuthedSocket,
-    @MessageBody() body: { targetUserId?: string; typing?: boolean },
+    @MessageBody() body: { targetUserId?: string; typing?: boolean; recording?: boolean },
   ) {
     if (!client.userId || !body?.targetUserId) return { ok: false };
+    const typing = Boolean(body.typing);
     this.emitToUser(
       body.targetUserId,
       SOCKET_EVENTS.CHAT_TYPING,
-      { userId: client.userId, typing: Boolean(body.typing) },
+      {
+        userId: client.userId,
+        typing,
+        // Only meaningful while typing=true — voice note in progress.
+        recording: typing ? Boolean(body.recording) : false,
+      },
       false,
     );
     return { ok: true };
