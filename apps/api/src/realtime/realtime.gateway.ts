@@ -727,6 +727,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           senderId,
           body,
           deliverIds,
+          resolved.personIds,
           channelIds[0] || "",
           channelIds,
           transmissionId,
@@ -823,6 +824,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       clientLocalId?: string;
     },
     targetUserIds: string[],
+    personIds: string[],
     channelId: string,
     channelIds: string[],
     transmissionId: string,
@@ -855,6 +857,7 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           file,
           {
             targetUserIds,
+            personIds,
             channelId: channelId || undefined,
             channelIds: channelIds.length ? channelIds : undefined,
             durationMs: Number.isFinite(Number(body.durationMs)) ? Number(body.durationMs) : undefined,

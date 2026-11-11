@@ -346,6 +346,7 @@ export class TransmissionsService {
     input: {
       channelId?: string;
       channelIds?: string[];
+      personIds?: string[];
       targetUserIds?: string[];
       durationMs?: number;
       releasedAt?: number;
@@ -360,6 +361,9 @@ export class TransmissionsService {
       this.logger.warn(`Walkie drop short duration=${input.durationMs} sender=${sender.id}`);
       return { id: "", status: "READY" as const, channelId: "" };
     }
+    const explicit = new Set(
+      [...(input.personIds || []), ...(input.targetUserIds || [])].filter((id) => id && id !== sender.id),
+    );
     const targetIds = [...new Set((input.targetUserIds || []).filter((id) => id && id !== sender.id))];
     const groupIds = [
       ...new Set(
@@ -477,7 +481,12 @@ export class TransmissionsService {
           }
         }
         for (const id of targetIds) {
-          if (already.has(id) || missed.includes(id) || homesOf.has(id)) continue;
+          if (missed.includes(id)) continue;
+          // Explicit personIds always get a private 1:1 stamp, even if they are also
+          // members of a selected group (homesOf). Non-explicit group members skip 1:1.
+          if (!explicit.has(id)) {
+            if (already.has(id) || homesOf.has(id)) continue;
+          }
           const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
             ...payload,
             channelId: "",
@@ -487,13 +496,16 @@ export class TransmissionsService {
           this.logger.log(
             `Forward walkie ${transmissionId} -> ${id} reached=${reached} group=false channel=`,
           );
-          if (!reached) missed.push(id);
-          else already.add(id);
+          if (!reached) {
+            if (!missed.includes(id)) missed.push(id);
+          } else {
+            already.add(id);
+          }
         }
         const users = targetIds.length
           ? await this.prisma.user.findMany({ where: { id: { in: targetIds } } })
           : [];
-        const dubbed = walkieDubbedTargets(users, lang, payload, homesOf);
+        const dubbed = walkieDubbedTargets(users, lang, payload, homesOf, explicit);
         this.persistWalkie(
           transmissionId,
           sender,
