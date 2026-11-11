@@ -166,7 +166,8 @@ export class TransmissionsService {
     const sttEarly: Promise<SttResult> =
       sameLanguage || hasHint
         ? Promise.resolve({ text: sameLanguage ? "" : hint, lang: detectLang(hint) || speakerLang })
-        : this.stt.transcribeBytes(file.buffer, "", mime, ext);
+        : // Pass the speaker language so STT does not guess the wrong tongue for chat voice notes.
+          this.stt.transcribeBytes(file.buffer, speakerLang || "", mime, ext);
     if (sameLanguage) {
       this.logger.log(`Same language ${speakerLang} — skip STT`);
     }
