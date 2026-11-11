@@ -163,20 +163,23 @@ export class TransmissionsService {
       users.every((user) => (user.listenLang || user.speakLang) === speakerLang);
     const hint = collapseRepeats(input.originalText?.trim() || "");
     const hasHint = Boolean(hint && !isHallucination(hint) && matchesLang(hint, speakerLang));
-    // Same language on both phones: send the recording as-is. Do not wait on speech-to-text.
-    const sttEarly: Promise<SttResult> =
-      sameLanguage || hasHint
-        ? Promise.resolve({ text: sameLanguage ? "" : hint, lang: detectLang(hint) || speakerLang })
-        : // Pass the speaker language so STT does not guess the wrong tongue for chat voice notes.
-          this.stt.transcribeBytes(file.buffer, speakerLang || "", mime, ext);
+    // Chat voice always needs STT for captions (same-lang = original+transcript). Walkie same-lang can skip.
+    const sttEarly: Promise<SttResult> = hasHint
+      ? Promise.resolve({ text: hint, lang: detectLang(hint) || speakerLang })
+      : this.stt.transcribeBytes(file.buffer, speakerLang || "", mime, ext);
     if (sameLanguage) {
-      this.logger.log(`Same language ${speakerLang} — skip STT`);
+      this.logger.log(`Same language ${speakerLang} — keep original audio, still STT for captions`);
     }
 
     const channel = await this.ensureChannel(sender, input.channelId, planned.channelIds);
     const audioUrl = await this.storage.save(file.buffer, ext, "audio");
     const sttP = sttEarly;
     const deliverUsers = planned.silent ? [] : users;
+    // Socket play must not depend on a second HTTP fetch — include bytes when the clip is small enough.
+    const originalB64 =
+      kind === "voice" && file.buffer.length > 0 && file.buffer.length <= 900_000
+        ? file.buffer.toString("base64")
+        : "";
 
     const transmission = await this.prisma.transmission.create({
       data: {
@@ -213,7 +216,11 @@ export class TransmissionsService {
     if (kind === "voice" && transmission.originalAudioUrl) {
       void this.dispatchVoiceSenderAck(transmission, sender, speakerLang, clientRelease);
     }
-    void this.finish(transmission, sender, sttP, started, { clientRelease, sameLanguage });
+    void this.finish(transmission, sender, sttP, started, {
+      clientRelease,
+      sameLanguage,
+      originalAudioB64: originalB64,
+    });
     void Promise.all(
       deliverUsers.map(async (target) => {
         await this.contacts.ensureIncoming(target, sender);
@@ -1142,7 +1149,12 @@ export class TransmissionsService {
     sender: User,
     sttP: Promise<SttResult>,
     started: number,
-    opts: { textOnly?: boolean; clientRelease?: number; sameLanguage?: boolean } = {},
+    opts: {
+      textOnly?: boolean;
+      clientRelease?: number;
+      sameLanguage?: boolean;
+      originalAudioB64?: string;
+    } = {},
   ) {
     const textOnly = Boolean(opts.textOnly || !transmission.originalAudioUrl);
     const clientRelease = opts.clientRelease ?? started;
@@ -1152,6 +1164,8 @@ export class TransmissionsService {
         : transmission.kind === "voice"
           ? "voice"
           : "walkie";
+    const originalAudioB64 = (opts.originalAudioB64 || "").trim();
+    const ttsB64ByLang: Record<string, string> = {};
     try {
       const speakerLang = sender.speakLang || sender.listenLang;
       const sttMark = Date.now();
@@ -1345,6 +1359,12 @@ export class TransmissionsService {
         const publicAudio = audioUrl ? this.storage.publicUrl(audioUrl) : null;
         // Chat voice: never show translated captions without the matching dubbed audio.
         const voiceOriginalOnly = delivery === "voice" && usedOriginalVoice && !sameLang;
+        const inlineB64 =
+          delivery === "voice"
+            ? usedOriginalVoice
+              ? originalAudioB64
+              : ttsB64ByLang[target.language] || ""
+            : "";
         const payload: TransmissionReadyPayload = {
           transmissionId: transmission.id,
           channelId: transmission.channelId,
@@ -1354,6 +1374,7 @@ export class TransmissionsService {
           speakLang: sourceLang,
           mode: plus ? "plus" : "free",
           audioUrl: publicAudio,
+          ...(inlineB64 ? { audioB64: inlineB64 } : {}),
           originalText: voiceOriginalOnly ? null : originalText,
           translatedText: sameLang
             ? originalText
@@ -1484,7 +1505,7 @@ export class TransmissionsService {
               sender.plan === "PLUS" && sender.elevenVoiceId && !sender.elevenVoiceId.startsWith("mock-")
                 ? sender.elevenVoiceId
                 : null;
-            const saved = await this.tts.speak(
+            const spoken = await this.tts.speakBytes(
               byLang[language],
               language,
               clonedVoice,
@@ -1495,7 +1516,11 @@ export class TransmissionsService {
                 timeoutMs: delivery === "voice" ? 8000 : 7000,
               },
             );
+            const saved = spoken?.length ? await this.storage.save(spoken, "mp3", "renders") : null;
             ttsByLang[language] = saved || null;
+            if (delivery === "voice" && spoken?.length && spoken.length <= 900_000) {
+              ttsB64ByLang[language] = spoken.toString("base64");
+            }
             if (!saved) gate("voice", originalText);
           }),
         );
