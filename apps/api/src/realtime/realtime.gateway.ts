@@ -802,11 +802,16 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
       membersByGroup.set(row.channelId, list);
       groupMemberSet.add(row.userId);
     }
-    const groups = [...groupIds].map((id) => ({
-      id,
-      name: channelName.get(id) || stamps.find((row) => row.id === id)?.name || "",
-      memberIds: [...new Set(membersByGroup.get(id) || [])],
-    }));
+    const groups = [...groupIds].map((id) => {
+      const fromDb = membersByGroup.get(id) || [];
+      const fromClient = stamps.find((row) => row.id === id)?.memberIds || [];
+      return {
+        id,
+        name: channelName.get(id) || stamps.find((row) => row.id === id)?.name || "",
+        // Prefer DB membership; keep client memberIds so no selected group is emptied.
+        memberIds: [...new Set([...fromDb, ...fromClient])].filter((uid) => uid && uid !== senderId),
+      };
+    });
     // Keep every explicitly named person for a separate 1:1 emit — even if they
     // also receive the same clip via a selected group.
     let personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id)))];
