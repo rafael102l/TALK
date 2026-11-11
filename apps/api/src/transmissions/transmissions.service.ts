@@ -354,7 +354,16 @@ export class TransmissionsService {
       sourceLanguage?: string;
       clientLocalId?: string;
     },
-    opts?: { skipEmit?: boolean; skipEmitFor?: string[]; missed?: string[]; transmissionId?: string },
+    opts?: {
+      skipEmit?: boolean;
+      skipEmitFor?: string[];
+      /** Users who already received the private 1:1 stamp (independent of group). */
+      skipEmitPrivateFor?: string[];
+      /** Users who already received a group stamp. */
+      skipEmitGroupFor?: string[];
+      missed?: string[];
+      transmissionId?: string;
+    },
   ) {
     const started = Date.now();
     if (tooShortWalkie(input.durationMs)) {
@@ -364,7 +373,14 @@ export class TransmissionsService {
     const explicit = new Set(
       [...(input.personIds || []), ...(input.targetUserIds || [])].filter((id) => id && id !== sender.id),
     );
-    const targetIds = [...new Set((input.targetUserIds || []).filter((id) => id && id !== sender.id))];
+    // personIds stay first-class targets even when also listed via groups.
+    const targetIds = [
+      ...new Set(
+        [...(input.personIds || []), ...(input.targetUserIds || [])].filter(
+          (id) => id && id !== sender.id,
+        ),
+      ),
+    ];
     const groupIds = [
       ...new Set(
         [input.channelId, ...(input.channelIds || [])]
@@ -427,13 +443,15 @@ export class TransmissionsService {
     };
     const groupIdsForPersist = groupIds;
     const already = new Set(opts?.skipEmitFor || []);
+    const skipPrivate = new Set(opts?.skipEmitPrivateFor || []);
+    const skipGroup = new Set(opts?.skipEmitGroupFor || []);
     const missed = [...new Set(opts?.missed || [])];
     // Track private 1:1 separately so a group emit never swallows an explicit person.
-    const gotPrivate = new Set<string>();
+    const gotPrivate = new Set<string>(skipPrivate);
     if (!opts?.skipEmit) {
       // Explicit people get a private stamp first — even when groups are also selected.
       for (const id of targetIds) {
-        if (!explicit.has(id) || already.has(id) || gotPrivate.has(id)) continue;
+        if (!explicit.has(id) || gotPrivate.has(id)) continue;
         const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
           ...payload,
           channelId: "",
@@ -452,7 +470,7 @@ export class TransmissionsService {
       }
       if (!groupIdsForPersist.length) {
         for (const id of targetIds) {
-          if (already.has(id) || gotPrivate.has(id)) continue;
+          if (gotPrivate.has(id)) continue;
           const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
             ...payload,
             channelId: "",
@@ -498,26 +516,26 @@ export class TransmissionsService {
               list.push({ id: gid, name: groupName.get(gid) || "" });
               homesOf.set(row.userId, list);
             }
-            // skipEmit: live path already delivered. Otherwise never skip group
-            // just because a private 1:1 stamp already went out.
-            if (missed.includes(row.userId)) continue;
-            if (opts?.skipEmit && already.has(row.userId)) continue;
+            // Group path is independent of private 1:1 — only skip if this user
+            // already got a group stamp (or live skipEmitGroupFor said so).
+            if (opts?.skipEmit && skipGroup.has(row.userId)) continue;
             const reached = this.realtime.emitToUser(row.userId, SOCKET_EVENTS.TRANSMISSION_READY, stamped);
             if (!reached) {
               if (!missed.includes(row.userId)) missed.push(row.userId);
             } else {
               already.add(row.userId);
+              skipGroup.add(row.userId);
             }
           }
         }
         for (const id of targetIds) {
-          // Explicit personIds always get a private 1:1 stamp, even if they are also
-          // members of a selected group (homesOf). Prior group emit must not block it.
+          // Explicit personIds always get a private 1:1 stamp, independent of groups.
           if (explicit.has(id)) {
             if (gotPrivate.has(id)) continue;
-            if (opts?.skipEmit && already.has(id)) continue;
+            if (opts?.skipEmit && skipPrivate.has(id)) continue;
           } else {
-            if (missed.includes(id) || gotPrivate.has(id) || already.has(id) || homesOf.has(id)) continue;
+            if (gotPrivate.has(id) || homesOf.has(id)) continue;
+            if (opts?.skipEmit && (skipPrivate.has(id) || already.has(id))) continue;
           }
           const reached = this.realtime.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
             ...payload,

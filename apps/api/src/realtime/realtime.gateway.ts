@@ -624,7 +624,11 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     const note = (id: string, ok: boolean) => {
       if (ok) {
         if (!reached.includes(id)) reached.push(id);
-      } else if (!reached.includes(id) && !missed.includes(id)) missed.push(id);
+        const at = missed.indexOf(id);
+        if (at >= 0) missed.splice(at, 1);
+      } else if (!reached.includes(id) && !missed.includes(id)) {
+        missed.push(id);
+      }
     };
     const emitDirect = (id: string) => {
       const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
@@ -688,8 +692,9 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     void (async () => {
       try {
         const resolved = await this.expandWalkieGroups(senderId, body);
+        // Private retry is independent of group reach/miss — only skip if 1:1 already landed.
         for (const id of resolved.personIds) {
-          if (reachedDirect.has(id) || missed.includes(id)) continue;
+          if (reachedDirect.has(id)) continue;
           const ok = this.emitToUser(id, SOCKET_EVENTS.TRANSMISSION_READY, {
             ...basePayload,
             channelId: "",
@@ -699,7 +704,11 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           if (ok) {
             reachedDirect.add(id);
             if (!reached.includes(id)) reached.push(id);
-          } else if (!missed.includes(id)) missed.push(id);
+            const at = missed.indexOf(id);
+            if (at >= 0) missed.splice(at, 1);
+          } else if (!missed.includes(id)) {
+            missed.push(id);
+          }
         }
         for (const group of resolved.groups) {
           const row = {
@@ -731,6 +740,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
           transmissionId,
           reached,
           missed,
+          [...reachedDirect],
+          [...reachedGroup],
         );
       } catch (error) {
         this.logger.warn(`walkie finish ${transmissionId} ${(error as Error).message}`);
@@ -758,7 +769,6 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     // Merge personIds + targetUserIds. An empty personIds:[] must not wipe targetUserIds.
     const namedPeople = asIdList(body.personIds);
     const targetPeople = asIdList(body.targetUserIds);
-    const explicitPersonField = namedPeople.length > 0 || Array.isArray(body.personIds);
     const requestedPeople = [...new Set([...namedPeople, ...targetPeople])].filter(
       (id) => id && id !== senderId,
     );
@@ -795,12 +805,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         })
       : [];
     const membersByGroup = new Map<string, string[]>();
-    const groupMemberSet = new Set<string>();
     for (const row of memberRows) {
       const list = membersByGroup.get(row.channelId) || [];
       list.push(row.userId);
       membersByGroup.set(row.channelId, list);
-      groupMemberSet.add(row.userId);
     }
     const groups = [...groupIds].map((id) => {
       const fromDb = membersByGroup.get(id) || [];
@@ -812,12 +820,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         memberIds: [...new Set([...fromDb, ...fromClient])].filter((uid) => uid && uid !== senderId),
       };
     });
-    // Keep every explicitly named person for a separate 1:1 emit — even if they
-    // also receive the same clip via a selected group.
-    let personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id)))];
-    if (!namedPeople.length && !Array.isArray(body.personIds)) {
-      personIds = personIds.filter((id) => !groupMemberSet.has(id));
-    }
+    // Every named person keeps an independent 1:1 path — never filter by group membership.
+    const personIds = [...new Set(requestedPeople.filter((id) => !channelName.has(id)))];
     return { personIds, groups };
   }
 
@@ -838,6 +842,8 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     transmissionId: string,
     reached: string[],
     missed: string[],
+    reachedDirect: string[] = [],
+    reachedGroup: string[] = [],
   ) {
     void (async () => {
       try {
@@ -874,7 +880,15 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
             sourceLanguage: body.sourceLanguage || body.speakLang,
             clientLocalId: typeof body.clientLocalId === "string" ? body.clientLocalId : undefined,
           },
-          { skipEmit: true, skipEmitFor: reached, missed, transmissionId },
+          {
+            skipEmit: true,
+            // Keep private vs group skip lists separate so a group land never blocks 1:1.
+            skipEmitFor: reached,
+            skipEmitPrivateFor: reachedDirect,
+            skipEmitGroupFor: reachedGroup,
+            missed,
+            transmissionId,
+          },
         );
       } catch (error) {
         this.logger.warn(`walkie persist ${transmissionId} ${(error as Error).message}`);
