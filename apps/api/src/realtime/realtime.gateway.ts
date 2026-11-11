@@ -270,6 +270,12 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         | "voice"
         | "image"
         | "video";
+      const voiceAudio =
+        kind === "voice" && !sameLang && render?.audioUrl
+          ? this.storage.publicUrl(render.audioUrl)
+          : kind === "text"
+            ? null
+            : this.storage.publicUrl(tx.originalAudioUrl);
       const payload = {
         transmissionId: tx.id,
         channelId: tx.channelId,
@@ -278,11 +284,11 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
         language: hear,
         speakLang: sourceLang,
         mode: sender.plan === "PLUS" ? "plus" : "free",
-        audioUrl: kind === "text" ? null : this.storage.publicUrl(tx.originalAudioUrl),
+        audioUrl: voiceAudio,
         originalText: tx.originalText || "",
         translatedText: sameLang ? tx.originalText || "" : render?.translatedText || tx.originalText || "",
         durationMs: tx.durationMs,
-        usedOriginalVoice: sameLang,
+        usedOriginalVoice: sameLang || !(kind === "voice" && render?.audioUrl),
         needsAccept: false,
         live: false,
         senderPhone: tx.sender.phoneE164,

@@ -208,9 +208,10 @@ export class TransmissionsService {
       include: { targets: true },
     });
 
-    // Chat voice: release the original clip immediately — STT/translate/TTS continue in finish().
-    if (kind === "voice" && transmission.originalAudioUrl && deliverUsers.length) {
-      void this.dispatchVoiceOriginal(transmission, sender, deliverUsers, speakerLang, clientRelease);
+    // Chat voice: sender gets an instant server ack (WhatsApp-like). Recipients wait for finish()
+    // so they receive one ready package — original+caption (same lang) or TTS+caption (cross-lang).
+    if (kind === "voice" && transmission.originalAudioUrl) {
+      void this.dispatchVoiceSenderAck(transmission, sender, speakerLang, clientRelease);
     }
     void this.finish(transmission, sender, sttP, started, { clientRelease, sameLanguage });
     void Promise.all(
@@ -222,8 +223,8 @@ export class TransmissionsService {
     return { id: transmission.id, status: "PROCESSING" as const, channelId: channel.id };
   }
 
-  /** Fan-out original chat-voice audio before STT/TTS so both phones see the bubble within ~1s. */
-  private async dispatchVoiceOriginal(
+  /** Sender-only ack so the local bubble binds to a server id immediately. Recipients wait for finish(). */
+  private async dispatchVoiceSenderAck(
     transmission: {
       id: string;
       channelId: string;
@@ -231,86 +232,16 @@ export class TransmissionsService {
       durationMs: number | null;
       viewOnce: boolean;
       expiresAt: Date | null;
-      targets: { id: string; userId: string; language: string }[];
     },
     sender: User,
-    deliverUsers: User[],
     speakerLang: string,
     clientRelease: number,
   ) {
     try {
       const publicAudio = this.storage.publicUrl(transmission.originalAudioUrl);
       if (!publicAudio) return;
-      const quoted = decodeReply("");
       const voiceGender =
         sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male";
-      const senderPublic = toPublicUser(sender);
-      const channelRow = await this.prisma.channel.findUnique({
-        where: { id: transmission.channelId },
-        select: { type: true },
-      });
-      const group = isGroupType(channelRow?.type);
-      const hidePhoto = await this.hideAvatarFor(
-        sender.id,
-        transmission.targets.map((row) => row.userId),
-      );
-      const planById = new Map(deliverUsers.map((u) => [u.id, u.plan === "PLUS" ? "PLUS" : "FREE"] as const));
-      await this.prisma.transmission.update({
-        where: { id: transmission.id },
-        data: { status: "READY" },
-      });
-      for (const target of transmission.targets) {
-        const plus = planById.get(target.userId) === "PLUS";
-        const payload: TransmissionReadyPayload = {
-          transmissionId: transmission.id,
-          channelId: transmission.channelId,
-          senderId: sender.id,
-          senderName: sender.displayName || sender.phoneE164,
-          language: target.language || speakerLang,
-          speakLang: speakerLang,
-          mode: plus ? "plus" : "free",
-          audioUrl: publicAudio,
-          originalText: null,
-          translatedText: null,
-          durationMs: transmission.durationMs,
-          usedOriginalVoice: true,
-          replyToId: quoted.reply?.id || null,
-          replyToName: quoted.reply?.name || null,
-          replyToText: quoted.reply?.text || null,
-          needsAccept: false,
-          live: false,
-          senderPhone: sender.phoneE164,
-          senderAvatarUrl: hidePhoto.has(target.userId) ? null : senderPublic.avatarUrl,
-          voiceGender,
-          kind: "voice",
-          viewOnce: Boolean(transmission.viewOnce),
-          releasedAt: clientRelease,
-          readyAt: Date.now(),
-          expiresAt: transmission.expiresAt?.toISOString() || null,
-          group,
-        };
-        const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
-        this.logger.log(`Voice fast ${transmission.id} -> ${target.userId} reached=${reached}`);
-        if (reached) {
-          void this.noteDelivered(target.id, sender.id, transmission.id, target.userId);
-        } else {
-          void this.push.notifyOfflineMessage(target.userId, {
-            transmissionId: transmission.id,
-            channelId: transmission.channelId,
-            kind: "voice",
-            type: "message",
-            senderId: sender.id,
-            senderName: sender.displayName || sender.phoneE164,
-            senderPhone: sender.phoneE164,
-            senderAvatarUrl: hidePhoto.has(target.userId) ? "" : senderPublic.avatarUrl || "",
-            audioUrl: publicAudio,
-            originalText: "",
-            translatedText: "",
-            speakLang: speakerLang,
-            language: target.language || speakerLang,
-          });
-        }
-      }
       this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, {
         transmissionId: transmission.id,
         channelId: transmission.channelId,
@@ -335,8 +266,9 @@ export class TransmissionsService {
         receipt: "sent",
         expiresAt: transmission.expiresAt?.toISOString() || null,
       });
+      this.logger.log(`Voice sender ack ${transmission.id}`);
     } catch (error) {
-      this.logger.warn(`Voice fast dispatch ${transmission.id}: ${(error as Error).message}`);
+      this.logger.warn(`Voice sender ack ${transmission.id}: ${(error as Error).message}`);
     }
   }
 
@@ -1485,23 +1417,19 @@ export class TransmissionsService {
           (t) => incomingByOwner.get(t.userId)?.status !== "BLOCKED",
         );
       }
-      // Same language keeps the original voice. Every other language, including Hebrew, is translated.
+      // Same language: one package — original audio + caption. Cross-lang waits for TTS below.
       const sameTargets = transmission.targets.filter((t) => normLang(t.language) === sourceLang);
       const crossTargets = transmission.targets.filter((t) => !sameTargets.includes(t));
-      const voiceAlreadyFast = delivery === "voice" && Boolean(transmission.originalAudioUrl);
       for (const target of sameTargets) {
         if (textOnly) {
           emitTarget(target, null, true);
           continue;
         }
-        // Chat voice already landed via dispatchVoiceOriginal — only patch captions once STT has text.
-        // Never fan out a second "new" clip for the same transmissionId.
-        if (voiceAlreadyFast && !originalText) continue;
         emitTarget(target, transmission.originalAudioUrl, true);
       }
       if (sameTargets.length) {
         this.logger.log(
-          `Fast ${transmission.id} sameLang=${sourceLang} targets=${sameTargets.length} at ${Date.now() - started}ms`,
+          `Ready ${transmission.id} sameLang=${sourceLang} targets=${sameTargets.length} at ${Date.now() - started}ms`,
         );
       }
       const translateMark = Date.now();
@@ -1641,25 +1569,19 @@ export class TransmissionsService {
           continue;
         }
         const storageAudio = translated ? ttsByLang[target.language] || null : null;
-        // Cross-lang voice: emit only when TTS + caption are both ready (synced). Else keep original already fast-dispatched.
+        // Cross-lang voice: one package with TTS + caption together. Fallback = original only (no lone captions).
         if (storageAudio && translated) {
           emitTarget(target, storageAudio, false);
           crossSent += 1;
-          continue;
-        }
-        if (delivery === "voice") {
-          // Original was already released in dispatchVoiceOriginal; do not attach lone captions.
-          if (transmission.originalAudioUrl) {
-            fallbackLangs.add(target.language);
-            crossSent += 1;
-          }
           continue;
         }
         if (transmission.originalAudioUrl) {
           emitTarget(target, transmission.originalAudioUrl, true);
           fallbackLangs.add(target.language);
           crossSent += 1;
-          this.logger.log(`Walkie ${transmission.id} ${sourceLang}->${target.language} original voice`);
+          this.logger.log(
+            `${delivery === "voice" ? "Voice" : "Walkie"} ${transmission.id} ${sourceLang}->${target.language} original voice`,
+          );
         }
       }
       if (!sameTargets.length && !crossSent && crossTargets.length) {

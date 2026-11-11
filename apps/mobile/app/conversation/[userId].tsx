@@ -51,6 +51,7 @@ import { VoiceBubble } from "../../src/components/VoiceBubble";
 import { useI18n } from "../../src/i18n";
 import { api } from "../../src/lib/api";
 import {
+  cacheIncomingWalkie,
   cancelRecording,
   getRecordingMeter,
   pauseRecording,
@@ -490,7 +491,24 @@ export default function ConversationScreen() {
           expiresAt: payload.expiresAt || null,
         });
         keepChatMedia(row);
-        if (row.audioUrl && kind !== "image" && kind !== "video") void prefetchAudio(row.audioUrl);
+        if (kind === "voice" && row.audioUrl) {
+          void cacheIncomingWalkie({
+            transmissionId: payload.transmissionId,
+            audioUrl: row.audioUrl,
+            usedOriginalVoice: payload.usedOriginalVoice !== false,
+          }).then((local) => {
+            if (!local) return;
+            setItems((current) => {
+              const next = current.map((item) =>
+                txIdOf(item.id) === payload.transmissionId ? { ...item, audioUrl: local } : item,
+              );
+              seedHistoryCache(next);
+              return next;
+            });
+          });
+        } else if (row.audioUrl && kind !== "image" && kind !== "video") {
+          void prefetchAudio(row.audioUrl);
+        }
         setItems((current) => {
           const echoBody = (row.originalText || row.translatedText || "").replace(/\s+/g, " ").trim();
           const isLocalEcho = (item: HistoryItem) => {
@@ -513,7 +531,10 @@ export default function ConversationScreen() {
           if (mine) row.receipt = mergeReceipt(existing?.receipt, row.receipt || "sent");
           if (existing) {
             row.createdAt = existing.createdAt || row.createdAt;
-            if (kind === "voice" && payload.usedOriginalVoice && existing.audioUrl && !row.audioUrl) {
+            // Sender keeps the local recording file; caption updates must not wipe it.
+            if (kind === "voice" && mine && existing.audioUrl?.startsWith("file:")) {
+              row.audioUrl = existing.audioUrl;
+            } else if (kind === "voice" && payload.usedOriginalVoice && existing.audioUrl && !row.audioUrl) {
               row.audioUrl = existing.audioUrl;
             }
             // Keep captions only when this payload carries them (synced with audio).
