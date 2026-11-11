@@ -152,8 +152,6 @@ export class SttService {
     this.logger.log(`LOG [TRACE] Raw Audio Length: ${wavSeconds(audio).toFixed(2)} sec`);
     this.logger.log(`LOG [TRACE] Audio format: ${describeWav(audio)}`);
     this.logger.log(`LOG [TRACE] STT language: ${tag}`);
-    // Run Gemini and Whisper in parallel for speed, but always wait for both so
-    // pickFaithfulTranscript can reject Gemini inventions against Whisper.
     const [heard, whisper] = await Promise.all([
       this.geminiLive(
         key,
@@ -529,6 +527,23 @@ export function usableSpeech(text: string) {
   if (tokens.length && tokens.every((token) => FILLER_TOKEN.test(token))) return "";
   if (tokens.length === 1 && /^([aeiouyאהו])\1+$/iu.test(tokens[0])) return "";
   return clean;
+}
+
+/**
+ * Silence / noise often makes STT invent full sentences ("airport", "subscribe", …).
+ * When the clip is short and the transcript is long, treat it as non-speech.
+ */
+export function looksLikeSilenceHallucination(text: string, durationMs?: number | null) {
+  const clean = usableSpeech(text);
+  if (!clean) return true;
+  if (isHallucination(clean) || isStutterGarbage(clean) || STOCK_EXTRA.test(clean)) return true;
+  const ms = Number(durationMs);
+  if (!Number.isFinite(ms) || ms <= 0) return false;
+  const words = clean.split(/\s+/).filter(Boolean).length;
+  if (ms < 1500 && (words >= 6 || clean.length >= 36)) return true;
+  if (ms < 2500 && words >= 10) return true;
+  if (ms < 4000 && words >= 18) return true;
+  return false;
 }
 
 const LATIN_LANG = new Set([
