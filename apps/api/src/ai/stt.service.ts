@@ -11,13 +11,16 @@ const GEMINI_LIVE_MODELS = ["gemini-3.5-flash-lite", "gemini-2.5-flash"];
 const LIVE_STT_TOKENS = 384;
 const LIVE_TRANSLATION_TOKENS = 192;
 const LIVE_HEAR =
-  "Transcribe the spoken audio exactly as heard. Do not filter out valid speech. Do not add, infer, repair, or complete any word or sentence that was not spoken. If the audio is cut off, unclear, or only noise, return an empty string. Do not replace the words with different names. Never invent stock phrases such as I love you, אני אוהב אותך, thank you for watching, or how can I help you.";
+  "VERBATIM TRANSCRIPTION ONLY. Write every spoken word exactly as heard, in the original language and script. Do not paraphrase, summarize, or replace any phrase with a synonym or a 'more natural' sentence. Example: if the speaker says «מה המצב אח שלי איך אתה מרגיש», you MUST write exactly that — never «מה אתה עושה עכשיו אח שלי» or any other rewrite. Do not filter out valid speech. Do not add, infer, repair, or complete any word that was not spoken. If the audio is cut off, unclear, or only noise, return an empty string. Never invent stock phrases such as I love you, אני אוהב אותך, thank you for watching, or how can I help you.";
+
+const WHISPER_VERBATIM_PROMPT =
+  "Exact verbatim transcript of the speaker's words only. Do not paraphrase. Do not replace idioms. Hebrew example lock: «מה המצב» stays «מה המצב»; «איך אתה מרגיש» stays «איך אתה מרגיש»; never rewrite into «מה אתה עושה».";
 const STOCK_EXTRA =
   /i love you|love you|אני אוהב אותך|אני אוהבת אותך|thank you for watching|thanks for watching|please subscribe|how can i help|נעים להכיר/i;
 const LIVE_LITERAL =
-  "Translate the whole utterance as one sentence in the target language's natural syntax, not word by word. CRITICAL: Do NOT sanitize, soften, rephrase, tone down, or 'improve' the user's speech. If the user is rude, aggressive, or grammatically raw, the translation MUST reflect that exact same tone, rudeness, and intent in the target language. Carry slang, insults, idioms, and profanity as the closest natural equivalent. Do NOT add polite intro words (e.g., 'Tell me', 'Please') if they were not explicitly spoken. Do NOT drop any insult, slang, or emphasis. Do NOT complete a cut-off sentence.";
+  "Translate the whole utterance as one sentence in the target language's natural syntax, not word by word. CRITICAL: Do NOT sanitize, soften, rephrase, tone down, or 'improve' the user's speech. If the user is rude, aggressive, or grammatically raw, the translation MUST reflect that exact same tone, rudeness, and intent in the target language. Carry slang, insults, idioms, and profanity as the closest natural equivalent. Do NOT replace one greeting with a different greeting (e.g. «what's up / how are you feeling» must NOT become «what are you doing now»). Do NOT add polite intro words (e.g., 'Tell me', 'Please') if they were not explicitly spoken. Do NOT drop any insult, slang, or emphasis. Do NOT complete a cut-off sentence.";
 const LIVE_ONLY =
-  "Translate the EXACT meaning and attitude of the utterance. Match the structure and raw intent without editing. If the source says 'מה אתה רוצה אתה דפוק אתה' and the target is English, translate to 'What do you want, you're crazy/dumb' — not a polite rewrite such as 'Tell me what you want'. Do the same in the requested target language. Translate ONLY the exact words in the transcript. If that transcript is cut off, unclear, or only noise, return an empty string. Do NOT complete, repair, or extend it. Do NOT answer questions, simplify, explain, or invent sentences that were not in the input.";
+  "Translate the EXACT meaning and attitude of the utterance. Match the structure and raw intent without editing. If the source says 'מה אתה רוצה אתה דפוק אתה' and the target is English, translate to 'What do you want, you're crazy/dumb' — not a polite rewrite such as 'Tell me what you want'. Do the same in the requested target language. Translate ONLY the exact words in the transcript — never swap them for a different sentence with a similar vibe. If that transcript is cut off, unclear, or only noise, return an empty string. Do NOT complete, repair, or extend it. Do NOT answer questions, simplify, explain, or invent sentences that were not in the input.";
 const LIVE_SAFETY = [
   "HARM_CATEGORY_HATE_SPEECH",
   "HARM_CATEGORY_HARASSMENT",
@@ -86,18 +89,19 @@ export class SttService {
     const started = Date.now();
     const hint = normLang(hintLang);
     // Gemini hears the recording first and names the spoken language. OpenAI only if that fails.
-    let raw = await this.viaGemini(audio, mime, ext);
+    let raw = await this.viaGemini(audio, mime, ext, hint);
     let engine = raw.text ? "gemini" : "";
     let text = usableSpeech(raw.text);
     if (!text) {
-      raw = await this.viaOpenAi(audio, ext, mime, 20000, "");
+      // Always pass the speaker profile language — empty lang makes Whisper paraphrase more.
+      raw = await this.viaOpenAi(audio, ext, mime, 20000, hint);
       engine = raw.text ? "openai" : "none";
       text = usableSpeech(raw.text);
     }
     let lang = text ? spokenLang(text, raw.lang || hint, hint) : "";
 
     if (engine !== "gemini" && text && hint && !matchesLang(text, hint)) {
-      const retry = await this.viaOpenAi(audio, ext, mime, 20000, "");
+      const retry = await this.viaOpenAi(audio, ext, mime, 20000, hint);
       const retryText = usableSpeech(retry.text);
       if (
         retryText &&
@@ -297,19 +301,26 @@ export class SttService {
     return { model: "", text: "", raw: "" };
   }
 
-  private async viaGemini(audio: Buffer, mime: string, ext: string): Promise<SttResult> {
+  private async viaGemini(audio: Buffer, mime: string, ext: string, hintLang = ""): Promise<SttResult> {
     const key = process.env.GEMINI_API_KEY;
     if (!key || !audio.length) return { text: "", lang: "" };
     const audioMime = geminiAudioMime(mime, ext);
+    const hint = normLang(hintLang);
+    const hintName = hint ? langName(hint) : "";
     const prompt = [
-      "You are the hearing step of a walkie-talkie.",
-      "Listen to the recording and write only the words that were spoken.",
+      "You are a VERBATIM speech-to-text engine for walkie-talkie / chat voice.",
+      "Listen to the recording and write ONLY the words that were spoken — exact wording, exact order.",
+      "FORBIDDEN: paraphrasing, summarizing, 'cleaning up', or replacing a phrase with a synonym.",
+      "Hebrew lock: «מה המצב אח שלי איך אתה מרגיש» must stay that sentence — never «מה אתה עושה עכשיו אח שלי».",
       "Transcribe the COMPLETE utterance — do not cut words or stop mid-sentence.",
       "Keep the original language and its usual script. Do not translate.",
       "Do not add greetings, explanations, or words that were not said.",
+      hintName ? `Speaker language hint: ${hintName} (${hint}). Prefer this language's script.` : "",
       `language must be exactly one of: ${LANG_LIST}.`,
       'Return only JSON: {"text":"...","language":"xx"}',
-    ].join(" ");
+    ]
+      .filter(Boolean)
+      .join(" ");
     const models = GEMINI_HEAR_MODELS.filter((model) => !this.deadGemini.has(model));
     for (const model of models) {
       try {
@@ -390,6 +401,8 @@ export class SttService {
       form.append("temperature", "0");
       form.append("response_format", "verbose_json");
       if (language) form.append("language", language);
+      // Bias Whisper toward verbatim output instead of polite paraphrase.
+      form.append("prompt", WHISPER_VERBATIM_PROMPT);
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
@@ -776,17 +789,33 @@ function tooManyWords(text: string, seconds: number) {
 function pickFaithfulTranscript(gemini: string, whisper: string, seconds = 0) {
   const g = usableSpeech(stripStock((gemini || "").replace(/\s+/g, " ").trim()));
   const w = usableSpeech(stripStock((whisper || "").replace(/\s+/g, " ").trim()));
-  if (!w) return "";
-  if (tooManyWords(w, seconds)) return "";
+  if (w && tooManyWords(w, seconds)) {
+    // Whisper padded — keep Gemini if it looks sane.
+    if (g && !tooManyWords(g, seconds)) return g;
+    return "";
+  }
+  if (!g && !w) return "";
   // One engine on a short/silent clip is almost always invented.
   if (!g) return seconds > 0 && seconds < 0.8 ? "" : w;
-  // Two different inventions — do not pick one and send it.
-  if (textOverlap(g, w) < 0.4) return "";
+  if (!w) return seconds > 0 && seconds < 0.8 ? "" : g;
+  const overlap = textOverlap(g, w);
+  // Two very different inventions — refuse rather than guess.
+  if (overlap < 0.35) return "";
   const extraGemini = stockHits(g).some((hit) => !stockHits(w).includes(hit));
   if (extraGemini) return w;
   const gw = g.split(/\s+/).filter(Boolean).length;
   const ww = w.split(/\s+/).filter(Boolean).length;
+  // Whisper often rewrites Hebrew/Arabic greetings into a different sentence.
+  // Prefer Gemini when either side is non-Latin and both are plausible.
+  const nonLatin = /[\u0590-\u05FF\u0600-\u06FF\u0400-\u04FF\u0900-\u097F]/.test(g + w);
+  if (nonLatin) {
+    if (gw >= ww) return g;
+    // Whisper longer only if it still overlaps well with Gemini.
+    return overlap >= 0.55 ? w : g;
+  }
   if (gw > ww + 3 && gw > Math.ceil(ww * 1.6)) return w;
+  // Prefer the longer of two agreeing drafts — short drafts are often paraphrases.
+  if (Math.abs(gw - ww) >= 2) return gw > ww ? g : w;
   return w;
 }
 
@@ -815,7 +844,7 @@ function stripStock(text: string) {
 
 function hearInstruction(code: string, tag: string) {
   const name = langName(code);
-  return `${LIVE_HEAR} LOCKED LANGUAGE: the speaker selected ${name}. Transcribe only in ${tag}. Do not detect, switch, or guess any other language. Write only in that language's usual script. Do not invent names or words from another language. If a word is unclear, omit that word.`;
+  return `${LIVE_HEAR} LOCKED LANGUAGE: the speaker selected ${name}. Transcribe only in ${tag}. Do not detect, switch, or guess any other language. Write only in that language's usual script. Do not invent names or words from another language. If a word is unclear, omit that word — never replace it with a different word.`;
 }
 
 function describeWav(audio: Buffer) {
