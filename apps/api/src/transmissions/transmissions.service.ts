@@ -259,6 +259,7 @@ export class TransmissionsService {
       durationMs: number | null;
       viewOnce: boolean;
       expiresAt: Date | null;
+      clientLocalId?: string | null;
     },
     sender: User,
     speakerLang: string,
@@ -292,6 +293,7 @@ export class TransmissionsService {
         readyAt: Date.now(),
         receipt: "sent",
         expiresAt: transmission.expiresAt?.toISOString() || null,
+        clientLocalId: transmission.clientLocalId || null,
       });
       this.logger.log(`Voice sender ack ${transmission.id}`);
     } catch (error) {
@@ -1252,6 +1254,7 @@ export class TransmissionsService {
       kind?: string;
       viewOnce?: boolean;
       expiresAt?: Date | null;
+      clientLocalId?: string | null;
       targets: { id: string; userId: string; language: string }[];
     },
     sender: User,
@@ -1782,6 +1785,7 @@ export class TransmissionsService {
           readyAt: Date.now(),
           receipt: senderReceipt,
           expiresAt: transmission.expiresAt?.toISOString() || null,
+          clientLocalId: transmission.clientLocalId || null,
         });
       }
 

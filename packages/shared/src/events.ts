@@ -131,7 +131,11 @@ export type TransmissionReadyPayload = {
   replyToText?: string | null;
   receipt?: "sent" | "delivered" | "read";
   expiresAt?: string | null;
+  /** Sender phone local-* id so READY replaces the matching bubble only. */
+  clientLocalId?: string | null;
+  /** True when this clip belongs on a GROUP/BROADCAST thread, not a 1:1. */
   group?: boolean;
+  /** Group title when the listener may not have that channel cached yet. */
   groupName?: string | null;
 };
 
