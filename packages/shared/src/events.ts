@@ -5,6 +5,8 @@ export const SOCKET_EVENTS = {
   PTT_CLIP: "ptt:clip",
   /** Finished walkie clip over the existing socket — skips the HTTP multipart round trip. */
   WALKIE_SEND: "walkie:send",
+  /** Chat voice clip over the socket — emit-first to peers, HTTP/DB persist in background. */
+  VOICE_SEND: "voice:send",
   /** Translated phrase for one listener. free = text for the phone's TTS. plus = cloned voice file. */
   PTT_CAPTION: "ptt:caption",
   PTT_SPEAKING: "ptt:speaking",

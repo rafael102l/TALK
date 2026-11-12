@@ -600,6 +600,80 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     return { ok: true, id: (result as { id?: string })?.id };
   }
 
+  /** Chat voice emit-first — does not alter WALKIE_SEND / walkie relay. */
+  @SubscribeMessage(SOCKET_EVENTS.VOICE_SEND)
+  async voiceSend(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody()
+    body: {
+      audio?: string;
+      durationMs?: number;
+      releasedAt?: number;
+      speakLang?: string;
+      sourceLanguage?: string;
+      clientLocalId?: string;
+      targetUserIds?: string[];
+      channelId?: string;
+      viewOnce?: boolean;
+      replyToId?: string;
+      replyToName?: string;
+      replyToText?: string;
+    },
+  ) {
+    if (!client.userId || typeof body?.audio !== "string") return { ok: false };
+    if (body.audio.length < 64 || body.audio.length > 6_000_000) {
+      this.logger.warn(`voice send drop size=${body.audio.length} user=${client.userId}`);
+      return { ok: false };
+    }
+    const buf = Buffer.from(body.audio, "base64");
+    if (buf.length < 32) return { ok: false };
+    const user = await loadUser(this.prisma, client.userId);
+    if (!user) return { ok: false };
+    const targetUserIds = [...new Set((body.targetUserIds || []).filter((id) => id && id !== client.userId))];
+    const channelId = typeof body.channelId === "string" ? body.channelId.trim() : "";
+    if (!targetUserIds.length && !channelId) return { ok: false };
+    const durationMs = Number(body.durationMs);
+    if (Number.isFinite(durationMs) && durationMs > 0 && durationMs < 400) {
+      this.logger.warn(`voice send drop short duration=${durationMs} user=${client.userId}`);
+      return { ok: false };
+    }
+    const releasedAt = Number(body.releasedAt);
+    const speakLang = typeof body.speakLang === "string" ? body.speakLang : undefined;
+    const sourceLanguage =
+      typeof body.sourceLanguage === "string" ? body.sourceLanguage : speakLang;
+    const file = {
+      fieldname: "audio",
+      originalname: "voice.m4a",
+      encoding: "7bit",
+      mimetype: "audio/mp4",
+      size: buf.length,
+      destination: "",
+      filename: "voice.m4a",
+      path: "",
+      buffer: buf,
+      stream: undefined as never,
+    } as Express.Multer.File;
+    const { TransmissionsService } = require("../transmissions/transmissions.service") as typeof import("../transmissions/transmissions.service");
+    const transmissions = this.moduleRef.get(TransmissionsService, { strict: false });
+    const result = await transmissions.forwardChatVoiceClip(user, file, {
+      targetUserIds,
+      channelId: channelId || undefined,
+      durationMs: Number.isFinite(durationMs) ? durationMs : undefined,
+      releasedAt: Number.isFinite(releasedAt) ? releasedAt : undefined,
+      speakLang,
+      sourceLanguage,
+      clientLocalId: typeof body.clientLocalId === "string" ? body.clientLocalId : undefined,
+      viewOnce: Boolean(body.viewOnce),
+      replyToId: typeof body.replyToId === "string" ? body.replyToId : undefined,
+      replyToName: typeof body.replyToName === "string" ? body.replyToName : undefined,
+      replyToText: typeof body.replyToText === "string" ? body.replyToText : undefined,
+    });
+    this.logger.log(
+      `voice send from=${client.userId} bytes=${buf.length} id=${(result as { id?: string })?.id ?? "-"}`,
+    );
+    return { ok: true, id: (result as { id?: string })?.id };
+  }
+
   @SubscribeMessage(SOCKET_EVENTS.PTT_AUDIO)
   pttAudio(
     @ConnectedSocket() client: AuthedSocket,

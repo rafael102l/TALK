@@ -516,6 +516,199 @@ export class TransmissionsService {
   }
 
   /** Same-language walkie: forward the clip over the socket now. Disk/history wait in the background. */
+  /**
+   * Chat voice emit-first (socket VOICE_SEND): deliver TRANSMISSION_READY + audioB64 to
+   * same-lang peers before disk/DB persist. Does not change walkie / WALKIE_SEND.
+   */
+  async forwardChatVoiceClip(
+    sender: User,
+    file: Express.Multer.File,
+    input: {
+      channelId?: string;
+      targetUserIds?: string[];
+      durationMs?: number;
+      releasedAt?: number;
+      speakLang?: string;
+      sourceLanguage?: string;
+      clientLocalId?: string;
+      viewOnce?: boolean;
+      replyToId?: string;
+      replyToName?: string;
+      replyToText?: string;
+    },
+  ) {
+    const started = Date.now();
+    const clientRelease = Number(input.releasedAt);
+    const releasedAt = Number.isFinite(clientRelease) && clientRelease > 0 ? clientRelease : started;
+    if (file.buffer.length > 1_500_000) {
+      // Too large for socket inline — fall back to the existing HTTP create path.
+      return this.create(sender, file, { ...input, kind: "voice", releasedAt });
+    }
+    const speakerLang = (
+      input.sourceLanguage ||
+      input.speakLang ||
+      sender.speakLang ||
+      sender.listenLang ||
+      ""
+    )
+      .slice(0, 2)
+      .toLowerCase();
+    const planned = await this.planTargets(sender, input, "voice");
+    const begun = await this.beginClip(sender.id, input);
+    if (begun.existing) return { id: begun.id, status: begun.status, channelId: begun.channelId };
+    const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
+    const normPair = (value: string | null | undefined) =>
+      String(value || "")
+        .trim()
+        .slice(0, 2)
+        .toLowerCase();
+    const speakNorm = normPair(speakerLang);
+    const sameLanguage =
+      users.length > 0 &&
+      Boolean(speakNorm) &&
+      users.every((user) => normPair(user.listenLang || user.speakLang) === speakNorm);
+    const channel = await this.ensureChannel(sender, input.channelId, planned.channelIds);
+    const audioB64 = file.buffer.toString("base64");
+    const transmissionId = begun.id;
+    const senderPublic = toPublicUser(sender);
+    const voiceGender =
+      sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male";
+    // Always deliver to channel peers (silent 1:1 still has channelIds = [peer]).
+    const deliverUsers = users.filter((user) => user.id !== sender.id);
+    const expiry = await this.expiryData(channel.id);
+    const expiresAtIso =
+      expiry && "expiresAt" in expiry && (expiry as { expiresAt?: Date }).expiresAt instanceof Date
+        ? (expiry as { expiresAt: Date }).expiresAt.toISOString()
+        : null;
+
+    const basePayload: TransmissionReadyPayload = {
+      transmissionId,
+      channelId: channel.id,
+      senderId: sender.id,
+      senderName: sender.displayName || sender.phoneE164,
+      language: speakerLang,
+      speakLang: speakerLang,
+      mode: sender.plan === "PLUS" ? "plus" : "free",
+      audioUrl: "",
+      originalText: null,
+      translatedText: null,
+      durationMs: input.durationMs ?? null,
+      usedOriginalVoice: true,
+      replyToId: input.replyToId || null,
+      replyToName: input.replyToName || null,
+      replyToText: input.replyToText || null,
+      senderPhone: sender.phoneE164,
+      senderAvatarUrl: senderPublic.avatarUrl,
+      voiceGender,
+      kind: "voice",
+      viewOnce: Boolean(input.viewOnce),
+      releasedAt,
+      readyAt: Date.now(),
+      expiresAt: expiresAtIso,
+      clientLocalId: begun.localId || normalizeClientLocalId(input.clientLocalId) || null,
+      group: Boolean(input.channelId?.trim()),
+    };
+
+    // Emit-first to same-lang peers (and to all peers when languages match).
+    let prefired = 0;
+    if (sameLanguage) {
+      for (const target of deliverUsers) {
+        if (!target.id || target.id === sender.id) continue;
+        const hear = normPair(target.listenLang || target.speakLang);
+        const reached = this.realtime.emitToUser(target.id, SOCKET_EVENTS.TRANSMISSION_READY, {
+          ...basePayload,
+          language: hear || speakerLang,
+          audioB64,
+        });
+        prefired += 1;
+        if (!reached) {
+          void this.push.notifyOfflineMessage(target.id, {
+            transmissionId,
+            channelId: channel.id,
+            kind: "voice",
+            type: "message",
+            senderId: sender.id,
+            senderName: sender.displayName || sender.phoneE164,
+            senderPhone: sender.phoneE164,
+            senderAvatarUrl: senderPublic.avatarUrl || "",
+            audioUrl: "",
+            originalText: "",
+            translatedText: "",
+            speakLang: speakerLang,
+            language: hear || speakerLang,
+          });
+        }
+      }
+    }
+
+    // Sender ack — bind local-* bubble; no audioB64 echo.
+    this.realtime.emitToUser(sender.id, SOCKET_EVENTS.TRANSMISSION_READY, {
+      ...basePayload,
+      receipt: "sent",
+      audioB64: undefined,
+    });
+
+    this.logger.log(
+      `Voice emit-first ${transmissionId} sameLang=${sameLanguage} prefired=${prefired} bytes=${file.buffer.length} at ${Date.now() - started}ms`,
+    );
+
+    // Persist + cross-lang finish in background (HTTP upload no longer on the critical path).
+    void (async () => {
+      try {
+        const audioUrl = await this.storage.save(file.buffer, extFrom(file), "audio");
+        const sttEarly: Promise<SttResult> = sameLanguage
+          ? Promise.resolve({ text: "", lang: speakerLang })
+          : this.stt.transcribeBytes(file.buffer, speakerLang || "", file.mimetype || "audio/mp4", extFrom(file));
+        const transmission = await this.prisma.transmission.create({
+          data: {
+            id: transmissionId,
+            senderId: sender.id,
+            channelId: channel.id,
+            originalAudioUrl: audioUrl,
+            originalText: packReply("", {
+              id: input.replyToId,
+              name: input.replyToName,
+              text: input.replyToText,
+            }),
+            durationMs: input.durationMs ?? null,
+            kind: "voice",
+            viewOnce: Boolean(input.viewOnce),
+            status: "PROCESSING",
+            ...(begun.localId ? { clientLocalId: begun.localId } : {}),
+            ...expiry,
+            targets: {
+              create: deliverUsers.map((user) => ({
+                userId: user.id,
+                language: String(user.listenLang || user.speakLang || "")
+                  .trim()
+                  .slice(0, 2)
+                  .toLowerCase(),
+                ...(sameLanguage ? { deliveredAt: new Date() } : {}),
+              })),
+            },
+          },
+          include: { targets: true },
+        });
+        void this.finish(transmission, sender, sttEarly, started, {
+          clientRelease: releasedAt,
+          sameLanguage,
+          originalAudioB64: audioB64,
+          prefireRecipients: Boolean(sameLanguage),
+        });
+        void Promise.all(
+          deliverUsers.map(async (target) => {
+            await this.contacts.ensureIncoming(target, sender);
+            await this.contacts.ensureMutualTalk(sender, target);
+          }),
+        );
+      } catch (error) {
+        this.logger.warn(`Voice emit-first persist ${transmissionId}: ${(error as Error).message}`);
+      }
+    })();
+
+    return { id: transmissionId, status: "PROCESSING" as const, channelId: channel.id };
+  }
+
   async forwardWalkieClip(
     sender: User,
     file: Express.Multer.File,
