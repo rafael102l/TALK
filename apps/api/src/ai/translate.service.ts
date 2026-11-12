@@ -1,7 +1,13 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { LANGUAGE_BY_CODE, isLanguageCode, speechPrompt } from "@talk/shared";
 import { faithfulnessReason, wrongScript } from "./gate";
-import { collapseRepeats, geminiThinkingConfig, isStutterGarbage } from "./stt.service";
+import {
+  collapseRepeats,
+  geminiThinkingConfig,
+  isMeaninglessGibberish,
+  isStutterGarbage,
+  isTranslatorRefusal,
+} from "./stt.service";
 
 const GEMINI_MODELS = [
   "gemini-3.5-flash-lite",
@@ -44,9 +50,13 @@ function genderLines(ctx?: TranslateContext) {
 
 function writtenChatPrompt(source: string, target: string, names: string[], ctx?: TranslateContext) {
   return [
-    "You translate personal chat messages: everyday, spontaneous, intimate 1:1 conversation — not documents, not news, not formal letters.",
+    "You are a ZERO-HALLUCINATION chat translator. Translate personal 1:1 messages only — not an assistant, not a rewriter.",
     `Source is likely ${langName(source)}. Translate into ${langName(target)} for the other person's phone.`,
-    "Tone: write the line a native speaker would actually send in chat. Recognize slang, nicknames, flirting, and intimate phrasing, and use the closest natural equivalent in the target — not a dry word-for-word gloss.",
+    "ABSOLUTE RULES:",
+    "1) Translate ONLY the exact meaning, tone, slang, and intent of the source. Do not add, omit, soften, polish, or invent anything.",
+    "2) If the source is gibberish, random letters, keyboard smash, or pure repetition (e.g. AAAAAA, APJFPOIJFJDFP), return that EXACT source text unchanged. Never invent a reply such as «I didn't understand» / «לא הבנתי».",
+    "3) Real messages keep the same spirit and wording intent in the target language — closest natural equivalent, not a clinical rewrite, and not a longer explanation.",
+    "Tone: write the line a native speaker would actually send in chat. Recognize slang, nicknames, flirting, and intimate phrasing.",
     "Examples of the required feel: «מה המצב בובה שלי» is a warm/intimate check-in, not a robotic «what is the situation my doll»; «בא לי לשכב איתך» keeps the sexual/intimate intent in natural target slang, not a clinical or literal wording.",
     "Do not upgrade slang into formal speech. Do not invent extra intimacy, extra clauses, greetings, or explanations that are not in the source.",
     "CRITICAL: Translate ONLY what was written. If the source is short, stay short. A question stays a question.",
@@ -55,7 +65,7 @@ function writtenChatPrompt(source: string, target: string, names: string[], ctx?
     "Every number stays that exact number. Copy personal names in the original spelling.",
     ...genderLines(ctx),
     names.length ? `Names that may appear: ${names.join(", ")}.` : "",
-    "OUTPUT: return only the clean translated message.",
+    "OUTPUT: return only the clean translated message (or the unchanged gibberish source).",
     "No preface, no labels, no quotes around the whole output, no explanations, no translator notes, no comments in parentheses or brackets, no alternative translations, no repeated copy of the same line.",
   ]
     .filter(Boolean)
@@ -66,10 +76,10 @@ function spokenWalkiePrompt(source: string, target: string, names: string[]) {
   return [
     `Someone just spoke this walkie-talkie message. The likely language is ${langName(source)}.`,
     `Translate it into ${langName(target)} for the listener's device.`,
-    "CRITICAL: Translate ONLY what was said. Do not add any sentence, clause, greeting, goodbye, question, or explanation that is not in the source.",
+    "ZERO-HALLUCINATION: Translate ONLY what was said. Do not add any sentence, clause, greeting, goodbye, question, or explanation that is not in the source.",
     "Do not pad, expand, or 'help' the speaker. If the source is short, the translation must stay short.",
     "Never stretch filler sounds (uh, ah, oh, hmm, אהה, אממ) into long moans or repeated syllables. One short filler is enough, then the real words.",
-    "If the source is mostly nonsense stutter or the same syllable repeated, return a single short filler or empty — do not invent a dramatic line.",
+    "If the source is gibberish, nonsense stutter, or the same syllable repeated, return that source text unchanged or empty — never invent a dramatic line or a refusal such as «I didn't understand».",
     "If the words are clearly a different language than the hint, translate from the actual language.",
     "Write in the target language's usual script. Do not transliterate into Latin letters unless that language is normally written in Latin.",
     "Word lock: every source word keeps its own meaning. The intent stays the same. Do not change a word into a different word.",
@@ -118,10 +128,18 @@ function cleanWrittenOutput(raw: string) {
 function acceptedTranslation(source: string, raw: string, target: string, written = false) {
   const out = collapseRepeats((raw || "").replace(/\s+/g, " ").trim());
   if (!out) return { text: "", reason: "empty" };
+  // Never accept invented refusals / "I didn't understand your message".
+  if (isTranslatorRefusal(out)) return { text: "", reason: "refusal" };
   if (isStutterGarbage(out)) return { text: "", reason: "speech" };
   // Typed chat: deliver a good target-script translation even if sentence-count is imperfect.
   if (written) {
-    if (target && wrongScript(out, target)) return { text: "", reason: "script" };
+    // If the model "translated" gibberish into something else, reject so caller can pass-through.
+    if (isMeaninglessGibberish(source) && out !== source.replace(/\s+/g, " ").trim()) {
+      return { text: "", reason: "gibberish" };
+    }
+    if (target && wrongScript(out, target) && !isMeaninglessGibberish(source)) {
+      return { text: "", reason: "script" };
+    }
     return { text: out, reason: "" };
   }
   const reason = faithfulnessReason(source, out, target);
@@ -144,6 +162,11 @@ export class TranslateService {
     ctx?: TranslateContext,
   ): Promise<{ text: string; reason: string }> {
     if (!text || source === target) return { text, reason: "" };
+    // Gibberish / keyboard smash / pure repetition → pass raw text through (no LLM, no invented reply).
+    if (isMeaninglessGibberish(text)) {
+      this.logger.log(`Translate pass-through gibberish ${source}->${target} "${clip(text)}"`);
+      return { text, reason: "" };
+    }
     const started = Date.now();
     const geminiKey = process.env.GEMINI_API_KEY;
     const openaiKey = process.env.OPENAI_API_KEY;
@@ -192,6 +215,11 @@ export class TranslateService {
       } else if (checked.reason) {
         reason = checked.reason;
       }
+    }
+    // If every engine refused / hallucinated, still deliver the raw source for typed chat.
+    if (!out && written && text) {
+      this.logger.log(`Translate fallback pass-through ${source}->${target} reason=${reason || "empty"}`);
+      return { text, reason: "" };
     }
     this.logger.log(`Translate ${engine} ${source}->${target} ${Date.now() - started}ms "${clip(out)}"`);
     return { text: out, reason: out ? "" : reason || "empty" };

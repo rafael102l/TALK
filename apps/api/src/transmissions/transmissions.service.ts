@@ -158,17 +158,27 @@ export class TransmissionsService {
     const begun = await this.beginClip(sender.id, input);
     if (begun.existing) return { id: begun.id, status: begun.status, channelId: begun.channelId };
     const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
+    const normPair = (value: string | null | undefined) =>
+      String(value || "")
+        .trim()
+        .slice(0, 2)
+        .toLowerCase();
+    const speakNorm = normPair(speakerLang);
     const sameLanguage =
       users.length > 0 &&
-      users.every((user) => (user.listenLang || user.speakLang) === speakerLang);
+      Boolean(speakNorm) &&
+      users.every((user) => normPair(user.listenLang || user.speakLang) === speakNorm);
     const hint = collapseRepeats(input.originalText?.trim() || "");
     const hasHint = Boolean(hint && !isHallucination(hint) && matchesLang(hint, speakerLang));
-    // Chat voice always needs STT for captions (same-lang = original+transcript). Walkie same-lang can skip.
-    const sttEarly: Promise<SttResult> = hasHint
-      ? Promise.resolve({ text: hint, lang: detectLang(hint) || speakerLang })
-      : this.stt.transcribeBytes(file.buffer, speakerLang || "", mime, ext);
+    // Same-language chat voice: pass original audio through — no STT / translate delay.
+    // Cross-language still needs STT for captions + TTS.
+    const sttEarly: Promise<SttResult> = sameLanguage
+      ? Promise.resolve({ text: "", lang: speakerLang })
+      : hasHint
+        ? Promise.resolve({ text: hint, lang: detectLang(hint) || speakerLang })
+        : this.stt.transcribeBytes(file.buffer, speakerLang || "", mime, ext);
     if (sameLanguage) {
-      this.logger.log(`Same language ${speakerLang} — keep original audio, still STT for captions`);
+      this.logger.log(`Same language ${speakerLang} — original audio pass-through (no STT)`);
     }
 
     const channel = await this.ensureChannel(sender, input.channelId, planned.channelIds);
@@ -211,15 +221,25 @@ export class TransmissionsService {
       include: { targets: true },
     });
 
-    // Chat voice: sender gets an instant server ack (WhatsApp-like). Recipients wait for finish()
-    // so they receive one ready package — original+caption (same lang) or TTS+caption (cross-lang).
+    // Chat voice: sender gets an instant server ack (WhatsApp-like).
     if (kind === "voice" && transmission.originalAudioUrl) {
       void this.dispatchVoiceSenderAck(transmission, sender, speakerLang, clientRelease);
+    }
+    // Same-lang recipients: fire original audio immediately (no finish/STT wait).
+    if (kind === "voice" && sameLanguage && transmission.originalAudioUrl) {
+      void this.dispatchVoiceSameLangRecipients(
+        transmission,
+        sender,
+        speakerLang,
+        clientRelease,
+        originalB64,
+      );
     }
     void this.finish(transmission, sender, sttP, started, {
       clientRelease,
       sameLanguage,
       originalAudioB64: originalB64,
+      prefireRecipients: Boolean(kind === "voice" && sameLanguage),
     });
     void Promise.all(
       deliverUsers.map(async (target) => {
@@ -276,6 +296,94 @@ export class TransmissionsService {
       this.logger.log(`Voice sender ack ${transmission.id}`);
     } catch (error) {
       this.logger.warn(`Voice sender ack ${transmission.id}: ${(error as Error).message}`);
+    }
+  }
+
+  /** Same-language chat voice: deliver original recording to peers immediately (no STT/TTS wait). */
+  private async dispatchVoiceSameLangRecipients(
+    transmission: {
+      id: string;
+      channelId: string;
+      originalAudioUrl: string;
+      durationMs: number | null;
+      viewOnce: boolean;
+      expiresAt: Date | null;
+      targets: { id: string; userId: string; language: string }[];
+    },
+    sender: User,
+    speakerLang: string,
+    clientRelease: number,
+    originalB64: string,
+  ) {
+    try {
+      const publicAudio = this.storage.publicUrl(transmission.originalAudioUrl);
+      if (!publicAudio) return;
+      const voiceGender =
+        sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male";
+      const speak = String(speakerLang || "")
+        .trim()
+        .slice(0, 2)
+        .toLowerCase();
+      const senderPublic = toPublicUser(sender);
+      let sent = 0;
+      for (const target of transmission.targets) {
+        if (!target.userId || target.userId === sender.id) continue;
+        const hear = String(target.language || "")
+          .trim()
+          .slice(0, 2)
+          .toLowerCase();
+        if (speak && hear && hear !== speak) continue;
+        const payload: TransmissionReadyPayload = {
+          transmissionId: transmission.id,
+          channelId: transmission.channelId,
+          senderId: sender.id,
+          senderName: sender.displayName || sender.phoneE164,
+          language: hear || speak || speakerLang,
+          speakLang: speakerLang,
+          mode: sender.plan === "PLUS" ? "plus" : "free",
+          audioUrl: publicAudio,
+          ...(originalB64 ? { audioB64: originalB64 } : {}),
+          originalText: null,
+          translatedText: null,
+          durationMs: transmission.durationMs,
+          usedOriginalVoice: true,
+          replyToId: null,
+          replyToName: null,
+          replyToText: null,
+          senderPhone: sender.phoneE164,
+          senderAvatarUrl: senderPublic.avatarUrl,
+          voiceGender,
+          kind: "voice",
+          viewOnce: Boolean(transmission.viewOnce),
+          releasedAt: clientRelease,
+          readyAt: Date.now(),
+          expiresAt: transmission.expiresAt?.toISOString() || null,
+        };
+        const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
+        sent += 1;
+        if (reached) {
+          void this.noteDelivered(target.id, sender.id, transmission.id, target.userId);
+        } else {
+          void this.push.notifyOfflineMessage(target.userId, {
+            transmissionId: transmission.id,
+            channelId: transmission.channelId,
+            kind: "voice",
+            type: "message",
+            senderId: sender.id,
+            senderName: sender.displayName || sender.phoneE164,
+            senderPhone: sender.phoneE164,
+            senderAvatarUrl: senderPublic.avatarUrl || "",
+            audioUrl: publicAudio,
+            originalText: "",
+            translatedText: "",
+            speakLang: speakerLang,
+            language: hear || speak || speakerLang,
+          });
+        }
+      }
+      this.logger.log(`Voice same-lang prefire ${transmission.id} recipients=${sent}`);
+    } catch (error) {
+      this.logger.warn(`Voice same-lang prefire ${transmission.id}: ${(error as Error).message}`);
     }
   }
 
@@ -1154,6 +1262,8 @@ export class TransmissionsService {
       clientRelease?: number;
       sameLanguage?: boolean;
       originalAudioB64?: string;
+      /** Same-lang voice already socket-emitted to recipients — finish must not re-emit. */
+      prefireRecipients?: boolean;
     } = {},
   ) {
     const textOnly = Boolean(opts.textOnly || !transmission.originalAudioUrl);
@@ -1165,6 +1275,7 @@ export class TransmissionsService {
           ? "voice"
           : "walkie";
     const originalAudioB64 = (opts.originalAudioB64 || "").trim();
+    const prefireRecipients = Boolean(opts.prefireRecipients);
     const ttsB64ByLang: Record<string, string> = {};
     try {
       const speakerLang = sender.speakLang || sender.listenLang;
@@ -1247,19 +1358,27 @@ export class TransmissionsService {
           .trim()
           .slice(0, 2)
           .toLowerCase();
-      let sourceLang = normLang(
-        originalText
-          ? textOnly
-            ? detectLang(originalText) || spokenLang(originalText, sttResult.lang, speakerLang)
-            : spokenLang(originalText, sttResult.lang, speakerLang)
-          : speakerLang,
-      ) || normLang(speakerLang) || speakerLang;
+      // Profile language drives routing. Do not let detectLang(content) force a translate pipe
+      // when both sides share the same speak/listen language (same-lang pass-through).
+      let sourceLang =
+        normLang(speakerLang) ||
+        normLang(
+          originalText
+            ? textOnly
+              ? detectLang(originalText) || spokenLang(originalText, sttResult.lang, speakerLang)
+              : spokenLang(originalText, sttResult.lang, speakerLang)
+            : "",
+        ) ||
+        speakerLang;
+      if (opts.sameLanguage || textOnly) {
+        sourceLang = normLang(speakerLang) || sourceLang;
+      }
       for (const target of transmission.targets) {
         target.language = normLang(target.language) || target.language;
       }
       let retriedStt = false;
       const retranscribeOnce = async () => {
-        if (retriedStt || textOnly || !transmission.originalAudioUrl) return;
+        if (retriedStt || textOnly || !transmission.originalAudioUrl || opts.sameLanguage) return;
         retriedStt = true;
         try {
           const reMark = Date.now();
@@ -1315,6 +1434,7 @@ export class TransmissionsService {
       const voiceGender =
         sender.voiceGender === "female" || sender.voiceGender === "child" ? sender.voiceGender : "male";
       const ttsByLang: Record<string, string | null> = {};
+      // Text: only translate for listeners whose profile language differs from the sender's.
       const langsToFill = textOnly
         ? [
             ...new Set(
@@ -1323,7 +1443,9 @@ export class TransmissionsService {
                 .filter((lang) => lang && lang !== sourceLang),
             ),
           ]
-        : needTranslate;
+        : opts.sameLanguage
+          ? []
+          : needTranslate;
 
       const incomingByOwner = new Map(incomingRows.map((row) => [row.ownerId, row]));
       const senderPublic = toPublicUser(sender);
@@ -1446,11 +1568,13 @@ export class TransmissionsService {
           emitTarget(target, null, true);
           continue;
         }
+        // Same-lang voice already prefired with original audio — do not emit twice.
+        if (prefireRecipients && delivery === "voice") continue;
         emitTarget(target, transmission.originalAudioUrl, true);
       }
       if (sameTargets.length) {
         this.logger.log(
-          `Ready ${transmission.id} sameLang=${sourceLang} targets=${sameTargets.length} at ${Date.now() - started}ms`,
+          `Ready ${transmission.id} sameLang=${sourceLang} targets=${sameTargets.length} prefire=${prefireRecipients} at ${Date.now() - started}ms`,
         );
       }
       const translateMark = Date.now();

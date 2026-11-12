@@ -1,7 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { VoiceGender } from "@talk/shared";
 import { canonicalSpeech, speechBase, speechPrompt, whisperLang } from "@talk/shared";
-import { geminiThinkingConfig, speechTag } from "./stt.service";
+import { geminiThinkingConfig, isMeaninglessGibberish, isTranslatorRefusal, speechTag } from "./stt.service";
 import { elevenVoicePlan } from "./tts.service";
 
 const OPENAI_VOICE: Record<VoiceGender, string> = {
@@ -25,7 +25,7 @@ const GEMINI_TRANSLATE_MODELS = [
 const GEMINI_DETECT_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"];
 
 const STRICT_TRANSLATE =
-  "You are an absolute word-for-word TRANSLATOR, NOT a conversational assistant. Your ONLY job is to translate the input sentence into the target language, exactly as written. Do not shorten, summarize, paraphrase, or replace the sentence with a different one. Do not transliterate. Translate meaning (Hebrew גוף → English body, not guf). If the user asks a question (e.g., 'How do I say X in Hebrew?'), DO NOT answer the question. Translate the question itself directly (e.g., 'איך אומרים X בעברית?'). NEVER output just the answer. Do NOT add pleasantries, notes, context, corrections, or explanations. Return ONLY the direct translation of the input.";
+  "You are an absolute ZERO-HALLUCINATION word-for-word TRANSLATOR, NOT a conversational assistant. Your ONLY job is to translate the input sentence into the target language, exactly as written. Do not shorten, summarize, paraphrase, or replace the sentence with a different one. Do not transliterate. Translate meaning (Hebrew גוף → English body, not guf). If the user asks a question (e.g., 'How do I say X in Hebrew?'), DO NOT answer the question. Translate the question itself directly (e.g., 'איך אומרים X בעברית?'). NEVER output just the answer. Do NOT add pleasantries, notes, context, corrections, or explanations. Return ONLY the direct translation of the input. If the input is gibberish, random letters, or pure repetition (AAAAAA, APJFPOIJFJDFP), return that EXACT input unchanged — never invent «I didn't understand» / «לא הבנתי».";
 
 function translateSystem(source: string, target: string, retry = false) {
   const src = langTitle(source);
@@ -34,12 +34,12 @@ function translateSystem(source: string, target: string, retry = false) {
     STRICT_TRANSLATE,
     `Input language: ${src}. Output language: ${dst}.`,
     `Translate the user's sentence into ${dst} only, using that language's own words and usual script.`,
-    "Never transliterate. Never romanize. Never copy the source in Latin letters.",
+    "Never transliterate. Never romanize. Never copy the source in Latin letters (unless the input itself is Latin gibberish to pass through).",
     "Example: Hebrew לילה טוב becomes Romanian Noapte bună. Never write Laila Tov.",
     "Do not answer questions. If the input is a question, translate the question itself.",
-    "Never output instructions or refusals such as 'do not translate' or 'אל תתרגם'.",
+    "Never output instructions or refusals such as 'do not translate', 'אל תתרגם', or 'I didn't understand your message'.",
     retry
-      ? `The previous output was a transliteration, still in ${src}, or not a real ${dst} sentence. Write a natural ${dst} translation only.`
+      ? `The previous output was a transliteration, still in ${src}, a refusal, or not a real ${dst} sentence. Write a natural ${dst} translation only — or pass gibberish through unchanged.`
       : "",
   ]
     .filter(Boolean)
@@ -72,8 +72,7 @@ export class TranslatorService {
     const empty = { sourceText: "", translatedText: "", sourceLang: "", targetLang: "" };
     const preset = (input.text || "").replace(/\s+/g, " ").trim();
     if (preset) {
-      const sourceLang = pickSpoken(null, "", preset, langA, langB);
-      if (!sourceLang) return empty;
+      const sourceLang = pickSpoken(null, "", preset, langA, langB) || langA;
       const targetLang = otherLang(sourceLang, langA, langB);
       if (!targetLang) return empty;
       return this.finishTurn(preset, sourceLang, targetLang);
@@ -113,6 +112,7 @@ export class TranslatorService {
   }) {
     const langA = keepLang(input.langA, "he");
     const langB = keepLang(input.langB, "en");
+    const voice = input.gender === "female" || input.gender === "child" ? input.gender : "male";
     const turn = await this.transcribe({
       text: input.text,
       audio: input.audio,
@@ -131,12 +131,11 @@ export class TranslatorService {
         targetLang: "",
         audioBase64: "",
         mime: "audio/mpeg" as const,
+        speakerGender: voice,
       };
     }
     const sourceText = (turn.sourceText || "").replace(/\s+/g, " ").trim();
     const translatedText = (turn.translatedText || "").replace(/\s+/g, " ").trim();
-    // Translator page: return text immediately. Speech is played on-device via
-    // /ai/translator/speak (or local TTS) after the panes update — do not block on TTS here.
     return {
       sourceText,
       translatedText,
@@ -144,6 +143,7 @@ export class TranslatorService {
       targetLang,
       audioBase64: "",
       mime: "audio/mpeg" as const,
+      speakerGender: voice,
     };
   }
 
@@ -152,7 +152,7 @@ export class TranslatorService {
     if (!spoken) return { audioBase64: "", mime: "audio/mpeg" as const };
     let audio: Buffer | null = null;
     try {
-      audio = await this.speakTranslation(spoken, keepLang(lang, "en"), gender);
+      audio = await this.speakMp3(spoken, keepLang(lang, "en"), gender);
     } catch {
       audio = null;
     }
@@ -162,10 +162,6 @@ export class TranslatorService {
     };
   }
 
-  private speakTranslation(translatedText: string, targetLang: string, gender: VoiceGender) {
-    return this.speakMp3(translatedText, targetLang, gender);
-  }
-
   private async hearAndTranslate(
     audio: Buffer,
     mime: string,
@@ -173,15 +169,24 @@ export class TranslatorService {
     langA: string,
     langB: string,
   ): Promise<Turn | null> {
-    const [detectedAB, detectedBA, auto] = await Promise.all([
-      this.detectSpokenLang(audio, mime, ext, langA, langB),
-      this.detectSpokenLang(audio, mime, ext, langB, langA),
-      this.whisperAuto(audio, mime, ext, langA, langB),
-    ]);
+    // Hear the clip once (the transcript is needed either way), then try the free,
+    // local script detector first. The two paid Gemini audio-detect calls only run
+    // when the script cannot decide — e.g. both languages share one script (en+es, ru+uk).
+    const auto = await this.whisperAuto(audio, mime, ext, langA, langB);
     const autoLang = matchChoice(whisperLangCode(auto.language), langA, langB);
     const textAuto = keepPairTranscript(auto.text, langA, langB);
     const scriptLang = pickByScript(textAuto || auto.text, langA, langB);
-    const geminiLang = detectedAB && detectedBA && detectedAB === detectedBA ? matchChoice(detectedAB, langA, langB) : "";
+    // A unique-script hit (Hebrew, Arabic, Cyrillic, …) already wins in choosePairSource,
+    // so Gemini-detect would not change the result — skip it in that common case.
+    const scriptDecides = Boolean(matchChoice(scriptLang, langA, langB) && uniqueScript(scriptLang));
+    let geminiLang = "";
+    if (!scriptDecides) {
+      const [detectedAB, detectedBA] = await Promise.all([
+        this.detectSpokenLang(audio, mime, ext, langA, langB),
+        this.detectSpokenLang(audio, mime, ext, langB, langA),
+      ]);
+      geminiLang = detectedAB && detectedBA && detectedAB === detectedBA ? matchChoice(detectedAB, langA, langB) : "";
+    }
     const sourceLang = choosePairSource(scriptLang, geminiLang, autoLang, langA, langB);
     if (!sourceLang) return null;
     let text = textAuto;
@@ -339,15 +344,22 @@ export class TranslatorService {
     if (sameChoice(sourceLang, targetLang)) {
       return { sourceText, translatedText: "", sourceLang, targetLang };
     }
+    // Gibberish must stay raw — never ask the model to "interpret" it.
+    if (isMeaninglessGibberish(sourceText)) {
+      this.logger.log(`translator pass-through gibberish ${sourceLang}->${targetLang} ${clip(sourceText)}`);
+      return { sourceText, translatedText: sourceText, sourceLang, targetLang };
+    }
     let translatedText = await this.translateFast(sourceText, sourceLang, targetLang).catch((error) => {
       logTranslateFail(`translator-translate ${sourceLang}->${targetLang} ${(error as Error).message}`);
       return "";
     });
+    if (isTranslatorRefusal(translatedText)) translatedText = "";
     if (!isTargetTranslation(sourceText, translatedText, sourceLang, targetLang)) {
       translatedText = await this.translateFast(sourceText, sourceLang, targetLang, true).catch((error) => {
         logTranslateFail(`translator-translate retry ${sourceLang}->${targetLang} ${(error as Error).message}`);
         return "";
       });
+      if (isTranslatorRefusal(translatedText)) translatedText = "";
     }
     if (!isTargetTranslation(sourceText, translatedText, sourceLang, targetLang)) translatedText = "";
     this.logger.log(`translator ${sourceLang}->${targetLang} ${clip(sourceText)} => ${clip(translatedText)}`);
@@ -451,6 +463,81 @@ export class TranslatorService {
     }
   }
 
+  /** Free local pitch guess from the uploaded clip. Never bills a TTS/STT API. */
+  private async detectSpeakerGender(audio?: Buffer, ext?: string): Promise<VoiceGender | undefined> {
+    if (!audio?.length) return undefined;
+    const fs = await import("fs/promises");
+    const os = await import("os");
+    const path = await import("path");
+    const { execFile } = await import("child_process");
+    const { promisify } = await import("util");
+    const exec = promisify(execFile);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "talk-gender-"));
+    const inFile = path.join(dir, `in.${(ext || "m4a").replace(/[^a-z0-9]/gi, "") || "m4a"}`);
+    const outFile = path.join(dir, "out.s16le");
+    try {
+      await fs.writeFile(inFile, audio);
+      await exec(
+        "ffmpeg",
+        ["-hide_banner", "-loglevel", "error", "-y", "-i", inFile, "-ac", "1", "-ar", "16000", "-f", "s16le", outFile],
+        { timeout: 2500 },
+      );
+      const pcm = await fs.readFile(outFile);
+      if (pcm.length < 3200) return undefined;
+      const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 2));
+      const rate = 16000;
+      const minF = 70;
+      const maxF = 400;
+      const minPeriod = Math.floor(rate / maxF);
+      const maxPeriod = Math.floor(rate / minF);
+      const win = Math.min(samples.length, Math.floor(rate * 0.65));
+      const start = Math.max(0, Math.floor((samples.length - win) / 2));
+      let mean = 0;
+      for (let i = 0; i < win; i++) mean += samples[start + i];
+      mean /= win;
+      const vals = new Float64Array(win);
+      let energy = 0;
+      for (let i = 0; i < win; i++) {
+        const v = (samples[start + i] - mean) / 32768;
+        vals[i] = v;
+        energy += v * v;
+      }
+      if (energy / win < 1e-5) return undefined;
+      let bestPeriod = -1;
+      let bestCorr = 0;
+      for (let period = minPeriod; period <= maxPeriod; period++) {
+        const n = win - period;
+        if (n < period) continue;
+        let corr = 0;
+        let normA = 0;
+        let normB = 0;
+        for (let i = 0; i < n; i++) {
+          const a = vals[i];
+          const b = vals[i + period];
+          corr += a * b;
+          normA += a * a;
+          normB += b * b;
+        }
+        const denom = Math.sqrt(normA * normB);
+        if (denom < 1e-9) continue;
+        const r = corr / denom;
+        if (r > bestCorr) {
+          bestCorr = r;
+          bestPeriod = period;
+        }
+      }
+      if (bestPeriod < 0 || bestCorr < 0.35) return undefined;
+      const hz = rate / bestPeriod;
+      if (hz >= 255) return "child";
+      if (hz >= 175) return "female";
+      return "male";
+    } catch {
+      return undefined;
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
   private async speakMp3(text: string, lang: string, gender: VoiceGender) {
     const native = await this.viaElevenMp3(text, lang, gender);
     if (native?.length) return native;
@@ -518,11 +605,6 @@ function isJunkSpeech(text: string) {
   return JUNK_SPEECH.test(value);
 }
 
-const REFUSAL =
-  /^(?:sorry|i'?m sorry|i am sorry|i cannot|i can't|as an ai|i'?m unable|unable to translate|i do not understand|please provide|could you clarify|do not translate|don't translate|do not transliterate)/i;
-const REFUSAL_HE =
-  /^(?:מצטער|אני מצטער|אני לא יכול|לא ניתן|לא הבנתי|אנא ספק|לא מצליח לתרגם|אל תתרגם|לא לתרגם)/;
-
 function cleanTranslationOnly(raw: string) {
   let out = (raw || "")
     .replace(/^```[a-z]*\s*/i, "")
@@ -532,7 +614,7 @@ function cleanTranslationOnly(raw: string) {
     .replace(/\s+/g, " ")
     .trim();
   if (!out) return "";
-  if (REFUSAL.test(out) || REFUSAL_HE.test(out)) return "";
+  if (isTranslatorRefusal(out)) return "";
   if (/^(note|warning|error)\s*:/i.test(out)) return "";
   return out;
 }

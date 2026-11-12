@@ -517,6 +517,83 @@ function isGibberishLatin(text: string) {
   return false;
 }
 
+/**
+ * Typed / spoken junk that must NOT be force-translated (AAAAAA, APJFPOIJFJDFP, …).
+ * Callers should pass the raw string through unchanged instead of asking the LLM.
+ */
+export function isMeaninglessGibberish(text: string) {
+  const t = (text || "").replace(/\s+/g, " ").trim();
+  if (!t) return false;
+  if (isStutterGarbage(t)) return true;
+
+  const compact = t
+    .replace(/[^\p{L}\p{N}]+/gu, "")
+    .replace(/\s+/g, "");
+  if (compact.length < 3) return false;
+  // Pure repetition: AAAAAA / 111111 / שששששש
+  if (/^(.)\1+$/u.test(compact)) return true;
+  // Short token repeated as the whole message: "ha ha ha ha"
+  if (/^(\p{L}{1,8})(?:\s+\1){3,}$/u.test(t)) return true;
+
+  // Latin keyboard-smash / random letter salad (no real words).
+  if (/^[A-Za-zÀ-ÿ0-9\s.'\-]+$/u.test(t) && compact.length >= 6) {
+    const lower = compact.toLowerCase();
+    const vowels = (lower.match(/[aeiouy]/g) || []).length;
+    const vowelRatio = vowels / lower.length;
+    const unique = new Set(lower).size;
+    const uniqueRatio = unique / lower.length;
+    // All consonants / almost no vowels: APJFPOIJFJDFP
+    if (vowelRatio <= 0.18 && lower.length >= 8) return true;
+    // Single long smash token with high alphabet diversity
+    const words = t.split(/\s+/).filter(Boolean);
+    if (words.length === 1 && lower.length >= 8 && uniqueRatio >= 0.5 && vowelRatio < 0.38) return true;
+    // No common English function/content word and looks random
+    if (
+      words.length <= 2 &&
+      lower.length >= 10 &&
+      uniqueRatio >= 0.45 &&
+      vowelRatio < 0.42 &&
+      !/\b(the|and|you|are|is|to|for|my|me|hi|hey|ok|yes|no|love|good|what|how|please|thanks|hello)\b/i.test(t)
+    ) {
+      return true;
+    }
+    if (isGibberishLatin(t)) return true;
+  }
+
+  // Hebrew letter-salad: long string, almost no spaces, high unique letter density
+  if (HEBREW.test(t) && !/[A-Za-z]/.test(t)) {
+    const heb = compact.replace(/[^\u0590-\u05FF]/g, "");
+    if (heb.length >= 10) {
+      const unique = new Set(heb).size;
+      if (unique / heb.length >= 0.55 && !/\s/.test(t.trim()) && t.split(/\s+/).length === 1) return true;
+    }
+  }
+
+  return false;
+}
+
+/** Model invented a refusal / "I didn't understand" instead of translating. */
+export function isTranslatorRefusal(text: string) {
+  const t = (text || "").replace(/\s+/g, " ").trim();
+  if (!t) return false;
+  if (
+    /^(?:sorry|i'?m sorry|i am sorry|i (?:do not|don't|cannot|can't) understand|i (?:cannot|can't|am unable to) translate|as an ai|unable to translate|please (?:provide|clarify|rephrase)|could you (?:clarify|rephrase)|i didn't understand|i do not understand)/i.test(
+      t,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^(?:מצטער|אני מצטער|אני לא (?:יכול|מצליח)|לא הבנתי|לא ניתן לתרגם|אנא (?:ספק|נסח)|לא מצליח לתרגם)/.test(t)
+  ) {
+    return true;
+  }
+  if (/לא הבנתי את ההודעה|didn't understand (your|the) message|cannot make sense of|nonsensical|gibberish/i.test(t)) {
+    return true;
+  }
+  return false;
+}
+
 export function usableSpeech(text: string) {
   const raw = (text || "").trim();
   if (!raw || isStutterGarbage(raw)) return "";
