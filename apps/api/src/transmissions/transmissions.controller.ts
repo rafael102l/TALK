@@ -76,6 +76,11 @@ export class TransmissionsController {
     return this.transmissions.markPlayed(user, id);
   }
 
+  @Post(":id/fetched")
+  fetched(@CurrentUser() user: User, @Param("id") id: string) {
+    return this.transmissions.releaseChatMedia(user, id);
+  }
+
   @Post(":id/unsend")
   unsend(@CurrentUser() user: User, @Param("id") id: string) {
     return this.transmissions.unsend(user, id);

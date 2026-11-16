@@ -119,8 +119,11 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
     await this.run({ dryRun: true });
   }
 
-  /** Hourly job. No-ops unless MEDIA_TTL_PURGE_ENABLED is on. */
+  /** Hourly job. Chat photos/videos always expire after 24h; walkie TTL stays behind MEDIA_TTL_PURGE_ENABLED. */
   async tick(): Promise<TtlPurgeRunResult> {
+    void this.expireChatMedia().catch((error: Error) => {
+      this.log.warn(`chat media 24h expire: ${error.message}`);
+    });
     if (!ttlPurgeEnabled()) {
       return this.remember({
         ...EMPTY,
@@ -131,6 +134,34 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
       });
     }
     return this.run({ dryRun: ttlPurgeDryRun() });
+  }
+
+  private async expireChatMedia() {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const rows = await this.prisma.transmission.findMany({
+      where: {
+        kind: { in: ["image", "video"] },
+        createdAt: { lt: cutoff },
+        originalAudioUrl: { not: "" },
+      },
+      select: { originalAudioUrl: true },
+      take: 80,
+    });
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const path = row.originalAudioUrl;
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      const stillLive = await this.prisma.transmission.count({
+        where: {
+          kind: { in: ["image", "video"] },
+          originalAudioUrl: path,
+          createdAt: { gte: cutoff },
+        },
+      });
+      if (stillLive) continue;
+      await this.storage.remove(path);
+    }
   }
 
   /**
@@ -227,6 +258,7 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
     const ids: string[] = [];
     let filesRemoved = 0;
     for (const row of due) {
+      if (row.kind === "image" || row.kind === "video") continue;
       const files = this.mediaPaths(row.originalAudioUrl, row.renders);
       if (!files.length) continue;
       ids.push(row.id);
@@ -291,6 +323,7 @@ export class TtlPurgeService implements OnModuleInit, OnModuleDestroy {
       const clean = (path || "").trim();
       if (!clean || seen.has(clean)) continue;
       if (clean.includes("/avatars/")) continue;
+      if (clean.includes("/media/chat/") || clean.includes("/storage/chat/")) continue;
       seen.add(clean);
       out.push(clean);
     }

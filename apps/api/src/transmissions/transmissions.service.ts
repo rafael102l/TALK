@@ -2422,7 +2422,7 @@ export class TransmissionsService {
         playedAt: null,
         transmission: {
           senderId: peerId,
-          kind: { in: ["text", "voice", "image", "video"] },
+          kind: { in: ["text", "voice"] },
         },
       },
       select: { id: true, transmissionId: true, deliveredAt: true },
@@ -2474,9 +2474,11 @@ export class TransmissionsService {
       peerId: user.id,
       receipt: row.playedAt ? "read" : "delivered",
     });
-    void this.purgeChatIfDelivered(transmissionId).catch((error) => {
-      this.logger.warn(`chat purge after delivered ${transmissionId}: ${(error as Error).message}`);
-    });
+    if (!isDiskMedia(row.transmission.kind)) {
+      void this.purgeChatIfDelivered(transmissionId).catch((error) => {
+        this.logger.warn(`chat purge after delivered ${transmissionId}: ${(error as Error).message}`);
+      });
+    }
     return { ok: true };
   }
 
@@ -2489,7 +2491,11 @@ export class TransmissionsService {
         include: { targets: true, renders: true },
       });
       if (!tx) return;
-      if (tx.kind !== "text" && tx.kind !== "voice" && tx.kind !== "image" && tx.kind !== "video") return;
+      if (isDiskMedia(tx.kind, tx.originalAudioUrl)) {
+        this.logger.log(`chat purge skipped ${tx.id} kind=${tx.kind}`);
+        return;
+      }
+      if (tx.kind !== "text" && tx.kind !== "voice") return;
       // Do not purge on delivered alone — that blocked read receipts and left sender ticks stuck.
       if (!tx.targets.length || tx.targets.some((row) => !row.playedAt)) return;
       try {
@@ -2543,7 +2549,7 @@ export class TransmissionsService {
         id: true,
         transmissionId: true,
         playedAt: true,
-        transmission: { select: { senderId: true } },
+        transmission: { select: { senderId: true, kind: true } },
       },
       take: 80,
     });
@@ -2559,7 +2565,13 @@ export class TransmissionsService {
         receipt: row.playedAt ? "read" : "delivered",
       });
     }
-    for (const id of [...new Set(rows.map((row) => row.transmissionId))]) {
+    for (const id of [
+      ...new Set(
+        rows
+          .filter((row) => row.transmission.kind !== "image" && row.transmission.kind !== "video")
+          .map((row) => row.transmissionId),
+      ),
+    ]) {
       void this.purgeChatIfDelivered(id).catch((error) => {
         this.logger.warn(`chat purge after inbox ${id}: ${(error as Error).message}`);
       });
@@ -2591,12 +2603,58 @@ export class TransmissionsService {
         receipt: "read",
       });
     }
-    if (row.transmission.kind !== "walkie") {
+    if (row.transmission.kind !== "walkie" && !isDiskMedia(row.transmission.kind)) {
       void this.purgeChatIfDelivered(transmissionId).catch((error) => {
         this.logger.warn(`chat purge after played ${transmissionId}: ${(error as Error).message}`);
       });
     }
     return { ok: true };
+  }
+
+  async releaseAfterFullDownload(fileName: string) {
+    const name = (fileName || "").split("/").pop() || "";
+    if (!name) return;
+    const rows = await this.prisma.transmission.findMany({
+      where: {
+        kind: { in: ["image", "video"] },
+        originalAudioUrl: { contains: name },
+      },
+      include: { targets: true },
+      take: 8,
+    });
+    for (const tx of rows) {
+      if (tx.targets.length > 1) continue;
+      await this.releaseFileIfUnused(tx.id, tx.originalAudioUrl);
+    }
+  }
+
+  async releaseChatMedia(user: User, transmissionId: string) {
+    if (!transmissionId) return { ok: true };
+    const tx = await this.prisma.transmission.findUnique({
+      where: { id: transmissionId },
+      include: { targets: true },
+    });
+    if (!tx) return { ok: true };
+    if (tx.kind !== "image" && tx.kind !== "video") return { ok: true };
+    const allowed = tx.senderId === user.id || tx.targets.some((row) => row.userId === user.id);
+    if (!allowed) throw new ForbiddenException();
+    if (tx.targets.length > 1) return { ok: true };
+    await this.releaseFileIfUnused(tx.id, tx.originalAudioUrl);
+    return { ok: true };
+  }
+
+  private async releaseFileIfUnused(transmissionId: string, path: string | null | undefined) {
+    if (!path) return;
+    const name = path.split("/").pop() || "";
+    const still = await this.prisma.transmission.count({
+      where: {
+        id: { not: transmissionId },
+        kind: { in: ["image", "video"] },
+        originalAudioUrl: name ? { contains: name } : path,
+      },
+    });
+    if (still > 0) return;
+    await this.storage.remove(path);
   }
 
   async closeViewOnce(user: User, transmissionId: string) {
@@ -2859,6 +2917,11 @@ function extFrom(file: Express.Multer.File) {
   if (mime.includes("wav")) return "wav";
   if (mime.includes("mpeg") || mime.includes("mp3")) return "mp3";
   return "m4a";
+}
+
+function isDiskMedia(kind?: string | null, url?: string | null) {
+  if (kind === "image" || kind === "video") return true;
+  return Boolean(url && url.includes("/media/chat/"));
 }
 
 function publicMedia(storage: StorageService, path?: string | null) {
