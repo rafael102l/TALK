@@ -41,6 +41,11 @@ export class BanPhoneDto {
   phone!: string;
 }
 
+export class WatchBotDto {
+  @IsBoolean()
+  enabled!: boolean;
+}
+
 export class TtlPurgeRunDto {
   /** Omit to follow MEDIA_TTL_PURGE_DRY_RUN. false = live delete when ENABLED. */
   @IsOptional()

@@ -1,17 +1,19 @@
-import { Body, Controller, Get, Header, HttpCode, Param, Post, Res, UseGuards } from "@nestjs/common";
-import type { Response } from "express";
+import { Body, Controller, Get, Header, HttpCode, Param, Post, Req, Res, UseGuards } from "@nestjs/common";
+import type { Request, Response } from "express";
 import { ttlPurgeDryRun } from "../transmissions/ttl-purge.flags";
 import { TtlPurgeService } from "../transmissions/ttl-purge.service";
 import { ADMIN_DASHBOARD_HTML } from "./admin.page";
-import { AdminLoginDto, BanPhoneDto, TtlPurgeRunDto } from "./admin.dto";
+import { AdminLoginDto, BanPhoneDto, TtlPurgeRunDto, WatchBotDto } from "./admin.dto";
 import { ADMIN_COOKIE, AdminGuard, TtlPurgeGuard } from "./admin.guard";
 import { AdminService } from "./admin.service";
+import { WatchBotService, clientIp } from "./watch-bot.service";
 
 @Controller("admin")
 export class AdminController {
   constructor(
     private readonly admin: AdminService,
     private readonly ttlPurge: TtlPurgeService,
+    private readonly watch: WatchBotService,
   ) {}
 
   @Get()
@@ -23,8 +25,8 @@ export class AdminController {
 
   @Post("session")
   @HttpCode(200)
-  login(@Body() body: AdminLoginDto, @Res({ passthrough: true }) res: Response) {
-    this.admin.assertToken(body.token);
+  login(@Body() body: AdminLoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    this.admin.assertToken(body.token, clientIp(req));
     res.cookie(ADMIN_COOKIE, body.token.trim(), {
       httpOnly: true,
       sameSite: "lax",
@@ -89,6 +91,13 @@ export class AdminController {
   @HttpCode(200)
   clearIncidents() {
     return this.admin.clearErrorLog();
+  }
+
+  @Post("api/watch-bot")
+  @UseGuards(AdminGuard)
+  @HttpCode(200)
+  setWatchBot(@Body() body: WatchBotDto) {
+    return this.watch.setEnabled(body.enabled);
   }
 
   @Get("api/ttl-purge")

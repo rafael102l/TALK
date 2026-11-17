@@ -143,6 +143,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     <div class="status-row">
       <button type="button" class="pulse-btn bad" id="btn-health">שרת</button>
       <button type="button" class="pulse-btn bad" id="btn-security">אבטחה</button>
+      <button type="button" class="pulse-btn bad" id="btn-watch">שומר כבוי</button>
     </div>
     <div class="meta">
       <span id="updated">ממתין…</span>
@@ -182,6 +183,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     const eventsBox = document.getElementById("events");
     const btnHealth = document.getElementById("btn-health");
     const btnSecurity = document.getElementById("btn-security");
+    const btnWatch = document.getElementById("btn-watch");
     let timer = 0;
     let lastData = null;
     let eventsOpen = false;
@@ -381,14 +383,41 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       showSheet(panelTitle(id), panelHtml(id, lastData), id);
     }
 
+    function watchHtml(data) {
+      const bot = (data && data.watchBot) || { enabled: false, actions: [], blocked: 0 };
+      const on = Boolean(bot.enabled);
+      const actions = bot.actions || [];
+      const toggle = on
+        ? "<button type='button' class='danger' id='watch-toggle'>כבה</button>"
+        : "<button type='button' class='okbtn' id='watch-toggle'>הפעל</button>";
+      const list = actions.length
+        ? "<div class='event-list'><table><thead><tr><th>מתי</th><th>פעולה</th><th>פירוט</th></tr></thead><tbody>" +
+          actions.map(function (row) {
+            return "<tr><td>" + fmtDate(row.at) + "</td><td>" + esc(row.message) +
+              "</td><td class='note'>" + esc(row.detail) + "</td></tr>";
+          }).join("") + "</tbody></table></div>"
+        : "<div class='empty'>עדיין אין פעולות</div>";
+      return "<div class='kv'>" +
+        kv("מצב", on ? "פעיל · ירוק" : "כבוי · אדום") +
+        kv("תפקיד", "קריסות שרת והרמה מחדש, וחסימת ניסיונות פריצה לדשבורד") +
+        kv("לא נוגע", "תשלומים, חיובים, קארדקום, ווקי־טוקי") +
+        kv("כתובות חסומות", String(bot.blocked || 0)) +
+        "</div><div class='actions' style='margin:14px 0'>" + toggle + "</div>" +
+        "<div class='head'><h2>פעולות</h2></div>" + list;
+    }
+
+    function renderWatchSheet() {
+      showSheet("שומר שרת", watchHtml(lastData), "watch");
+    }
+
     function refreshOpenPanel(data) {
       if (!openPanel || sheet.classList.contains("hidden")) return;
       const phone = document.getElementById("ban-phone");
       const saved = phone ? phone.value : "";
       const card = document.querySelector(".sheet-card");
       const y = card ? card.scrollTop : 0;
-      document.getElementById("sheet-title").textContent = panelTitle(openPanel);
-      document.getElementById("sheet-body").innerHTML = panelHtml(openPanel, data);
+      document.getElementById("sheet-title").textContent = openPanel === "watch" ? "שומר שרת" : panelTitle(openPanel);
+      document.getElementById("sheet-body").innerHTML = openPanel === "watch" ? watchHtml(data) : panelHtml(openPanel, data);
       const again = document.getElementById("ban-phone");
       if (again) again.value = saved;
       if (card) card.scrollTop = y;
@@ -405,6 +434,8 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       const securityOk = linkOk && Boolean(lastData && lastData.security && lastData.security.ok);
       setPulse(btnHealth, healthOk, "שרת תקין", "שרת תקלה");
       setPulse(btnSecurity, securityOk, "אבטחה תקינה", "אבטחה בסיכון");
+      const watchOn = Boolean(lastData && lastData.watchBot && lastData.watchBot.enabled);
+      setPulse(btnWatch, watchOn, "שומר פעיל", "שומר כבוי");
       liveDot.classList.toggle("ok", healthOk);
     }
 
@@ -513,6 +544,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
 
     btnHealth.addEventListener("click", renderHealthSheet);
     btnSecurity.addEventListener("click", renderSecuritySheet);
+    btnWatch.addEventListener("click", renderWatchSheet);
 
     document.querySelector(".kpis").addEventListener("click", function (ev) {
       const btn = ev.target.closest("[data-panel]");
@@ -549,6 +581,22 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     });
 
     document.getElementById("sheet-body").addEventListener("click", async function (ev) {
+      if (ev.target.id === "watch-toggle") {
+        const on = !(lastData && lastData.watchBot && lastData.watchBot.enabled);
+        const res = await fetch("/admin/api/watch-bot", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: on })
+        });
+        if (!res.ok) {
+          alert("לא ניתן לעדכן את השומר");
+          return;
+        }
+        await pull();
+        renderWatchSheet();
+        return;
+      }
       if (ev.target.id === "ban-phone-btn") {
         await banByPhone(true);
         return;

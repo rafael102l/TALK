@@ -12,6 +12,12 @@ export type AdminIncident = {
 const MAX = 100;
 const incidents: AdminIncident[] = [];
 let seq = 0;
+const listeners = new Set<(row: AdminIncident) => void>();
+
+export function onIncident(fn: (row: AdminIncident) => void) {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
 
 export function pushIncident(input: {
   kind?: AdminIncident["kind"];
@@ -41,6 +47,13 @@ export function pushIncident(input: {
   };
   incidents.unshift(row);
   if (incidents.length > MAX) incidents.length = MAX;
+  for (const fn of listeners) {
+    try {
+      fn(row);
+    } catch {
+      /* watch bot optional */
+    }
+  }
   return row;
 }
 

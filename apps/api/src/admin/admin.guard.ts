@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import { timingSafeEqual } from "crypto";
 import type { Request } from "express";
+import { WatchBotService, clientIp } from "./watch-bot.service";
 
 export const ADMIN_COOKIE = "talk_admin";
 
@@ -52,12 +53,17 @@ function cookieValue(header: string | undefined, name: string) {
 
 @Injectable()
 export class AdminGuard implements CanActivate {
+  constructor(private readonly watch: WatchBotService) {}
+
   canActivate(context: ExecutionContext) {
     const expected = adminTokenConfigured();
     if (!expected) {
       throw new ServiceUnavailableException("ADMIN_DASHBOARD_TOKEN is not set");
     }
     const req = context.switchToHttp().getRequest<Request>();
+    if (this.watch.isBlocked(clientIp(req))) {
+      throw new UnauthorizedException("Admin token required");
+    }
     const given = readAdminToken(req);
     if (!adminTokensMatch(given, expected)) {
       throw new UnauthorizedException("Admin token required");

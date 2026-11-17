@@ -9,6 +9,7 @@ import { PrismaExceptionFilter } from "./prisma/prisma-exception.filter";
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  app.set("trust proxy", 1);
   app.enableCors({ origin: true, credentials: true });
   // Log every upload attempt before guards — proves whether phones reach the API.
   app.use((req: { method?: string; url?: string; socket?: { remoteAddress?: string }; headers?: Record<string, unknown> }, _res: unknown, next: () => void) => {

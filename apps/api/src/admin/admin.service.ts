@@ -9,6 +9,7 @@ import { PresenceService } from "../realtime/presence.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
 import { StorageService } from "../storage/storage.service";
 import { InvestmentsService } from "../investments/investments.service";
+import { WatchBotService } from "./watch-bot.service";
 import { ttlPurgeStatus } from "../transmissions/ttl-purge.flags";
 import { CreateReportDto } from "./admin.dto";
 import { adminTokenConfigured, adminTokensMatch } from "./admin.guard";
@@ -35,12 +36,16 @@ export class AdminService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly investments: InvestmentsService,
+    private readonly watch: WatchBotService,
   ) {}
 
-  assertToken(given: string) {
+  assertToken(given: string, ip = "") {
     const expected = adminTokenConfigured();
     if (!expected) {
       throw new ServiceUnavailableException("ADMIN_DASHBOARD_TOKEN is not set");
+    }
+    if (this.watch.isBlocked(ip)) {
+      throw new UnauthorizedException("Invalid admin token");
     }
     const cleaned = given.trim().replace(/^["']|["']$/g, "").trim();
     if (!adminTokensMatch(cleaned, expected)) {
@@ -51,6 +56,7 @@ export class AdminService {
         method: "POST",
         message: "ניסיון כניסה לדשבורד עם טוקן שגוי",
       });
+      this.watch.noteAdminFail(ip);
       throw new UnauthorizedException("Invalid admin token");
     }
   }
@@ -360,6 +366,7 @@ export class AdminService {
         findings: securityFindings,
       },
       incidents,
+      watchBot: this.watch.snapshot(),
     };
   }
 
