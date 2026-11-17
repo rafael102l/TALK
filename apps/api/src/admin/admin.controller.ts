@@ -3,9 +3,10 @@ import type { Request, Response } from "express";
 import { ttlPurgeDryRun } from "../transmissions/ttl-purge.flags";
 import { TtlPurgeService } from "../transmissions/ttl-purge.service";
 import { ADMIN_DASHBOARD_HTML } from "./admin.page";
-import { AdminLoginDto, BanPhoneDto, TtlPurgeRunDto, WatchBotDto } from "./admin.dto";
+import { AddCostDto, AdminLoginDto, BanPhoneDto, TtlPurgeRunDto, WatchBotDto } from "./admin.dto";
 import { ADMIN_COOKIE, AdminGuard, TtlPurgeGuard } from "./admin.guard";
 import { AdminService } from "./admin.service";
+import { CostLedgerService } from "./cost-ledger.service";
 import { WatchBotService, clientIp } from "./watch-bot.service";
 
 @Controller("admin")
@@ -14,6 +15,7 @@ export class AdminController {
     private readonly admin: AdminService,
     private readonly ttlPurge: TtlPurgeService,
     private readonly watch: WatchBotService,
+    private readonly costs: CostLedgerService,
   ) {}
 
   @Get()
@@ -98,6 +100,27 @@ export class AdminController {
   @HttpCode(200)
   setWatchBot(@Body() body: WatchBotDto) {
     return this.watch.setEnabled(body.enabled);
+  }
+
+  @Post("api/costs")
+  @UseGuards(AdminGuard)
+  @HttpCode(200)
+  addCost(@Body() body: AddCostDto) {
+    return this.costs.add(body);
+  }
+
+  @Post("api/costs/:id/paid")
+  @UseGuards(AdminGuard)
+  @HttpCode(200)
+  markCostPaid(@Param("id") id: string) {
+    return this.costs.markPaid(id);
+  }
+
+  @Post("api/costs/:id/delete")
+  @UseGuards(AdminGuard)
+  @HttpCode(200)
+  deleteCost(@Param("id") id: string) {
+    return this.costs.remove(id);
   }
 
   @Get("api/ttl-purge")

@@ -1,4 +1,5 @@
-import { IsBoolean, IsIn, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
+import { Type } from "class-transformer";
+import { IsBoolean, IsIn, IsNumber, IsOptional, IsString, MaxLength, MinLength } from "class-validator";
 
 export class AdminLoginDto {
   @IsString()
@@ -44,6 +45,35 @@ export class BanPhoneDto {
 export class WatchBotDto {
   @IsBoolean()
   enabled!: boolean;
+}
+
+export class AddCostDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(80)
+  name!: string;
+
+  @Type(() => Number)
+  @IsNumber()
+  amount!: number;
+
+  @IsOptional()
+  @IsIn(["ILS", "USD"])
+  currency?: "ILS" | "USD";
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  at?: string;
+
+  @IsOptional()
+  @IsIn(["PAID", "DUE"])
+  status?: "PAID" | "DUE";
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  note?: string;
 }
 
 export class TtlPurgeRunDto {

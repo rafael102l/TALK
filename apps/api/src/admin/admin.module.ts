@@ -7,6 +7,7 @@ import { AdminController } from "./admin.controller";
 import { AdminGuard, TtlPurgeGuard } from "./admin.guard";
 import { AdminService } from "./admin.service";
 import { WatchBotService } from "./watch-bot.service";
+import { CostLedgerService } from "./cost-ledger.service";
 import { AppealController } from "./appeal.controller";
 import { FeedbackInboxController } from "./feedback-inbox.controller";
 import { ReportInboxController } from "./report-inbox.controller";
@@ -21,7 +22,7 @@ import { ReportInboxController } from "./report-inbox.controller";
     }),
   ],
   controllers: [AdminController, FeedbackInboxController, ReportInboxController, AppealController],
-  providers: [AdminService, AdminGuard, TtlPurgeGuard, WatchBotService],
+  providers: [AdminService, AdminGuard, TtlPurgeGuard, WatchBotService, CostLedgerService],
 })
 export class AdminModule implements OnModuleInit {
   private readonly log = new Logger(AdminModule.name);

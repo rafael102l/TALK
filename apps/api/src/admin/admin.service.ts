@@ -10,6 +10,7 @@ import { RealtimeGateway } from "../realtime/realtime.gateway";
 import { StorageService } from "../storage/storage.service";
 import { InvestmentsService } from "../investments/investments.service";
 import { WatchBotService } from "./watch-bot.service";
+import { CostLedgerService } from "./cost-ledger.service";
 import { ttlPurgeStatus } from "../transmissions/ttl-purge.flags";
 import { CreateReportDto } from "./admin.dto";
 import { adminTokenConfigured, adminTokensMatch } from "./admin.guard";
@@ -37,6 +38,7 @@ export class AdminService {
     private readonly storage: StorageService,
     private readonly investments: InvestmentsService,
     private readonly watch: WatchBotService,
+    private readonly costs: CostLedgerService,
   ) {}
 
   assertToken(given: string, ip = "") {
@@ -185,7 +187,7 @@ export class AdminService {
     const channelRooms = this.readChannelRooms(io);
     const channelIds = channelRooms.map((room) => room.id);
     const dbProbe = await this.probeDatabase();
-    const [users, channels, peopleGroups, usersTotal, eventsLastHour, downloads, downloadsToday, downloadsWeek, inbox, reports, invest] =
+    const [users, channels, peopleGroups, usersTotal, eventsLastHour, downloads, downloadsToday, downloadsWeek, inbox, reports, invest, costs] =
       await Promise.all([
         connectedIds.length
           ? this.prisma.user.findMany({
@@ -244,6 +246,10 @@ export class AdminService {
         this.investments.adminList().catch((error) => {
           this.noteSnapshotFailure("investments", error);
           return { count: 0, amountUsd: 0, percent: "0", remainingPct: "20", rows: [] };
+        }),
+        this.costs.snapshot().catch((error) => {
+          this.noteSnapshotFailure("costs", error);
+          return { names: [], paid: { ILS: 0, USD: 0 }, due: { ILS: 0, USD: 0 }, rows: [] };
         }),
       ]);
 
@@ -367,6 +373,7 @@ export class AdminService {
       },
       incidents,
       watchBot: this.watch.snapshot(),
+      costs,
     };
   }
 

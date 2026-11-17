@@ -120,6 +120,12 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       flex: 1; min-width: 180px; margin: 0; padding: 10px 12px; border-radius: 10px;
       border: 1px solid var(--line); background: #0c0e12; color: var(--text); font: inherit;
     }
+    .cost-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0 16px; }
+    .cost-form .wide { grid-column: 1 / -1; }
+    .cost-form input, .cost-form select {
+      width: 100%; margin: 0; padding: 10px 12px; border-radius: 10px;
+      border: 1px solid var(--line); background: #0c0e12; color: var(--text); font: inherit;
+    }
   </style>
 </head>
 <body>
@@ -166,6 +172,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       <button type="button" class="kpi" data-panel="appeals"><div class="label">תגובות חסומים</div><div class="value" id="k-appeals">—</div></button>
       <button type="button" class="kpi" data-panel="reports"><div class="label">דיווחים</div><div class="value" id="k-reports">—</div></button>
       <button type="button" class="kpi" data-panel="invest"><div class="label">השקעות</div><div class="value" id="k-invest">—</div></button>
+      <button type="button" class="kpi" data-panel="costs"><div class="label">עלויות</div><div class="value" id="k-costs">—</div></button>
     </section>
     <section class="card">
       <div class="head">
@@ -277,11 +284,25 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
         appeals: "תגובה של חסומים מדווחים",
         reports: "דיווחים",
         invest: "השקעות",
+        costs: "עלויות",
       })[id] || "פירוט";
     }
 
     function wrapTable(html) {
       return "<div class='scroll'>" + html + "</div>";
+    }
+
+    function moneyText(pack) {
+      const parts = [];
+      if (pack && Number(pack.ILS)) parts.push("₪" + Number(pack.ILS).toLocaleString("he-IL"));
+      if (pack && Number(pack.USD)) parts.push("$" + Number(pack.USD).toLocaleString("en-US"));
+      return parts.join(" · ") || "₪0";
+    }
+
+    function moneyCell(amount, currency) {
+      return currency === "USD"
+        ? "$" + Number(amount || 0).toLocaleString("en-US")
+        : "₪" + Number(amount || 0).toLocaleString("he-IL");
     }
 
     function panelHtml(id, data) {
@@ -376,6 +397,45 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
               }).join("") + "</tbody></table>")
           : "<div class='empty'>עדיין אין השקעות</div>");
       }
+      if (id === "costs") {
+        const costs = pack.costs || { names: [], paid: {}, due: {}, rows: [] };
+        const names = costs.names || [];
+        const options = names.map(function (name) {
+          return "<option value='" + esc(name) + "'></option>";
+        }).join("");
+        const today = new Date().toISOString().slice(0, 10);
+        const form = "<div class='cost-form'>" +
+          "<input class='wide' id='cost-name' list='cost-names' placeholder='על מה שילמתם · למשל Cursor' />" +
+          "<datalist id='cost-names'>" + options + "</datalist>" +
+          "<input id='cost-amount' type='number' min='0' step='0.01' placeholder='סכום' />" +
+          "<select id='cost-currency'><option value='ILS'>₪ שקל</option><option value='USD'>$ דולר</option></select>" +
+          "<input id='cost-at' type='date' value='" + today + "' />" +
+          "<select id='cost-status'><option value='PAID'>שולם</option><option value='DUE'>עתידי</option></select>" +
+          "<input class='wide' id='cost-note' placeholder='הערה · לא חובה' />" +
+          "<button type='button' class='okbtn wide' id='cost-add'>הוספת עלות</button>" +
+          "</div>";
+        const rows = costs.rows || [];
+        const table = rows.length
+          ? wrapTable("<table><thead><tr><th>מתי</th><th>על מה</th><th>סכום</th><th>מצב</th><th></th></tr></thead><tbody>" +
+              rows.map(function (row) {
+                const due = row.status === "DUE";
+                const actions = (due
+                  ? "<button type='button' class='okbtn' data-cost-paid='" + esc(row.id) + "'>שולם</button> "
+                  : "") +
+                  "<button type='button' class='danger' data-cost-del='" + esc(row.id) + "'>מחק</button>";
+                return "<tr><td>" + fmtDate(row.at) + "</td><td>" + esc(row.name) +
+                  (row.note ? "<div class='meta'>" + esc(row.note) + "</div>" : "") +
+                  "</td><td>" + moneyCell(row.amount, row.currency) + "</td><td>" +
+                  (due ? "<span class='badge call'>עתידי</span>" : "<span class='badge text'>שולם</span>") +
+                  "</td><td class='actions'>" + actions + "</td></tr>";
+              }).join("") + "</tbody></table>")
+          : "<div class='empty'>עדיין אין עלויות — הוסיפו למעלה אחרי כל תשלום</div>";
+        return "<div class='kv'>" +
+          kv("שולם עד כה", moneyText(costs.paid)) +
+          kv("עתידי", moneyText(costs.due)) +
+          kv("רשימה", "Cursor, Render, Cardcom ועוד — אפשר גם שם חדש") +
+          "</div>" + form + table;
+      }
       return "<div class='empty'>אין נתונים</div>";
     }
 
@@ -414,12 +474,20 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       if (!openPanel || sheet.classList.contains("hidden")) return;
       const phone = document.getElementById("ban-phone");
       const saved = phone ? phone.value : "";
+      const costKeep = ["cost-name", "cost-amount", "cost-currency", "cost-at", "cost-status", "cost-note"].map(function (id) {
+        const el = document.getElementById(id);
+        return [id, el ? el.value : ""];
+      });
       const card = document.querySelector(".sheet-card");
       const y = card ? card.scrollTop : 0;
       document.getElementById("sheet-title").textContent = openPanel === "watch" ? "שומר שרת" : panelTitle(openPanel);
       document.getElementById("sheet-body").innerHTML = openPanel === "watch" ? watchHtml(data) : panelHtml(openPanel, data);
       const again = document.getElementById("ban-phone");
       if (again) again.value = saved;
+      costKeep.forEach(function (pair) {
+        const el = document.getElementById(pair[0]);
+        if (el && pair[1]) el.value = pair[1];
+      });
       if (card) card.scrollTop = y;
     }
 
@@ -514,6 +582,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       document.getElementById("k-appeals").textContent = data.appealsCount || 0;
       document.getElementById("k-reports").textContent = data.reportsCount || 0;
       document.getElementById("k-invest").textContent = data.investCount || 0;
+      document.getElementById("k-costs").textContent = moneyText(data.costs && data.costs.paid);
       document.getElementById("updated").textContent = "עודכן " + new Date(data.at).toLocaleTimeString("he-IL");
       document.getElementById("uptime").textContent = fmtUptime(data.uptimeSec);
       eventsBox.classList.toggle("open", eventsOpen);
@@ -581,6 +650,54 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     });
 
     document.getElementById("sheet-body").addEventListener("click", async function (ev) {
+      if (ev.target.id === "cost-add") {
+        const name = (document.getElementById("cost-name").value || "").trim();
+        const amount = Number(document.getElementById("cost-amount").value);
+        const currency = document.getElementById("cost-currency").value;
+        const at = document.getElementById("cost-at").value;
+        const status = document.getElementById("cost-status").value;
+        const note = (document.getElementById("cost-note").value || "").trim();
+        const res = await fetch("/admin/api/costs", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: name, amount: amount, currency: currency, at: at, status: status, note: note })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(function () { return {}; });
+          alert(err.message || "לא ניתן להוסיף עלות");
+          return;
+        }
+        document.getElementById("cost-amount").value = "";
+        document.getElementById("cost-note").value = "";
+        await pull();
+        return;
+      }
+      const costPaid = ev.target.closest("[data-cost-paid]");
+      if (costPaid) {
+        const res = await fetch("/admin/api/costs/" + encodeURIComponent(costPaid.getAttribute("data-cost-paid")) + "/paid", {
+          method: "POST", credentials: "same-origin"
+        });
+        if (!res.ok) {
+          alert("לא ניתן לעדכן תשלום");
+          return;
+        }
+        await pull();
+        return;
+      }
+      const costDel = ev.target.closest("[data-cost-del]");
+      if (costDel) {
+        if (!confirm("למחוק את העלות הזו?")) return;
+        const res = await fetch("/admin/api/costs/" + encodeURIComponent(costDel.getAttribute("data-cost-del")) + "/delete", {
+          method: "POST", credentials: "same-origin"
+        });
+        if (!res.ok) {
+          alert("לא ניתן למחוק");
+          return;
+        }
+        await pull();
+        return;
+      }
       if (ev.target.id === "watch-toggle") {
         const on = !(lastData && lastData.watchBot && lastData.watchBot.enabled);
         const res = await fetch("/admin/api/watch-bot", {
