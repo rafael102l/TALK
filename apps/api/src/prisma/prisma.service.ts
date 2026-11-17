@@ -50,6 +50,26 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
           "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`,
       );
+      await this.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "Investment" (
+          "id" TEXT NOT NULL,
+          "userId" TEXT NOT NULL,
+          "phoneE164" TEXT NOT NULL,
+          "displayName" TEXT NOT NULL DEFAULT '',
+          "amountUsd" DOUBLE PRECISION NOT NULL,
+          "percent" TEXT NOT NULL,
+          "status" TEXT NOT NULL DEFAULT 'PENDING',
+          "lowProfileId" TEXT,
+          "cardcomTxId" TEXT,
+          "paidAt" TIMESTAMP(3),
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CONSTRAINT "Investment_pkey" PRIMARY KEY ("id")
+        )
+      `);
+      await this.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Investment_lowProfileId_key" ON "Investment"("lowProfileId")`);
+      await this.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Investment_userId_status_idx" ON "Investment"("userId", "status")`);
+      await this.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Investment_status_createdAt_idx" ON "Investment"("status", "createdAt")`);
       console.log("[db] optional columns ready");
     } catch (error) {
       console.error(`[db] alter columns: ${(error as Error).message}`);

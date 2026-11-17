@@ -14,6 +14,7 @@ import { StorageModule } from "./storage/storage.module";
 import { FirebaseModule } from "./firebase/firebase.module";
 import { TransmissionsModule } from "./transmissions/transmissions.module";
 import { UsersModule } from "./users/users.module";
+import { InvestmentsModule } from "./investments/investments.module";
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { UsersModule } from "./users/users.module";
     ChannelsModule,
     AiModule,
     TransmissionsModule,
+    InvestmentsModule,
     AdminModule,
   ],
   controllers: [MetaController],
