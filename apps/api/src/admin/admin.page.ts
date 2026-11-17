@@ -158,6 +158,7 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       <div class="card kpi"><div class="label">כתבו לנו</div><div class="value" id="k-inbox">—</div></div>
       <div class="card kpi"><div class="label">תגובות חסומים</div><div class="value" id="k-appeals">—</div></div>
       <div class="card kpi"><div class="label">דיווחים</div><div class="value" id="k-reports">—</div></div>
+      <div class="card kpi"><div class="label">השקעות</div><div class="value" id="k-invest">—</div></div>
     </section>
     <section class="grid">
       <div class="card">
@@ -191,6 +192,10 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
     <section class="card">
       <div class="head"><h2>תגובה של חסומים מדווחים</h2><span class="meta" id="appeals-meta"></span></div>
       <div id="appeals" class="scroll"><div class="empty">אין תגובות מחסומים</div></div>
+    </section>
+    <section class="card">
+      <div class="head"><h2>השקעות</h2><span class="meta" id="invest-meta"></span></div>
+      <div id="investments" class="scroll"><div class="empty">עדיין אין השקעות</div></div>
     </section>
     <section class="card">
       <div class="head">
@@ -373,6 +378,10 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
       document.getElementById("k-inbox").textContent = data.inboxCount;
       document.getElementById("k-appeals").textContent = data.appealsCount || 0;
       document.getElementById("k-reports").textContent = data.reportsCount || 0;
+      document.getElementById("k-invest").textContent = data.investCount || 0;
+      document.getElementById("invest-meta").textContent =
+        "$" + Number(data.investUsd || 0).toLocaleString("en-US") +
+        " · " + (data.investPct || "0") + "% מחזיקים · נשארו " + (data.investRemainingPct || "20") + "%";
       document.getElementById("updated").textContent = "עודכן " + new Date(data.at).toLocaleTimeString("he-IL");
       document.getElementById("uptime").textContent = fmtUptime(data.uptimeSec);
       document.getElementById("down-meta").textContent = "השבוע " + (data.downloadsWeek || 0) + " · היום " + (data.downloadsToday || 0);
@@ -426,6 +435,16 @@ export const ADMIN_DASHBOARD_HTML = `<!doctype html>
         ? "<table><thead><tr><th>מתי</th><th>מי כתב</th><th>תגובה</th><th>מצב</th></tr></thead><tbody>" +
           appeals.map(function (row) { return noteRow(row, "appeal"); }).join("") + "</tbody></table>"
         : "<div class='empty'>אין תגובות מחסומים</div>";
+
+      const investments = data.investments || [];
+      document.getElementById("investments").innerHTML = investments.length
+        ? "<table><thead><tr><th>מתי</th><th>שם</th><th>טלפון</th><th>סכום</th><th>אחוז</th></tr></thead><tbody>" +
+          investments.map(function (row) {
+            return "<tr><td>" + fmtDate(row.at) + "</td><td>" + esc(row.name) + "</td><td>" + esc(row.phone) +
+              "</td><td>$" + Number(row.amountUsd || 0).toLocaleString("en-US") + "</td><td>" +
+              esc(row.percent) + "%</td></tr>";
+          }).join("") + "</tbody></table>"
+        : "<div class='empty'>עדיין אין השקעות</div>";
 
       const reports = data.reports || [];
       document.getElementById("reports").innerHTML = reports.length

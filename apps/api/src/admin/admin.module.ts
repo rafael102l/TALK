@@ -1,5 +1,6 @@
 import { Logger, Module, OnModuleInit } from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
+import { InvestmentsModule } from "../investments/investments.module";
 import { RealtimeModule } from "../realtime/realtime.module";
 import { TransmissionsModule } from "../transmissions/transmissions.module";
 import { AdminController } from "./admin.controller";
@@ -13,6 +14,7 @@ import { ReportInboxController } from "./report-inbox.controller";
   imports: [
     RealtimeModule,
     TransmissionsModule,
+    InvestmentsModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET ?? "talk-dev-jwt-secret-change-in-production",
     }),

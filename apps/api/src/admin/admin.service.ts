@@ -8,6 +8,7 @@ import { CallRegistry } from "../realtime/call.registry";
 import { PresenceService } from "../realtime/presence.service";
 import { RealtimeGateway } from "../realtime/realtime.gateway";
 import { StorageService } from "../storage/storage.service";
+import { InvestmentsService } from "../investments/investments.service";
 import { ttlPurgeStatus } from "../transmissions/ttl-purge.flags";
 import { CreateReportDto } from "./admin.dto";
 import { adminTokenConfigured, adminTokensMatch } from "./admin.guard";
@@ -33,6 +34,7 @@ export class AdminService {
     private readonly calls: CallRegistry,
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
+    private readonly investments: InvestmentsService,
   ) {}
 
   assertToken(given: string) {
@@ -177,7 +179,7 @@ export class AdminService {
     const channelRooms = this.readChannelRooms(io);
     const channelIds = channelRooms.map((room) => room.id);
     const dbProbe = await this.probeDatabase();
-    const [users, channels, peopleGroups, usersTotal, eventsLastHour, downloads, downloadsToday, downloadsWeek, inbox, reports] =
+    const [users, channels, peopleGroups, usersTotal, eventsLastHour, downloads, downloadsToday, downloadsWeek, inbox, reports, invest] =
       await Promise.all([
         connectedIds.length
           ? this.prisma.user.findMany({
@@ -233,6 +235,10 @@ export class AdminService {
         }),
         this.readInbox(),
         this.readReports(),
+        this.investments.adminList().catch((error) => {
+          this.noteSnapshotFailure("investments", error);
+          return { count: 0, amountUsd: 0, percent: "0", remainingPct: "20", rows: [] };
+        }),
       ]);
 
     const byUser = new Map(users.map((user) => [user.id, user]));
@@ -313,6 +319,11 @@ export class AdminService {
       inboxCount: inbox.filter((row) => row.kind !== "appeal").length,
       appealsCount: inbox.filter((row) => row.kind === "appeal").length,
       reportsCount: reports.length,
+      investCount: invest.count,
+      investUsd: invest.amountUsd,
+      investPct: invest.percent,
+      investRemainingPct: invest.remainingPct,
+      investments: invest.rows,
       connected,
       rooms,
       calls: liveCalls,
