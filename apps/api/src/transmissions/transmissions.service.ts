@@ -2422,7 +2422,7 @@ export class TransmissionsService {
         playedAt: null,
         transmission: {
           senderId: peerId,
-          kind: { in: ["text", "voice"] },
+          kind: { in: ["text", "voice", "image", "video"] },
         },
       },
       select: { id: true, transmissionId: true, deliveredAt: true },
