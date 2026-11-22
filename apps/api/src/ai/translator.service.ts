@@ -199,6 +199,7 @@ export class TranslatorService {
     // local script detector first. The two paid Gemini audio-detect calls only run
     // when the script cannot decide — e.g. both languages share one script (en+es, ru+uk).
     const auto = await this.whisperAuto(audio, mime, ext, langA, langB);
+    if (auto.rejected) return null;
     const autoLang = matchChoice(whisperLangCode(auto.language), langA, langB);
     const textAuto = keepPairTranscript(auto.text, langA, langB);
     const scriptLang = pickByScript(textAuto || auto.text, langA, langB);
@@ -227,6 +228,7 @@ export class TranslatorService {
     let text = textAuto;
     if (!transcriptFitsLang(text, sourceLang, langA, langB)) {
       const locked = await this.whisperFor(audio, sourceLang, mime, ext);
+      if (locked.rejected) return null;
       const lockedText = sanitizeTranscript(locked.text);
       text = transcriptFitsLang(lockedText, sourceLang, langA, langB) ? lockedText : "";
     }
@@ -307,8 +309,8 @@ export class TranslatorService {
     return null;
   }
 
-  private async whisperAuto(audio: Buffer, mime: string, ext: string, langA?: string, langB?: string) {
-    const empty = { text: "", language: "" };
+  private async whisperAuto(audio: Buffer, mime: string, ext: string, _langA?: string, _langB?: string) {
+    const empty = { text: "", language: "", rejected: false };
     const key = process.env.OPENAI_API_KEY;
     if (!key || !audio.length) return empty;
     try {
@@ -317,12 +319,6 @@ export class TranslatorService {
       form.append("model", "whisper-1");
       form.append("temperature", "0");
       form.append("response_format", "verbose_json");
-      form.append(
-        "prompt",
-        langA && langB
-          ? `Allowed languages only: ${langTitle(langB)} and ${langTitle(langA)}. Transcribe in the native script of whichever of those two was spoken. Never write English unless English is one of those two. Never romanize. Never transliterate Hebrew or other unique-script speech into Latin letters.`
-          : "Transcribe every spoken word exactly in the original language. Do not translate. Do not paraphrase. Do not shorten.",
-      );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
@@ -333,10 +329,12 @@ export class TranslatorService {
         this.logger.warn(`translator whisper auto failed: ${res.status}`);
         return empty;
       }
-      const data = (await res.json()) as { text?: string; language?: string };
+      const data = (await res.json()) as WhisperVerbose;
+      const heard = acceptWhisperText(data);
       return {
-        text: sanitizeTranscript((data.text || "").replace(/\s+/g, " ").trim()),
+        text: heard.text,
         language: (data.language || "").trim().toLowerCase(),
+        rejected: heard.rejected,
       };
     } catch (error) {
       this.logger.warn(`translator whisper auto ${(error as Error).message}`);
@@ -345,7 +343,7 @@ export class TranslatorService {
   }
 
   private async whisperFor(audio: Buffer, lang: string, mime: string, ext: string) {
-    const empty = { text: "" };
+    const empty = { text: "", rejected: false };
     const key = process.env.OPENAI_API_KEY;
     if (!key || !audio.length) return empty;
     try {
@@ -355,10 +353,6 @@ export class TranslatorService {
       form.append("language", whisperLang(lang) || speechBase(lang) || lang);
       form.append("temperature", "0");
       form.append("response_format", "verbose_json");
-      form.append(
-        "prompt",
-        `${speechPrompt(lang) || speechTag(lang) || lang} only. Transcribe every spoken word exactly in that dialect. Do not translate. Do not paraphrase. Do not shorten.`,
-      );
       const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}` },
@@ -366,8 +360,9 @@ export class TranslatorService {
         signal: AbortSignal.timeout(8000),
       });
       if (!res.ok) return empty;
-      const data = (await res.json()) as { text?: string };
-      return { text: sanitizeTranscript((data.text || "").replace(/\s+/g, " ").trim()) };
+      const data = (await res.json()) as WhisperVerbose;
+      const heard = acceptWhisperText(data);
+      return { text: heard.text, rejected: heard.rejected };
     } catch (error) {
       this.logger.warn(`translator whisper ${lang} ${(error as Error).message}`);
       return empty;
@@ -632,7 +627,87 @@ function sanitizeTranscript(text: string) {
 }
 
 const JUNK_SPEECH =
-  /^(thank you( for watching)?|thanks( for (watching|listening))?|please subscribe|bye|you|music|applause|thank you\.|thanks\.?|תודה( רבה)?|субтитры|продолжение следует)[\s.!?]*$/i;
+  /^(thanks for (watching|listening)|thank you for watching|please subscribe|bye|you|music|applause|субтитры|продолжение следует)[\s.!?]*$/i;
+const THANKS_WORD = /^(thank|thanks|you|very|much|a|lot|תודה|רבה)$/i;
+
+type WhisperVerbose = {
+  text?: string;
+  language?: string;
+  segments?: { avg_logprob?: number; no_speech_prob?: number; compression_ratio?: number }[];
+};
+
+function whisperStats(data: WhisperVerbose) {
+  const segs = data.segments || [];
+  let logSum = 0;
+  let logN = 0;
+  let noSpeech = 0;
+  let sawNoSpeech = false;
+  let compression = 0;
+  let sawCompression = false;
+  for (const seg of segs) {
+    if (typeof seg.avg_logprob === "number") {
+      logSum += seg.avg_logprob;
+      logN += 1;
+    }
+    if (typeof seg.no_speech_prob === "number") {
+      sawNoSpeech = true;
+      if (seg.no_speech_prob > noSpeech) noSpeech = seg.no_speech_prob;
+    }
+    if (typeof seg.compression_ratio === "number") {
+      sawCompression = true;
+      if (seg.compression_ratio > compression) compression = seg.compression_ratio;
+    }
+  }
+  return {
+    avgLogprob: logN ? logSum / logN : null,
+    noSpeechProb: sawNoSpeech ? noSpeech : null,
+    compression: sawCompression ? compression : null,
+  };
+}
+
+function isRepeatedUtterance(text: string) {
+  const value = sanitizeTranscript(text).replace(/[.!?…]+$/g, "").trim();
+  const parts = value.split(/[.!?…]+/).map((part) => part.trim()).filter(Boolean);
+  if (parts.length >= 2 && parts.every((part) => part.toLowerCase() === parts[0]!.toLowerCase())) return true;
+  const words = value.split(/\s+/).filter(Boolean);
+  if (words.length >= 4 && words.length % 2 === 0) {
+    const half = words.length / 2;
+    return words.slice(0, half).join(" ").toLowerCase() === words.slice(half).join(" ").toLowerCase();
+  }
+  return false;
+}
+
+function isThanksLine(text: string) {
+  const words = sanitizeTranscript(text)
+    .toLowerCase()
+    .replace(/[.,!?;:'"״׳\-–—…]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  return words.length > 0 && words.every((word) => THANKS_WORD.test(word));
+}
+
+function isCaptionHallucination(text: string) {
+  const value = sanitizeTranscript(text);
+  if (isRepeatedUtterance(value)) return true;
+  if (/https?:\/\/|www\./i.test(value)) return true;
+  if (/\b(learn|study)\s+english\s+for\s+free\b/i.test(value)) return true;
+  if (/please subscribe|thanks for watching|thank you for watching/i.test(value)) return true;
+  return false;
+}
+
+/** Keep a real sentence. Drop caption ads, doubled lines, and a thank-you line Whisper was unsure about. */
+function acceptWhisperText(data: WhisperVerbose) {
+  const raw = sanitizeTranscript(data.text || "");
+  if (!raw) return { text: "", rejected: false };
+  const stats = whisperStats(data);
+  if (isJunkSpeech(raw) || isCaptionHallucination(raw)) return { text: "", rejected: true };
+  const unsure = stats.avgLogprob == null || stats.avgLogprob <= -0.8;
+  const silent = stats.noSpeechProb != null && stats.noSpeechProb >= 0.6;
+  if (stats.compression != null && stats.compression >= 2.4) return { text: "", rejected: true };
+  if (isThanksLine(raw) && (unsure || silent)) return { text: "", rejected: true };
+  if (silent && unsure) return { text: "", rejected: true };
+  return { text: raw, rejected: false };
+}
 
 function isJunkSpeech(text: string) {
   const value = sanitizeTranscript(text);
