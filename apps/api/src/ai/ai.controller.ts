@@ -40,6 +40,22 @@ export class AiController {
       langA: keepSpeechCode(body.langA, "he"),
       langB: keepSpeechCode(body.langB, "en"),
       gender: body.gender || "male",
+      sourceLang: (body.sourceLang || "").trim(),
+    });
+  }
+
+  @Post("translator/detect")
+  @UseInterceptors(
+    FileInterceptor("audio", { storage: memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } }),
+  )
+  async translatorDetect(@UploadedFile() file: Express.Multer.File | undefined, @Body() body: TranslatorDto) {
+    const original = file?.originalname || "";
+    return this.translator.detectOnly({
+      audio: file?.buffer ? Buffer.from(file.buffer) : undefined,
+      mime: file?.mimetype || "audio/wav",
+      ext: extname(original).replace(".", "") || "wav",
+      langA: keepSpeechCode(body.langA, "he"),
+      langB: keepSpeechCode(body.langB, "en"),
     });
   }
 

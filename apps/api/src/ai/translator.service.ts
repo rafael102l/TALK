@@ -66,6 +66,7 @@ export class TranslatorService {
     text?: string;
     langA: string;
     langB: string;
+    sourceLang?: string;
   }): Promise<Turn> {
     const langA = keepLang(input.langA, "he");
     const langB = keepLang(input.langB, "en");
@@ -82,13 +83,21 @@ export class TranslatorService {
       const step = Math.max(1, Math.floor(input.audio.length / 80));
       for (let i = 0; i < input.audio.length; i += step) hash = (Math.imul(hash, 31) + input.audio[i]) | 0;
       const pair = langA < langB ? `${langA}:${langB}` : `${langB}:${langA}`;
-      const key = `${input.audio.length}:${hash}:${pair}`;
+      const hinted = (input.sourceLang || "").trim();
+      const key = `${input.audio.length}:${hash}:${pair}:${hinted}`;
       const hit = recentTurns.get(key);
       if (hit && Date.now() - hit.at < 45_000) return hit.turn;
       const pending = inflightTurns.get(key);
       if (pending) return pending;
       const job = (async () =>
-        (await this.hearAndTranslate(input.audio!, input.mime || "audio/mp4", input.ext || "m4a", langA, langB)) || empty)();
+        (await this.hearAndTranslate(
+          input.audio!,
+          input.mime || "audio/mp4",
+          input.ext || "m4a",
+          langA,
+          langB,
+          hinted,
+        )) || empty)();
       inflightTurns.set(key, job);
       try {
         const turn = await job;
@@ -109,6 +118,7 @@ export class TranslatorService {
     langA: string;
     langB: string;
     gender?: VoiceGender;
+    sourceLang?: string;
   }) {
     const langA = keepLang(input.langA, "he");
     const langB = keepLang(input.langB, "en");
@@ -120,6 +130,7 @@ export class TranslatorService {
       ext: input.ext,
       langA,
       langB,
+      sourceLang: input.sourceLang,
     });
     const sourceLang = matchChoice(turn.sourceLang, langA, langB);
     const targetLang = otherLang(sourceLang, langA, langB);
@@ -162,12 +173,27 @@ export class TranslatorService {
     };
   }
 
+  /** Language only, from the opening second. No transcript and no translation. */
+  async detectOnly(input: { audio?: Buffer; mime?: string; ext?: string; langA: string; langB: string }) {
+    const langA = keepLang(input.langA, "he");
+    const langB = keepLang(input.langB, "en");
+    if (!input.audio?.length) return { sourceLang: "" };
+    const [detectedAB, detectedBA] = await Promise.all([
+      this.detectSpokenLang(input.audio, input.mime || "audio/wav", input.ext || "wav", langA, langB),
+      this.detectSpokenLang(input.audio, input.mime || "audio/wav", input.ext || "wav", langB, langA),
+    ]);
+    const lang = detectedAB && detectedBA && detectedAB === detectedBA ? matchChoice(detectedAB, langA, langB) : "";
+    this.logger.log(`translator-early-lang ${lang || "?"}`);
+    return { sourceLang: lang || "" };
+  }
+
   private async hearAndTranslate(
     audio: Buffer,
     mime: string,
     ext: string,
     langA: string,
     langB: string,
+    knownLang = "",
   ): Promise<Turn | null> {
     // Hear the clip once (the transcript is needed either way), then try the free,
     // local script detector first. The two paid Gemini audio-detect calls only run
@@ -179,8 +205,11 @@ export class TranslatorService {
     // A unique-script hit (Hebrew, Arabic, Cyrillic, …) already wins in choosePairSource,
     // so Gemini-detect would not change the result — skip it in that common case.
     const scriptDecides = Boolean(matchChoice(scriptLang, langA, langB) && uniqueScript(scriptLang));
+    const hinted = matchChoice(knownLang, langA, langB);
+    const hintedLatin = Boolean(hinted && !uniqueScript(hinted) && textAuto && !looksLikePhoneticDump(textAuto));
     let geminiLang = "";
-    if (!scriptDecides) {
+    if (!scriptDecides && hintedLatin) geminiLang = hinted;
+    else if (!scriptDecides) {
       const [detectedAB, detectedBA] = await Promise.all([
         this.detectSpokenLang(audio, mime, ext, langA, langB),
         this.detectSpokenLang(audio, mime, ext, langB, langA),

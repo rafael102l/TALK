@@ -31,6 +31,11 @@ export class TranslatorDto {
   @IsOptional()
   @IsString()
   speak?: string;
+
+  /** Language already heard from the opening of the clip. */
+  @IsOptional()
+  @IsString()
+  sourceLang?: string;
 }
 
 export class TranslatorSpeakDto {
