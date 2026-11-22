@@ -202,13 +202,14 @@ export class TranslatorService {
     const autoLang = matchChoice(whisperLangCode(auto.language), langA, langB);
     const textAuto = keepPairTranscript(auto.text, langA, langB);
     const scriptLang = pickByScript(textAuto || auto.text, langA, langB);
-    // A unique-script hit (Hebrew, Arabic, Cyrillic, …) already wins in choosePairSource,
-    // so Gemini-detect would not change the result — skip it in that common case.
-    const scriptDecides = Boolean(matchChoice(scriptLang, langA, langB) && uniqueScript(scriptLang));
+    // Hebrew letters decide a Hebrew+English pair. They must not decide Hebrew+Arabic:
+    // Whisper often writes Arabic speech in Hebrew letters.
+    const bothUnique = Boolean(uniqueScript(langA) && uniqueScript(langB));
+    const scriptDecides = Boolean(matchChoice(scriptLang, langA, langB) && uniqueScript(scriptLang) && !bothUnique);
     const hinted = matchChoice(knownLang, langA, langB);
     const hintedLatin = Boolean(hinted && !uniqueScript(hinted) && textAuto && !looksLikePhoneticDump(textAuto));
     let geminiLang = "";
-    if (!scriptDecides && hintedLatin) geminiLang = hinted;
+    if (!scriptDecides && hintedLatin && !bothUnique) geminiLang = hinted;
     else if (!scriptDecides) {
       const [detectedAB, detectedBA] = await Promise.all([
         this.detectSpokenLang(audio, mime, ext, langA, langB),
@@ -216,7 +217,12 @@ export class TranslatorService {
       ]);
       geminiLang = detectedAB && detectedBA && detectedAB === detectedBA ? matchChoice(detectedAB, langA, langB) : "";
     }
-    const sourceLang = choosePairSource(scriptLang, geminiLang, autoLang, langA, langB);
+    const sourceLang =
+      bothUnique && geminiLang
+        ? geminiLang
+        : bothUnique && autoLang
+          ? autoLang
+          : choosePairSource(scriptLang, geminiLang, autoLang, langA, langB);
     if (!sourceLang) return null;
     let text = textAuto;
     if (!transcriptFitsLang(text, sourceLang, langA, langB)) {
@@ -239,6 +245,7 @@ export class TranslatorService {
       `The spoken language MUST be exactly "${langA}" (${langTitle(langA)}) or exactly "${langB}" (${langTitle(langB)}).`,
       "It is forbidden to choose English or any other language unless that language is one of those two codes.",
       "If the speaker used a unique-script language in the pair (for example Hebrew), return that code even if the words could be written in Latin letters.",
+      "Hebrew and Arabic are different languages. Arabic speech is never Hebrew, even if a transcript might use Hebrew letters. Choose the language that was spoken.",
       `Return JSON {"lang":"${langA}"} or {"lang":"${langB}"} or {"lang":"unknown"} only when there is no speech.`,
       "Do not transcribe. Do not translate. Do not romanize.",
     ].join(" ");
