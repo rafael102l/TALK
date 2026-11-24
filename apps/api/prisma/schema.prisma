@@ -182,6 +182,10 @@ model Transmission {
   createdAt        DateTime             @default(now())
   /** Client outbox id. Same sender+id returns the existing row instead of a duplicate. */
   clientLocalId    String?
+  /** Byte size of a chat image or video. Null for voice, walkie, and older rows. */
+  mediaBytes       Int?
+  /** Tiny JPEG preview for an incoming photo. Never stored for view-once. */
+  previewJpeg      String?
   sender           User                 @relation(fields: [senderId], references: [id])
   channel          Channel              @relation(fields: [channelId], references: [id])
   renders          TransmissionRender[]

@@ -94,6 +94,12 @@ export class CreateTransmissionDto {
   @MaxLength(80)
   clientLocalId?: string;
 
+  /** Tiny base64 JPEG. Optional. Older clients omit it. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(12000)
+  previewJpeg?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(80)

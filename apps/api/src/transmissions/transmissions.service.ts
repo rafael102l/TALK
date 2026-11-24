@@ -67,6 +67,7 @@ export class TransmissionsService {
   ) {}
 
   private readonly claimedLocal = new Map<string, { id: string; at: number }>();
+  private mediaMetaReady: boolean | null = null;
 
   clipLocalKey(input?: { clientLocalId?: string; releasedAt?: number }) {
     const explicit = normalizeClientLocalId(input?.clientLocalId);
@@ -127,6 +128,7 @@ export class TransmissionsService {
       replyToName?: string;
       replyToText?: string;
       clientLocalId?: string;
+      previewJpeg?: string;
     },
   ) {
     if (!file?.buffer?.length) throw new BadRequestException("חסר קובץ");
@@ -389,6 +391,36 @@ export class TransmissionsService {
     }
   }
 
+  private cleanPreview(kind: string, viewOnce: boolean, raw?: string | null) {
+    if (kind !== "image" || viewOnce) return "";
+    const value = String(raw || "").replace(/\s/g, "");
+    if (value.length < 32 || value.length > 12000 || !value.startsWith("/9j/")) return "";
+    return value;
+  }
+
+  private mediaHistory(tx: { kind?: string | null; viewOnce?: boolean | null; mediaBytes?: number | null; previewJpeg?: string | null }) {
+    const kind = tx.kind || "";
+    if (kind !== "image" && kind !== "video") return {};
+    const bytes = Number(tx.mediaBytes);
+    const preview = this.cleanPreview(kind, Boolean(tx.viewOnce), tx.previewJpeg);
+    return {
+      ...(Number.isFinite(bytes) && bytes > 0 ? { mediaBytes: Math.round(bytes) } : {}),
+      ...(preview ? { previewJpeg: preview } : {}),
+    };
+  }
+
+  /** Nullable columns. Missing columns must not reject the upload. */
+  private async mediaColumnsReady() {
+    if (this.mediaMetaReady !== null) return this.mediaMetaReady;
+    try {
+      await this.prisma.$queryRawUnsafe(`SELECT "mediaBytes" FROM "Transmission" WHERE 1=0`);
+      this.mediaMetaReady = true;
+    } catch {
+      this.mediaMetaReady = false;
+    }
+    return this.mediaMetaReady;
+  }
+
   private async createChatMedia(
     sender: User,
     file: Express.Multer.File,
@@ -404,6 +436,7 @@ export class TransmissionsService {
       replyToText?: string;
       clientLocalId?: string;
       releasedAt?: number;
+      previewJpeg?: string;
     },
     kind: "image" | "video",
   ) {
@@ -419,6 +452,9 @@ export class TransmissionsService {
     const users = await this.prisma.user.findMany({ where: { id: { in: planned.channelIds } } });
     const channel = await this.ensureChannel(sender, input.channelId, planned.channelIds);
     const saved = await this.storage.save(file.buffer, extFrom(file), "chat");
+    const mediaBytes = file.buffer.length;
+    const preview = this.cleanPreview(kind, Boolean(input.viewOnce), input.previewJpeg);
+    const metaReady = await this.mediaColumnsReady();
     const packed = packReply(input.originalText?.trim() || "", {
       id: input.replyToId,
       name: input.replyToName,
@@ -436,6 +472,8 @@ export class TransmissionsService {
         viewOnce: Boolean(input.viewOnce),
         status: "READY",
         ...(begun.localId ? { clientLocalId: begun.localId } : {}),
+        ...(metaReady && mediaBytes > 0 ? { mediaBytes } : {}),
+        ...(metaReady && preview ? { previewJpeg: preview } : {}),
         ...(await this.expiryData(channel.id)),
         targets: {
           create: planned.silent
@@ -481,6 +519,8 @@ export class TransmissionsService {
         readyAt,
         expiresAt: transmission.expiresAt?.toISOString() || null,
         group: isGroupType("type" in channel ? channel.type : undefined),
+        ...(mediaBytes > 0 ? { mediaBytes } : {}),
+        ...(preview ? { previewJpeg: preview } : {}),
       };
       const reached = this.realtime.emitToUser(target.userId, SOCKET_EVENTS.TRANSMISSION_READY, payload);
       this.logger.log(`Deliver ${kind} ${transmission.id} -> ${target.userId} reached=${reached}`);
@@ -2190,6 +2230,7 @@ export class TransmissionsService {
         viewOnce: Boolean(tx.viewOnce),
         openedOnce: Boolean(tx.viewOnce && !tx.originalAudioUrl),
         expiresAt: tx.expiresAt?.toISOString() || null,
+        ...this.mediaHistory(tx),
       });
     }
     const grouped = new Set<string>();
@@ -2232,6 +2273,7 @@ export class TransmissionsService {
           openedOnce: Boolean(tx.viewOnce && !tx.originalAudioUrl),
           receipt,
           expiresAt: tx.expiresAt?.toISOString() || null,
+          ...this.mediaHistory(tx),
         });
         continue;
       }
@@ -2271,6 +2313,7 @@ export class TransmissionsService {
           receipt: "sent",
           channelId: tx.channelId,
           expiresAt: tx.expiresAt?.toISOString() || null,
+          ...this.mediaHistory(tx),
         });
         continue;
       }
@@ -2306,6 +2349,7 @@ export class TransmissionsService {
           receipt: target.playedAt ? "read" : target.deliveredAt ? "delivered" : "sent",
           channelId: tx.channelId,
           expiresAt: tx.expiresAt?.toISOString() || null,
+          ...this.mediaHistory(tx),
         });
       }
     }

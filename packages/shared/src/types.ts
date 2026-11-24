@@ -99,4 +99,8 @@ export type HistoryItem = {
   edited?: boolean;
   channelId?: string | null;
   expiresAt?: string | null;
+  /** Byte size of a chat image or video, known before the file is downloaded. */
+  mediaBytes?: number | null;
+  /** Tiny base64 JPEG shown blurred until the full photo is downloaded. */
+  previewJpeg?: string | null;
 };

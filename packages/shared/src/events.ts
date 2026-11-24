@@ -139,6 +139,10 @@ export type TransmissionReadyPayload = {
   group?: boolean;
   /** Group title when the listener may not have that channel cached yet. */
   groupName?: string | null;
+  /** Byte size of a chat image or video, so the receiver can show it before download. */
+  mediaBytes?: number;
+  /** Tiny base64 JPEG. Photos only, never view-once. */
+  previewJpeg?: string | null;
 };
 
 export type ChatReceiptPayload = {
