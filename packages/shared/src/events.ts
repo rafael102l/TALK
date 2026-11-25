@@ -39,6 +39,8 @@ export const SOCKET_EVENTS = {
   CALL_OFFER: "call-offer",
   CALL_ANSWER: "call-answer",
   CALL_ICE: "call-ice",
+  /** A reaction shown to everyone in the live call, then dropped. */
+  CALL_EMOJI: "call-emoji",
   CALL_UNAVAILABLE: "call-unavailable",
   CALL_BUSY: "call-busy",
   CALL_PEER_JOINED: "call-peer-joined",

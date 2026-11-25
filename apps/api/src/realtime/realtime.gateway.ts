@@ -1171,6 +1171,29 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     );
   }
 
+  @SubscribeMessage(SOCKET_EVENTS.CALL_EMOJI)
+  callEmoji(
+    @ConnectedSocket() client: AuthedSocket,
+    @MessageBody() body: { callId?: string; emoji?: string },
+  ) {
+    const call = this.liveCallFor(client.userId, body?.callId);
+    if (!call || !client.userId || !this.calls.inCall(call, client.userId)) return { ok: false };
+    const emoji = String(body?.emoji || "").trim().slice(0, 8);
+    if (!emoji) return { ok: false };
+    const targets = [...new Set([call.callerId, call.calleeId, ...call.invitedIds, ...call.joinedIds])].filter(
+      (id) => id && id !== client.userId && this.calls.inCall(call, id),
+    );
+    for (const target of targets) {
+      this.emitToUser(
+        target,
+        SOCKET_EVENTS.CALL_EMOJI,
+        { callId: call.callId, fromUserId: client.userId, emoji },
+        false,
+      );
+    }
+    return { ok: true };
+  }
+
   private relaySignal(
     client: AuthedSocket,
     callId: string | undefined,
