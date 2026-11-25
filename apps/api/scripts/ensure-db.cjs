@@ -34,11 +34,12 @@ if (!prismaCli) {
   console.error("[ensure-db] prisma CLI not found — skipping schema sync");
   process.exit(0);
 }
-function prisma(args) {
+function prisma(args, input) {
   // Call node directly. A missing `npx` or engine binary exits 127 and must not stop the API.
   try {
     execFileSync(process.execPath, [prismaCli, ...args], {
-      stdio: "inherit",
+      input,
+      stdio: input == null ? "inherit" : ["pipe", "inherit", "inherit"],
       env: process.env,
       cwd,
     });
@@ -47,6 +48,20 @@ function prisma(args) {
     const status = error && error.status != null ? error.status : "?";
     console.error(`[ensure-db] prisma ${args[0]} failed status=${status}`);
     return false;
+  }
+}
+// Nullable columns only. Existing rows stay null. Never drop or rewrite a column.
+if (provider === "postgresql") {
+  const statements = [
+    'ALTER TABLE "Transmission" ADD COLUMN IF NOT EXISTS "mediaBytes" INTEGER',
+    'ALTER TABLE "Transmission" ADD COLUMN IF NOT EXISTS "previewJpeg" TEXT',
+  ];
+  for (const statement of statements) {
+    const added = prisma(
+      ["db", "execute", "--stdin", "--schema", "prisma/schema.runtime.prisma"],
+      statement,
+    );
+    console.log(`[ensure-db] media column ${added ? "ok" : "failed"}`);
   }
 }
 const generated = prisma(["generate", "--schema", "prisma/schema.runtime.prisma"]);
