@@ -542,6 +542,7 @@ export class TransmissionsService {
           senderAvatarUrl: hidePhoto.has(target.userId) ? "" : senderPublic.avatarUrl || "",
           audioUrl: mediaUrl,
           viewOnce: transmission.viewOnce ? "1" : "0",
+          readyAt: String(readyAt),
         },
       );
     }
@@ -661,7 +662,7 @@ export class TransmissionsService {
           audioB64,
         });
         prefired += 1;
-        if (!reached) {
+        if (!reached || !this.presence.isChatOnline(target.id)) {
           void this.push.notifyOfflineMessage(target.id, {
             transmissionId,
             channelId: channel.id,
@@ -676,6 +677,7 @@ export class TransmissionsService {
             translatedText: "",
             speakLang: speakerLang,
             language: hear || speakerLang,
+            readyAt: basePayload.readyAt,
           });
         }
       }
@@ -1766,7 +1768,8 @@ export class TransmissionsService {
         } else if (reached) {
           deliveredJobs.push(this.noteDelivered(target.id, sender.id, transmission.id, target.userId));
         }
-        if (!reached) {
+        const chatAway = delivery !== "walkie" && !this.presence.isChatOnline(target.userId);
+        if (!reached || chatAway) {
           void this.push.notifyOfflineMessage(target.userId, {
             transmissionId: transmission.id,
             channelId: transmission.channelId,
@@ -1781,6 +1784,7 @@ export class TransmissionsService {
             translatedText: payload.translatedText || originalText || "",
             speakLang: sourceLang,
             language: target.language,
+            readyAt: payload.readyAt,
           });
         }
       };

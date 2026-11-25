@@ -84,6 +84,7 @@ export class PushService implements OnModuleInit {
       translatedText?: string | null;
       speakLang?: string;
       language?: string;
+      readyAt?: number;
     },
   ) {
     const transmissionId = String(input.transmissionId || "").trim();
@@ -140,6 +141,7 @@ export class PushService implements OnModuleInit {
       translatedText: input.translatedText || "",
       speakLang: input.speakLang || "",
       language: input.language || "",
+      readyAt: input.readyAt ? String(Math.floor(input.readyAt)) : "",
     });
     try {
       await this.ensureTable();
